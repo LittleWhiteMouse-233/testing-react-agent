@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ report.snapshot.test_case.name }} - 测试报告</title>
+  <style>
+    body{font-family:system-ui,sans-serif;max-width:1080px;margin:40px auto;padding:0 24px;color:#17202a}
+    header{border-bottom:3px solid #1677ff;padding-bottom:20px}.result{font-size:32px;font-weight:700}
+    .PASS{color:#389e0d}.FAIL{color:#cf1322}.BLOCKED{color:#d46b08}.CANCELLED{color:#595959}
+    section{margin:28px 0}.task{border:1px solid #d9d9d9;border-radius:10px;padding:18px;margin:14px 0}
+    img{max-width:100%;border:1px solid #eee}.meta{color:#667085}code{white-space:pre-wrap}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="meta">Android TV 主观测试 Agent</div>
+    <h1>{{ report.snapshot.test_case.name }}</h1>
+    <div class="result {{ report.run.overall_result }}">{{ report.run.overall_result }}</div>
+  </header>
+  <section>
+    <h2>运行快照</h2>
+    <p>设备：{{ report.run.device_id }} · 计划版本：{{ report.snapshot.plan_revision.revision }}</p>
+    <p>已确认前置条件：{{ report.snapshot.confirmed_assumptions | join("；") or "无" }}</p>
+  </section>
+  <section>
+    <h2>任务结果</h2>
+    {% for task in report.tasks %}
+      <article class="task">
+        <h3>{{ task.task_index + 1 }}. {{ task.definition.title }} — {{ task.status }}</h3>
+        <p><strong>目标：</strong>{{ task.definition.goal }}</p>
+        <p><strong>标准：</strong>{{ task.definition.success_criteria | join("；") }}</p>
+        <p><strong>结论：</strong>{{ task.summary or "无" }}（{{ task.cycle_count }} cycles）</p>
+        {% for artifact in task.artifacts %}
+          {% if artifact.data_url %}<img src="{{ artifact.data_url }}" alt="证据截图 {{ artifact.id }}">{% endif %}
+        {% endfor %}
+      </article>
+    {% endfor %}
+  </section>
+  <section><h2>事件统计</h2><p>{{ report.summary.event_count }} 个事件，{{ report.summary.artifact_count }} 个 Artifact。</p></section>
+</body>
+</html>
+

@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.pytest-tmp/
+
+# Runtime data
+data/
+
+# Frontend build
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# Environment files
+.vscode/
+.env
+backend/.env
+
+# dev
+.agents/
+.dev/
+.workbuddy/
+AGENTS.md
+spec*
+review*
