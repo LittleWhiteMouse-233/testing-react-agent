@@ -12,13 +12,24 @@ from sqlalchemy import func, select
 
 from app.api.schemas import (
     ExportCreate,
+    ArtifactResponse,
+    CancelResponse,
+    DeviceHealthResponse,
+    DeviceSummaryResponse,
+    PageResponse,
     PlanCreate,
+    PlanRevisionResponse,
     PlanRevisionCreate,
+    ReportResponse,
     RunCreate,
+    RunDetailResponse,
+    RunResponse,
+    StepEventResponse,
     TestCaseCreate,
+    TestCaseResponse,
 )
 from app.container import Container
-from app.domain.models import PlanOutput, PlanRequest
+from app.domain.planning import PlanOutput, PlanRequest
 from app.persistence.models import (
     ArtifactRow,
     PlanRevisionRow,
@@ -77,7 +88,7 @@ def run_dict(row: TestRunRow) -> dict[str, Any]:
     }
 
 
-@router.post("/test-cases", status_code=201)
+@router.post("/test-cases", status_code=201, response_model=TestCaseResponse)
 async def create_test_case(payload: TestCaseCreate, request: Request) -> dict[str, Any]:
     app = container(request)
     row = TestCaseRow(
@@ -90,7 +101,7 @@ async def create_test_case(payload: TestCaseCreate, request: Request) -> dict[st
     return case_dict(row)
 
 
-@router.get("/test-cases")
+@router.get("/test-cases", response_model=PageResponse[TestCaseResponse])
 async def list_test_cases(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
@@ -112,7 +123,7 @@ async def list_test_cases(
     return {"items": [case_dict(row) for row in rows], "total": total}
 
 
-@router.get("/test-cases/{test_case_id}")
+@router.get("/test-cases/{test_case_id}", response_model=TestCaseResponse)
 async def get_test_case(test_case_id: str, request: Request) -> dict[str, Any]:
     app = container(request)
     async with app.sessions() as session:
@@ -122,7 +133,11 @@ async def get_test_case(test_case_id: str, request: Request) -> dict[str, Any]:
     return case_dict(row)
 
 
-@router.post("/test-cases/{test_case_id}/plans", status_code=201)
+@router.post(
+    "/test-cases/{test_case_id}/plans",
+    status_code=201,
+    response_model=PlanRevisionResponse,
+)
 async def create_plan(
     test_case_id: str, payload: PlanCreate, request: Request
 ) -> dict[str, Any]:
@@ -138,7 +153,7 @@ async def create_plan(
         )
         revision = (current_revision or 0) + 1
     try:
-        plan = await app.llm.plan(
+        plan = await app.planning_graph.generate(
             PlanRequest(
                 test_case_id=test_case_id,
                 text=test_case.source_text,
@@ -153,7 +168,7 @@ async def create_plan(
         revision=revision,
         source="llm",
         plan_json=plan.model_dump(mode="json"),
-        model_info_json=app.llm.model_info,
+        model_info_json=app.model_provider.model_info,
     )
     async with app.sessions() as session:
         session.add(row)
@@ -162,7 +177,10 @@ async def create_plan(
     return plan_dict(row)
 
 
-@router.get("/test-cases/{test_case_id}/plans")
+@router.get(
+    "/test-cases/{test_case_id}/plans",
+    response_model=PageResponse[PlanRevisionResponse],
+)
 async def list_plans(test_case_id: str, request: Request) -> dict[str, Any]:
     app = container(request)
     async with app.sessions() as session:
@@ -181,7 +199,11 @@ async def list_plans(test_case_id: str, request: Request) -> dict[str, Any]:
     return {"items": [plan_dict(row) for row in rows], "total": len(rows)}
 
 
-@router.post("/plan-revisions/{plan_revision_id}/revisions", status_code=201)
+@router.post(
+    "/plan-revisions/{plan_revision_id}/revisions",
+    status_code=201,
+    response_model=PlanRevisionResponse,
+)
 async def revise_plan(
     plan_revision_id: str, payload: PlanRevisionCreate, request: Request
 ) -> dict[str, Any]:
@@ -213,7 +235,7 @@ async def revise_plan(
     return plan_dict(row)
 
 
-@router.post("/runs", status_code=201)
+@router.post("/runs", status_code=201, response_model=RunResponse)
 async def create_run(payload: RunCreate, request: Request) -> dict[str, Any]:
     app = container(request)
     try:
@@ -234,7 +256,7 @@ async def create_run(payload: RunCreate, request: Request) -> dict[str, Any]:
     return run_dict(row)
 
 
-@router.get("/runs")
+@router.get("/runs", response_model=PageResponse[RunResponse])
 async def list_runs(
     request: Request,
     test_case_id: str | None = None,
@@ -261,7 +283,7 @@ async def list_runs(
     return {"items": [run_dict(row) for row in rows], "total": total}
 
 
-@router.get("/runs/{run_id}")
+@router.get("/runs/{run_id}", response_model=RunDetailResponse)
 async def get_run(run_id: str, request: Request) -> dict[str, Any]:
     app = container(request)
     async with app.sessions() as session:
@@ -281,18 +303,18 @@ async def get_run(run_id: str, request: Request) -> dict[str, Any]:
     result["task_runs"] = [
         {
             "id": item.id,
-            "task_id": item.task_id,
+            "task": item.task_json,
             "task_index": item.task_index,
             "status": item.status,
             "cycle_count": item.cycle_count,
-            "summary": item.summary,
+            "outcome": item.outcome_json,
         }
         for item in tasks
     ]
     return result
 
 
-@router.post("/runs/{run_id}/cancel")
+@router.post("/runs/{run_id}/cancel", response_model=CancelResponse)
 async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
     app = container(request)
     try:
@@ -302,7 +324,10 @@ async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
     return {"run_id": run_id, "cancel_requested": accepted}
 
 
-@router.get("/runs/{run_id}/events")
+@router.get(
+    "/runs/{run_id}/events",
+    response_model=PageResponse[StepEventResponse],
+)
 async def list_events(
     run_id: str,
     request: Request,
@@ -374,7 +399,7 @@ async def stream_events(
     )
 
 
-@router.get("/runs/{run_id}/report")
+@router.get("/runs/{run_id}/report", response_model=ReportResponse)
 async def get_report(run_id: str, request: Request) -> dict[str, Any]:
     try:
         return await container(request).reports.build(run_id)
@@ -382,7 +407,11 @@ async def get_report(run_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(404, str(exc)) from exc
 
 
-@router.post("/runs/{run_id}/exports", status_code=201)
+@router.post(
+    "/runs/{run_id}/exports",
+    status_code=201,
+    response_model=ArtifactResponse,
+)
 async def create_export(
     run_id: str, payload: ExportCreate, request: Request
 ) -> dict[str, Any]:
@@ -415,7 +444,7 @@ async def get_artifact(artifact_id: str, request: Request) -> FileResponse:
     )
 
 
-@router.get("/devices")
+@router.get("/devices", response_model=PageResponse[DeviceSummaryResponse])
 async def list_devices(request: Request) -> dict[str, Any]:
     app = container(request)
     items = []
@@ -431,7 +460,7 @@ async def list_devices(request: Request) -> dict[str, Any]:
     return {"items": items, "total": len(items)}
 
 
-@router.get("/devices/{device_id}/health")
+@router.get("/devices/{device_id}/health", response_model=DeviceHealthResponse)
 async def device_health(device_id: str, request: Request) -> dict[str, Any]:
     device = container(request).devices.get(device_id)
     if not device:

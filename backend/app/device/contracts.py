@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.domain.models import (
+from app.domain.tools import (
     ActionResult,
     DeviceCapabilities,
     DeviceHealth,

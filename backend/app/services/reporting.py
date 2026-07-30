@@ -28,6 +28,7 @@ def artifact_dict(row: ArtifactRow) -> dict[str, Any]:
         "mime_type": row.mime_type,
         "size_bytes": row.size_bytes,
         "sha256": row.sha256,
+        "metadata": row.metadata_json,
         "created_at": row.created_at.isoformat(),
         "url": f"/api/artifacts/{row.id}",
     }
@@ -80,24 +81,26 @@ class ReportService:
             )
         artifact_items = [artifact_dict(row) for row in artifacts]
         task_items = []
-        plan_tasks = {
-            item["task_id"]: item
-            for item in run.snapshot_json.get("plan", {}).get("tasks", [])
-        }
         for row in tasks:
+            outcome = row.outcome_json
+            evidence_ids = set(
+                outcome.get("evidence_artifact_ids", []) if outcome else []
+            )
             task_items.append(
                 {
                     "id": row.id,
-                    "task_id": row.task_id,
                     "task_index": row.task_index,
-                    "definition": plan_tasks.get(row.task_id),
+                    "definition": row.task_json,
                     "status": row.status,
                     "cycle_count": row.cycle_count,
-                    "summary": row.summary,
+                    "outcome": outcome,
                     "started_at": row.started_at.isoformat() if row.started_at else None,
                     "finished_at": row.finished_at.isoformat() if row.finished_at else None,
                     "artifacts": [
                         item for item in artifact_items if item["task_run_id"] == row.id
+                    ],
+                    "evidence": [
+                        item for item in artifact_items if item["id"] in evidence_ids
                     ],
                 }
             )

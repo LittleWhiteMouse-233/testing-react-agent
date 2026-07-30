@@ -86,11 +86,11 @@ class TaskRunRow(Base):
     test_run_id: Mapped[str] = mapped_column(
         ForeignKey("test_runs.id", ondelete="CASCADE"), index=True
     )
-    task_id: Mapped[str] = mapped_column(String(100))
     task_index: Mapped[int] = mapped_column(Integer)
+    task_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(20))
     cycle_count: Mapped[int] = mapped_column(Integer, default=0)
-    summary: Mapped[str | None] = mapped_column(Text)
+    outcome_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -132,5 +132,5 @@ class ArtifactRow(Base):
     mime_type: Mapped[str] = mapped_column(String(100))
     size_bytes: Mapped[int] = mapped_column(Integer)
     sha256: Mapped[str] = mapped_column(String(64))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-

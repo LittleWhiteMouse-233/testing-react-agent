@@ -4,14 +4,13 @@ from collections.abc import Iterable
 from pathlib import Path
 import base64
 
-from app.domain.models import (
+from app.domain.errors import CaptureFailed, UnsupportedAction
+from app.domain.tools import (
     ActionResult,
-    CaptureFailed,
     DeviceCapabilities,
     DeviceHealth,
     RemoteKey,
     ScreenshotData,
-    UnsupportedAction,
 )
 
 _PNG_1X1 = base64.b64decode(

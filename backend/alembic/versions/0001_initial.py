@@ -57,11 +57,11 @@ def upgrade() -> None:
         "task_runs",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("test_run_id", sa.String(36), sa.ForeignKey("test_runs.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("task_id", sa.String(100), nullable=False),
         sa.Column("task_index", sa.Integer(), nullable=False),
+        sa.Column("task_json", sa.JSON(), nullable=False),
         sa.Column("status", sa.String(20), nullable=False),
         sa.Column("cycle_count", sa.Integer(), nullable=False),
-        sa.Column("summary", sa.Text()),
+        sa.Column("outcome_json", sa.JSON()),
         sa.Column("started_at", sa.DateTime(timezone=True)),
         sa.Column("finished_at", sa.DateTime(timezone=True)),
         sa.UniqueConstraint("test_run_id", "task_index", name="uq_task_run_index"),
@@ -91,6 +91,7 @@ def upgrade() -> None:
         sa.Column("mime_type", sa.String(100), nullable=False),
         sa.Column("size_bytes", sa.Integer(), nullable=False),
         sa.Column("sha256", sa.String(64), nullable=False),
+        sa.Column("metadata_json", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_index("ix_artifacts_test_run_id", "artifacts", ["test_run_id"])
@@ -103,4 +104,3 @@ def downgrade() -> None:
     op.drop_table("test_runs")
     op.drop_table("plan_revisions")
     op.drop_table("test_cases")
-

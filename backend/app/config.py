@@ -68,6 +68,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ADB_SERIAL", "ATV_ADB_SERIAL"),
     )
     action_timeout_seconds: float = 15
+    agent_history_max_tokens: int = Field(default=8_000, ge=1_000, le=100_000)
     enabled_tools: str = Field(default="")
 
     def model_post_init(self, __context: object) -> None:

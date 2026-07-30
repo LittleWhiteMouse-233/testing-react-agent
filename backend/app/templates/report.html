@@ -30,8 +30,9 @@
         <h3>{{ task.task_index + 1 }}. {{ task.definition.title }} — {{ task.status }}</h3>
         <p><strong>目标：</strong>{{ task.definition.goal }}</p>
         <p><strong>标准：</strong>{{ task.definition.success_criteria | join("；") }}</p>
-        <p><strong>结论：</strong>{{ task.summary or "无" }}（{{ task.cycle_count }} cycles）</p>
-        {% for artifact in task.artifacts %}
+        <p><strong>结论：</strong>{{ task.outcome.summary if task.outcome else "无" }}（{{ task.cycle_count }} cycles）</p>
+        {% if task.outcome %}<p><strong>原因：</strong>{{ task.outcome.reason_code }}</p>{% endif %}
+        {% for artifact in task.evidence %}
           {% if artifact.data_url %}<img src="{{ artifact.data_url }}" alt="证据截图 {{ artifact.id }}">{% endif %}
         {% endfor %}
       </article>
@@ -40,4 +41,3 @@
   <section><h2>事件统计</h2><p>{{ report.summary.event_count }} 个事件，{{ report.summary.artifact_count }} 个 Artifact。</p></section>
 </body>
 </html>
-

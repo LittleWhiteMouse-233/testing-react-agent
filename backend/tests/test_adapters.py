@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from app.device.test_fake import FakeDeviceController, ReplayDeviceController
-from app.domain.models import CaptureFailed, RemoteKey, UnsupportedAction
+from app.domain.errors import CaptureFailed, UnsupportedAction
+from app.domain.tools import RemoteKey
 
 
 @pytest.mark.asyncio

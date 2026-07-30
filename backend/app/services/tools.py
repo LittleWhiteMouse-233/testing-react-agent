@@ -6,12 +6,11 @@ from typing import Any, Protocol
 
 from jsonschema import ValidationError, validate
 
-from app.domain.models import (
-    InvalidArguments,
+from app.domain.errors import InvalidArguments, UnsupportedAction
+from app.domain.tools import (
     ToolContext,
     ToolDefinition,
     ToolResult,
-    UnsupportedAction,
 )
 
 ToolHandler = Callable[[dict[str, object], ToolContext], Awaitable[ToolResult]]

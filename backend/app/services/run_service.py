@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,17 +9,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
-from app.domain.models import OverallResult, PlanOutput, RunStatus, TaskStatus
-from app.graph.executor import AgentGraphExecutor
-from app.persistence.models import (
-    PlanRevisionRow,
-    TaskRunRow,
-    TestCaseRow,
-    TestRunRow,
+from app.device.contracts import DeviceController
+from app.domain.execution import (
+    DeviceSnapshot,
+    PlanRevisionSnapshot,
+    RunSnapshot,
+    RunStatus,
+    TestCaseSnapshot,
 )
-from app.llm.contracts import LLMProvider
-from app.services.events import EventWriter
+from app.domain.planning import PlanOutput
+from app.domain.tools import ToolDefinition
+from app.execution.executor import RunExecutor
+from app.execution.ports import ExecutionRepository
+from app.llm.contracts import ChatModelProvider
+from app.persistence.models import PlanRevisionRow, TestCaseRow, TestRunRow
 from app.services.registry import RunRegistry
+from app.services.tools import ToolProvider
 
 
 class RunConflict(RuntimeError):
@@ -42,18 +46,22 @@ class RunService:
         self,
         *,
         sessions: async_sessionmaker[AsyncSession],
-        executor: AgentGraphExecutor,
+        repository: ExecutionRepository,
+        executor: RunExecutor,
         registry: RunRegistry,
-        events: EventWriter,
-        llm: LLMProvider,
+        model_provider: ChatModelProvider,
         settings: Settings,
+        devices: dict[str, DeviceController],
+        tools: ToolProvider,
     ) -> None:
         self.sessions = sessions
+        self.repository = repository
         self.executor = executor
         self.registry = registry
-        self.events = events
-        self.llm = llm
+        self.model_provider = model_provider
         self.settings = settings
+        self.devices = devices
+        self.tools = tools
         self._start_lock = asyncio.Lock()
 
     async def start(
@@ -77,46 +85,64 @@ class RunService:
                 if active:
                     raise RunConflict(active.id)
                 revision = await session.get(PlanRevisionRow, plan_revision_id)
-                if not revision:
+                if revision is None:
                     raise LookupError("Plan revision not found")
                 test_case = await session.get(TestCaseRow, revision.test_case_id)
-                if not test_case:
+                if test_case is None:
                     raise LookupError("Test case not found")
-                if device_id not in self.executor.devices:
-                    raise LookupError("Device not found")
                 plan = PlanOutput.model_validate(revision.plan_json)
-                if sorted(confirmed_assumptions) != sorted(plan.assumptions):
-                    raise ValueError("All plan assumptions must be confirmed exactly once")
-                run = TestRunRow(
-                    id=str(uuid4()),
-                    test_case_id=test_case.id,
-                    plan_revision_id=revision.id,
-                    device_id=device_id,
-                    status=RunStatus.PENDING.value,
-                    overall_result=None,
-                    snapshot_json={
-                        "test_case": {
-                            "id": test_case.id,
-                            "name": test_case.name,
-                            "source_text": test_case.source_text,
-                        },
-                        "plan_revision": {
-                            "id": revision.id,
-                            "revision": revision.revision,
-                            "source": revision.source,
-                        },
-                        "plan": plan.model_dump(mode="json"),
-                        "device_id": device_id,
-                        "model": self.llm.model_info,
-                        "enabled_tools": [
-                            tool.model_dump(mode="json")
-                            for tool in self.executor.tools.list_tools()
-                        ],
-                        "prompt_versions": prompt_versions(),
-                        "confirmed_assumptions": confirmed_assumptions,
-                        "app_version": self.settings.app_version,
-                    },
-                )
+            if sorted(confirmed_assumptions) != sorted(plan.assumptions):
+                raise ValueError("All plan assumptions must be confirmed exactly once")
+            device = self.devices.get(device_id)
+            if device is None:
+                raise LookupError("Device not found")
+            health_message = ""
+            capabilities = None
+            try:
+                health = await device.health()
+                health_message = health.message
+                if health.available:
+                    candidate = await device.capabilities()
+                    if candidate.screenshot:
+                        capabilities = candidate
+                    else:
+                        health_message = "Device does not support screenshots"
+            except Exception as exc:
+                health_message = str(exc)
+            definitions = self._enabled_tools()
+            snapshot = RunSnapshot(
+                test_case=TestCaseSnapshot(
+                    id=test_case.id,
+                    name=test_case.name,
+                    source_text=test_case.source_text,
+                ),
+                plan_revision=PlanRevisionSnapshot(
+                    id=revision.id,
+                    revision=revision.revision,
+                    source=revision.source,
+                ),
+                plan=plan,
+                confirmed_assumptions=confirmed_assumptions,
+                device=DeviceSnapshot(
+                    id=device_id,
+                    health_message=health_message,
+                    capabilities=capabilities,
+                ),
+                model=self.model_provider.model_info,
+                enabled_tools=definitions,
+                prompt_versions=prompt_versions(),
+                app_version=self.settings.app_version,
+            )
+            run = TestRunRow(
+                id=str(uuid4()),
+                test_case_id=test_case.id,
+                plan_revision_id=revision.id,
+                device_id=device_id,
+                status=RunStatus.PENDING.value,
+                overall_result=None,
+                snapshot_json=snapshot.model_dump(mode="json"),
+            )
+            async with self.sessions() as session:
                 session.add(run)
                 await session.commit()
                 await session.refresh(run)
@@ -126,70 +152,21 @@ class RunService:
             self.registry.register(run.id, task)
             return run
 
+    def _enabled_tools(self) -> list[ToolDefinition]:
+        definitions = self.tools.list_tools()
+        configured = set(self.settings.enabled_tool_names)
+        if not configured:
+            return definitions
+        return [item for item in definitions if item.name in configured]
+
     async def cancel(self, run_id: str) -> bool:
         async with self.sessions() as session:
             run = await session.get(TestRunRow, run_id)
-            if not run:
+            if run is None:
                 raise LookupError("Run not found")
             if run.status not in {RunStatus.PENDING.value, RunStatus.RUNNING.value}:
                 return False
         return self.registry.cancel(run_id)
 
     async def reconcile_orphaned_runs(self) -> None:
-        timestamp = datetime.now(timezone.utc)
-        orphan_ids: list[str] = []
-        async with self.sessions() as session:
-            runs = list(
-                (
-                    await session.scalars(
-                        select(TestRunRow).where(
-                            TestRunRow.status.in_(
-                                [RunStatus.PENDING.value, RunStatus.RUNNING.value]
-                            )
-                        )
-                    )
-                ).all()
-            )
-            for run in runs:
-                run.status = RunStatus.FINISHED.value
-                run.overall_result = OverallResult.BLOCKED.value
-                run.finished_at = timestamp
-                tasks = list(
-                    (
-                        await session.scalars(
-                            select(TaskRunRow).where(
-                                TaskRunRow.test_run_id == run.id
-                            )
-                        )
-                    ).all()
-                )
-                for task in tasks:
-                    if task.status == TaskStatus.RUNNING.value:
-                        task.status = TaskStatus.BLOCKED.value
-                        task.summary = "Process restarted before action result was known"
-                        task.finished_at = timestamp
-                    elif task.status == TaskStatus.PENDING.value:
-                        task.status = TaskStatus.SKIPPED.value
-                        task.summary = "Skipped after process restart"
-                        task.finished_at = timestamp
-                orphan_ids.append(run.id)
-            await session.commit()
-        for run_id in orphan_ids:
-            await self.events.append(
-                run_id=run_id,
-                event_type="error",
-                payload={
-                    "classification": "ProcessRestarted",
-                    "message": "Automatic recovery is deferred to phase C",
-                },
-                dedup_key=f"{run_id}:process_restart",
-            )
-            await self.events.append(
-                run_id=run_id,
-                event_type="run_finished",
-                payload={
-                    "status": RunStatus.FINISHED.value,
-                    "overall_result": OverallResult.BLOCKED.value,
-                },
-                dedup_key=f"{run_id}:run_finished",
-            )
+        await self.repository.reconcile_orphaned()

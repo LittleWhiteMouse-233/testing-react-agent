@@ -5,6 +5,8 @@ import { useParams } from "react-router-dom";
 import { api, apiUrl } from "../api/client";
 import type { Artifact, Report } from "../types";
 
+const taskResultKeys = ["passed", "failed", "blocked", "skipped"] as const;
+
 export default function ReportPage() {
   const { runId = "" } = useParams();
   const report = useQuery({ queryKey: ["report", runId], queryFn: () => api<Report>(`/runs/${runId}/report`) });
@@ -39,20 +41,20 @@ export default function ReportPage() {
           <Descriptions.Item label="已确认 assumptions">{data.snapshot.confirmed_assumptions?.join("；") || "无"}</Descriptions.Item>
         </Descriptions>
         <Row gutter={16}>
-          {["passed", "failed", "blocked", "skipped"].map((key) => <Col key={key} xs={12} md={6}><Statistic title={key} value={data.summary[key]} /></Col>)}
+          {taskResultKeys.map((key) => <Col key={key} xs={12} md={6}><Statistic title={key} value={data.summary[key]} /></Col>)}
         </Row>
       </Card>
       {data.tasks.map((task) => (
         <Card key={task.id} title={`${task.task_index + 1}. ${task.definition?.title}`} extra={<Tag>{task.status}</Tag>}>
           <Typography.Paragraph><strong>目标：</strong>{task.definition?.goal}</Typography.Paragraph>
           <Typography.Paragraph><strong>判定标准：</strong>{task.definition?.success_criteria?.join("；")}</Typography.Paragraph>
-          <Typography.Paragraph><strong>结论：</strong>{task.summary}（{task.cycle_count} cycles）</Typography.Paragraph>
+          <Typography.Paragraph><strong>结论：</strong>{task.outcome?.summary ?? "无"}（{task.cycle_count} cycles）</Typography.Paragraph>
+          {task.outcome && <Typography.Paragraph><strong>原因：</strong>{task.outcome.reason_code}</Typography.Paragraph>}
           <Image.PreviewGroup>
-            <Space wrap>{task.artifacts.filter((item) => item.type === "screenshot").map((item) => <Image key={item.id} width={240} src={apiUrl(`/artifacts/${item.id}`)} />)}</Space>
+            <Space wrap>{task.evidence.map((item) => <Image key={item.id} width={240} src={apiUrl(`/artifacts/${item.id}`)} />)}</Space>
           </Image.PreviewGroup>
         </Card>
       ))}
     </Space>
   );
 }
-

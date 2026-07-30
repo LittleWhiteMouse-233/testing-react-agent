@@ -4,9 +4,33 @@ import { Alert, Button, Card, Col, Descriptions, List, Progress, Row, Space, Spi
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, apiUrl } from "../api/client";
-import type { Run, StepEvent } from "../types";
+import type { ExecutionEventType, Run, StepEvent } from "../types";
 
-const eventTypes = ["run_started", "task_started", "observation_captured", "decision_made", "action_started", "action_finished", "task_finished", "tasks_skipped", "run_finished", "run_cancelled", "error"];
+const eventTypes: ExecutionEventType[] = ["run.started", "task.started", "cycle.started", "observation.captured", "agent.action_selected", "agent.terminal_selected", "tool.started", "tool.finished", "agent.response_invalid", "execution.error", "task.finished", "tasks.skipped", "run.finished", "run.cancelled"];
+
+function eventDetails(event: StepEvent): string {
+  switch (event.type) {
+    case "run.started":
+    case "task.started":
+    case "cycle.started":
+    case "observation.captured":
+    case "agent.action_selected":
+    case "agent.terminal_selected":
+    case "tool.started":
+    case "tool.finished":
+    case "agent.response_invalid":
+    case "execution.error":
+    case "task.finished":
+    case "tasks.skipped":
+    case "run.finished":
+    case "run.cancelled":
+      return JSON.stringify(event.payload, null, 2);
+    default: {
+      const exhaustive: never = event;
+      return exhaustive;
+    }
+  }
+}
 
 export default function RunPage() {
   const { runId = "" } = useParams();
@@ -33,7 +57,7 @@ export default function RunPage() {
       setEvents((current) => [...current.filter((entry) => entry.sequence !== item.sequence), item].sort((a, b) => a.sequence - b.sequence));
       cursor = Math.max(cursor, item.sequence);
       localStorage.setItem(storageKey, String(item.sequence));
-      if (["run_finished", "run_cancelled"].includes(item.type)) run.refetch();
+      if (["run.finished", "run.cancelled"].includes(item.type)) run.refetch();
     };
     const connect = () => {
       if (disposed) return;
@@ -52,9 +76,16 @@ export default function RunPage() {
     };
   }, [runId]);
 
-  const latestScreenshot = useMemo(() => [...events].reverse().find((item) => item.type === "observation_captured")?.payload.artifact_id, [events]);
+  const latestScreenshot = useMemo(() => {
+    for (const event of [...events].reverse()) {
+      if (event.type === "observation.captured") {
+        return event.payload.observation.artifact_id;
+      }
+    }
+    return undefined;
+  }, [events]);
   const activeTask = run.data?.task_runs?.find((item) => item.status === "running");
-  const definition = run.data?.snapshot?.plan?.tasks?.[activeTask?.task_index ?? -1];
+  const definition = activeTask?.task;
   const percent = activeTask && definition ? Math.min(100, Math.round(activeTask.cycle_count / definition.max_cycles * 100)) : 0;
   if (run.isLoading) return <Spin />;
   if (run.error || !run.data) return <Alert type="error" message={(run.error as Error)?.message ?? "运行不存在"} />;
@@ -75,7 +106,7 @@ export default function RunPage() {
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }}>
           <Descriptions.Item label="设备">{run.data.device_id}</Descriptions.Item>
           <Descriptions.Item label="计划版本">{run.data.snapshot?.plan_revision?.revision}</Descriptions.Item>
-          <Descriptions.Item label="模型">{run.data.snapshot?.model?.model}</Descriptions.Item>
+          <Descriptions.Item label="模型">{String(run.data.snapshot?.model?.model ?? "")}</Descriptions.Item>
         </Descriptions>
         {activeTask && <><Typography.Text strong>当前任务：{definition?.title}</Typography.Text><Progress percent={percent} format={() => `${activeTask.cycle_count}/${definition?.max_cycles}`} /></>}
       </Card>
@@ -92,7 +123,7 @@ export default function RunPage() {
               dataSource={[...events].reverse()}
               locale={{ emptyText: "等待事件…" }}
               renderItem={(item) => (
-                <List.Item><div className="event-item"><Space><Tag>{item.sequence}</Tag><strong>{item.type}</strong></Space><Typography.Paragraph type="secondary" ellipsis={{ rows: 3, expandable: true }}>{JSON.stringify(item.payload, null, 2)}</Typography.Paragraph></div></List.Item>
+                <List.Item><div className="event-item"><Space><Tag>{item.sequence}</Tag><strong>{item.type}</strong></Space><Typography.Paragraph type="secondary" ellipsis={{ rows: 3, expandable: true }}>{eventDetails(item)}</Typography.Paragraph></div></List.Item>
               )}
             />
           </Card>
