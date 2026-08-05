@@ -38,6 +38,9 @@ export default function ReportPage() {
           <Descriptions.Item label="用例">{data.snapshot.test_case?.name}</Descriptions.Item>
           <Descriptions.Item label="设备">{data.run.device_id}</Descriptions.Item>
           <Descriptions.Item label="计划修订">{data.snapshot.plan_revision?.revision}</Descriptions.Item>
+          <Descriptions.Item label="规划模型">{data.snapshot.models.planning.profile_id}</Descriptions.Item>
+          <Descriptions.Item label="执行模型">{data.snapshot.models.act.profile_id}</Descriptions.Item>
+          <Descriptions.Item label="判定模型">{data.snapshot.models.judge.profile_id}</Descriptions.Item>
           <Descriptions.Item label="已确认 assumptions">{data.snapshot.confirmed_assumptions?.join("；") || "无"}</Descriptions.Item>
         </Descriptions>
         <Row gutter={16}>

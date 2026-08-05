@@ -7,13 +7,13 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
+from langchain_core.tools import tool
+from langgraph.prebuilt import ToolRuntime
 
 from app.config import Settings
 from app.device.test_fake import FakeDeviceController
-from app.domain.execution import TaskTerminalDecision
-from app.domain.tools import ToolDefinition, ToolResult
-from app.graph.planning import PlanningGraph
 from app.llm.test_fake import ScriptedChatModelProvider
+from app.config import LLMProfileSettings
 from app.main import create_app
 
 
@@ -28,18 +28,15 @@ def build_client(tmp_path: Path) -> TestClient:
         data_dir=tmp_path,
         database_url=f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}",
         checkpoint_path=tmp_path / "checkpoints.db",
-        llm_mode="scripted",
     )
     return TestClient(create_app(settings))
 
 
 def set_scripted_turns(client: TestClient, turns: list[object]) -> None:
-    provider = ScriptedChatModelProvider(turns=turns)
+    provider = ScriptedChatModelProvider(model_id="default", turns=turns)
     container = client.app.state.container
-    container.model_provider = provider
-    container.planning_graph = PlanningGraph(provider)
-    container.agent_factory.model_provider = provider
-    container.run_service.model_provider = provider
+    container.models.clear()
+    container.models["default"] = provider
 
 
 def wait_for_run(client: TestClient, run_id: str) -> dict:
@@ -76,13 +73,12 @@ def start_run(client: TestClient, revision: dict) -> dict:
 
 def wait_call(call_id: str = "call-wait") -> AIMessage:
     return AIMessage(
-        content="",
+        content="Wait for rendering",
         tool_calls=[
             {
                 "name": "device_wait",
                 "args": {
                     "duration_ms": 100,
-                    "decision_summary": "Wait for rendering",
                 },
                 "id": call_id,
                 "type": "tool_call",
@@ -93,13 +89,12 @@ def wait_call(call_id: str = "call-wait") -> AIMessage:
 
 def press_call(call_id: str = "call-press") -> AIMessage:
     return AIMessage(
-        content="",
+        content="Move focus to the target row",
         tool_calls=[
             {
                 "name": "device_press_key",
                 "args": {
                     "key": "DPAD_DOWN",
-                    "decision_summary": "Move focus to the target row",
                 },
                 "id": call_id,
                 "type": "tool_call",
@@ -114,14 +109,11 @@ def external_tool_call(
     call_id: str,
 ) -> AIMessage:
     return AIMessage(
-        content="",
+        content=f"Use {name}",
         tool_calls=[
             {
                 "name": name,
-                "args": {
-                    **arguments,
-                    "decision_summary": f"Use {name}",
-                },
+                "args": arguments,
                 "id": call_id,
                 "type": "tool_call",
             }
@@ -273,14 +265,8 @@ def test_task_agent_runs_multiple_observe_decide_act_cycles() -> None:
             [
                 press_call(),
                 wait_call("call-wait-after-press"),
-                TaskTerminalDecision(
-                    status="passed",
-                    summary="The target screen is visible",
-                ),
-                TaskTerminalDecision(
-                    status="passed",
-                    summary="The expected result is visible",
-                ),
+                {"status": "passed", "summary": "The target screen is visible"},
+                {"status": "passed", "summary": "The expected result is visible"},
             ],
         )
         created = start_run(client, revision)
@@ -323,10 +309,7 @@ def test_judge_policy_rejects_device_state_changing_tools() -> None:
         set_scripted_turns(
             client,
             [
-                TaskTerminalDecision(
-                    status="passed",
-                    summary="Act task already reached the target",
-                ),
+                {"status": "passed", "summary": "Act task already reached the target"},
                 forbidden,
                 forbidden.model_copy(
                     update={
@@ -378,18 +361,12 @@ def test_tool_timeout_is_not_replayed_and_forces_a_fresh_observation() -> None:
             client,
             [
                 wait_call("slow-wait"),
-                TaskTerminalDecision(
-                    status="passed",
-                    summary="The screen recovered after the timeout",
-                ),
-                TaskTerminalDecision(
-                    status="passed",
-                    summary="The expected result is visible",
-                ),
+                {"status": "passed", "summary": "The screen recovered after the timeout"},
+                {"status": "passed", "summary": "The expected result is visible"},
             ],
         )
         client.app.state.container.devices["fake-tv"] = BoundaryDevice()
-        client.app.state.container.agent_factory.action_timeout_seconds = 0.01
+        client.app.state.container.tools.action_timeout_seconds = 0.01
         created = start_run(client, revision)
         run = wait_for_run(client, created["id"])
 
@@ -415,38 +392,27 @@ def test_tool_timeout_is_not_replayed_and_forces_a_fresh_observation() -> None:
 def test_policies_bind_mutating_tools_only_to_act_and_read_tools_to_both() -> None:
     executed: list[str] = []
 
-    async def record_tool(arguments, context):
-        executed.append(f"{context.task_run_id}:{arguments['value']}")
-        return ToolResult(success=True, summary="Tool completed")
+    @tool
+    async def mutate_setting(value: str, runtime: ToolRuntime) -> str:
+        """Change a test setting."""
+        executed.append(f"{runtime.tool_call_id}:{value}")
+        return "Tool completed"
+
+    @tool
+    async def read_setting(value: str, runtime: ToolRuntime) -> str:
+        """Read a test setting."""
+        executed.append(f"{runtime.tool_call_id}:{value}")
+        return "Tool completed"
+
+    mutate_setting.metadata = {"atv.scopes": ["act"]}
+    read_setting.metadata = {"atv.scopes": ["act", "judge"]}
 
     with tempfile.TemporaryDirectory(
         ignore_cleanup_errors=True
     ) as directory, build_client(Path(directory)) as client:
         tools = client.app.state.container.tools
-        schema = {
-            "type": "object",
-            "properties": {"value": {"type": "string"}},
-            "required": ["value"],
-            "additionalProperties": False,
-        }
-        tools.register(
-            ToolDefinition(
-                name="mutate_setting",
-                description="Change a test setting",
-                input_schema=schema,
-                changes_device_state=True,
-            ),
-            record_tool,
-        )
-        tools.register(
-            ToolDefinition(
-                name="read_setting",
-                description="Read a test setting",
-                input_schema=schema,
-                changes_device_state=False,
-            ),
-            record_tool,
-        )
+        tools.register(mutate_setting)
+        tools.register(read_setting)
         _, revision = create_case_and_plan(client, source_text="Use policy-bound tools")
         set_scripted_turns(
             client,
@@ -456,19 +422,13 @@ def test_policies_bind_mutating_tools_only_to_act_and_read_tools_to_both() -> No
                     {"value": "act"},
                     "act-mutate",
                 ),
-                TaskTerminalDecision(
-                    status="passed",
-                    summary="Act completed with the mutating tool",
-                ),
+                {"status": "passed", "summary": "Act completed with the mutating tool"},
                 external_tool_call(
                     "read_setting",
                     {"value": "judge"},
                     "judge-read",
                 ),
-                TaskTerminalDecision(
-                    status="passed",
-                    summary="Judge completed with the read-only tool",
-                ),
+                {"status": "passed", "summary": "Judge completed with the read-only tool"},
             ],
         )
         created = start_run(client, revision)
@@ -476,5 +436,56 @@ def test_policies_bind_mutating_tools_only_to_act_and_read_tools_to_both() -> No
 
         assert run["overall_result"] == "PASS"
         assert [item.rsplit(":", 1)[1] for item in executed] == ["act", "judge"]
-        assert executed[0].startswith(run["task_runs"][0]["id"])
-        assert executed[1].startswith(run["task_runs"][1]["id"])
+        assert executed[0].startswith("act-mutate")
+        assert executed[1].startswith("judge-read")
+
+
+def test_planning_act_and_judge_use_independent_models() -> None:
+    with tempfile.TemporaryDirectory(
+        ignore_cleanup_errors=True
+    ) as directory:
+        settings = Settings(
+            data_dir=Path(directory),
+            database_url=f"sqlite+aiosqlite:///{(Path(directory) / 'app.db').as_posix()}",
+            checkpoint_path=Path(directory) / "checkpoints.db",
+            llm_profiles=[
+                LLMProfileSettings(id="planner"),
+                LLMProfileSettings(id="actor"),
+                LLMProfileSettings(id="judge"),
+            ],
+            planning_model_id="planner",
+            act_model_id="actor",
+            judge_model_id="judge",
+        )
+        with TestClient(create_app(settings)) as client:
+            container = client.app.state.container
+            container.models["planner"] = ScriptedChatModelProvider(
+                model_id="planner"
+            )
+            container.models["actor"] = ScriptedChatModelProvider(
+                model_id="actor",
+                turns=[{"status": "passed", "summary": "Actor reached target"}],
+            )
+            container.models["judge"] = ScriptedChatModelProvider(
+                model_id="judge",
+                turns=[{"status": "passed", "summary": "Judge verified target"}],
+            )
+
+            _, revision = create_case_and_plan(client, source_text="Route models")
+            assert revision["model_info"]["profile_id"] == "planner"
+            created = start_run(client, revision)
+            run = wait_for_run(client, created["id"])
+
+            assert run["overall_result"] == "PASS"
+            assert run["snapshot"]["models"]["planning"]["profile_id"] == "planner"
+            assert run["snapshot"]["models"]["act"]["profile_id"] == "actor"
+            assert run["snapshot"]["models"]["judge"]["profile_id"] == "judge"
+            assert run["snapshot"]["models"]["act"] == {
+                "profile_id": "actor",
+                "provider": "scripted",
+                "model": "deterministic",
+                "base_url": None,
+                "temperature": 0.0,
+                "timeout_seconds": 60.0,
+            }
+            assert run["snapshot"]["execution_protocol_version"] == "1"

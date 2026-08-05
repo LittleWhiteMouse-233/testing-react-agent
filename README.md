@@ -8,7 +8,7 @@
 - PlanningGraph 与通用 TaskAgentGraph；Act/Judge 共享循环并通过 Policy 隔离能力；
 - Task 级多轮观察—决策—单工具调用、cycle 上限、全局 fail-fast 和带外取消；
 - ADB、Fake、Replay DeviceController；
-- OpenAI 兼容 ChatModelProvider 和确定性 ScriptedChatModelProvider；
+- planning/act/judge 独立路由的多模型注册表、OpenAI 兼容 Provider 和确定性 Scripted Provider；
 - SQLite WAL、Alembic、每 Task 独立的 LangGraph SQLite checkpoint、强类型幂等事件；
 - FastAPI REST、可补拉 SSE、JSON/HTML 报告；
 - React、TypeScript、Ant Design 管理界面。
@@ -44,15 +44,15 @@ npm.cmd run dev
 
 ## 配置
 
-复制 `.env.example` 为 `.env`。默认 `LLM_MODE=scripted`，无需网络或密钥，`fake-tv` 始终可用。
+复制 `.env.example` 为 `.env`。默认模型列表只有一个 scripted profile，无需网络或密钥，`fake-tv` 始终可用。
 
 真实模型模式：
 
 ```dotenv
-LLM_MODE=real
-LLM_BASE_URL=https://example.com/v1
-LLM_API_KEY=...
-LLM_MODEL=...
+LLM_PROFILES=[{"id":"planner","mode":"real","base_url":"https://example.com/v1","api_key":"...","model":"planner-model","timeout_seconds":60},{"id":"vision","mode":"real","base_url":"https://example.com/v1","api_key":"...","model":"vision-tool-model","timeout_seconds":60}]
+ATV_PLANNING_MODEL_ID=planner
+ATV_ACT_MODEL_ID=vision
+ATV_JUDGE_MODEL_ID=vision
 ```
 
 兼容端点必须支持：
@@ -62,7 +62,7 @@ LLM_MODEL=...
 - strict JSON Schema 输出；
 - 标准 tool calling，并支持禁用并行 tool calls。
 
-系统不会从非法自由文本中正则提取计划、动作或终态。规划 Structured Output 最多调用三次；Task Agent 的格式、未知工具或参数错误在当前 cycle 内最多尝试三次，仍失败时任务进入 BLOCKED。
+`LLM_PROFILES` 的顺序稳定，未显式配置活动路由时使用首项。系统不会从非法自由文本中正则提取计划、动作或终态：规划 Structured Output 最多调用三次；Task Agent 每轮必须调用一个工具，终态统一调用 `finish_task`，格式、未知工具或参数错误在当前 cycle 内最多重试三次。
 
 注册真实电视：
 
@@ -99,9 +99,11 @@ conda run -n llm-dev python -m alembic upgrade head
 
 ## 执行架构
 
-`RunExecutor` 只加载不可变 `RunSnapshot`、顺序启动 Task、执行全局 fail-fast，并按固定规则聚合最终结果。每个 Task 由一次 `TaskAgentGraph` 调用完整执行，cycle、截图、模型消息、工具分发、权限与证据都归 Agent 图管理。
+`RunExecutor` 只加载不可变 `RunSnapshot`、顺序启动 Task、选择快照中的 act/judge 模型、执行全局 fail-fast，并按固定规则聚合最终结果。每个 Task 由一次 `TaskAgentGraph` 调用完整执行，cycle、截图、模型消息、业务事件与证据都归 Agent 图管理。
 
-每个 cycle 强制执行“取消/cycle 守卫 → 最新完整截图 → 一次模型决策 → 至多一个工具”。工具完成或超时后必须重新截图；模型格式重试不增加 cycle。Act Policy 可获得设备按键、文本输入、WAIT 与启用的外部工具；Judge Policy 只获得 WAIT 和 `changes_device_state=false` 的外部工具。
+每个 cycle 强制执行“取消/cycle 守卫 → 最新完整截图 → 一次模型决策 → 恰好一个工具调用”。`finish_task` 由图截获为终态；其他工具交给 LangGraph `ToolNode`。工具完成或超时后必须重新截图，模型格式重试不增加 cycle。Act 可获得设备按键、文本输入、WAIT 与启用的外部工具；Judge 只获得 WAIT 和 `atv.scopes` 显式包含 `judge` 的外部工具。
+
+`FrameworkToolProvider` 接收标准 LangChain `BaseTool`。外部 `@tool` 通过 metadata 声明 `atv.scopes` 和可选的 `atv.source`/`atv.timeout_seconds`；未声明 scope 时默认仅 Act。Provider 只做能力筛选、超时、瞬态重试和结果标准化，不持有运行事件或取消服务。MCP 尚未接入，但未来适配器产生的 `BaseTool` 可走同一入口。
 
 PASS/FAIL 自动绑定终态决策所在 cycle 的最新截图。checkpoint 只保存消息与 Artifact 引用，不保存截图 bytes/base64。API、SSE、报告和前端消费同一组点分隔的强类型事件。
 

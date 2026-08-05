@@ -31,7 +31,7 @@ export interface PlanRevision {
   source: string;
   parent_revision_id?: string;
   plan: PlanOutput;
-  model_info: Record<string, unknown>;
+  model_info: ModelSnapshot;
   created_at: string;
 }
 
@@ -91,11 +91,24 @@ export interface RunSnapshot {
     health_message: string;
     capabilities?: Record<string, unknown>;
   };
-  model: Record<string, unknown>;
-  enabled_tools: Array<Record<string, unknown>>;
+  models: {
+    planning: ModelSnapshot;
+    act: ModelSnapshot;
+    judge: ModelSnapshot;
+  };
+  enabled_tool_names: string[];
   prompt_versions: Record<string, string>;
   app_version: string;
   execution_protocol_version: string;
+}
+
+export interface ModelSnapshot {
+  profile_id: string;
+  provider: string;
+  model: string;
+  base_url: string | null;
+  temperature: number;
+  timeout_seconds: number;
 }
 
 export interface ToolInvocation {

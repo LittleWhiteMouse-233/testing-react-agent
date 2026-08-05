@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
+from app.config import LLMProfileSettings, Settings
 from app.domain.errors import ReasonCode
-from app.domain.execution import TaskOutcome, TaskStatus, TaskTerminalDecision
+from app.domain.execution import ModelSnapshot, TaskOutcome, TaskStatus
 from app.domain.planning import PlanOutput, Task, TaskType
 from app.graph.task_agent import (
     ACT_POLICY,
+    FinishTaskArgs,
     JUDGE_POLICY,
-    _trim_history_preserving_tool_pairs,
     policy_for,
 )
+from app.llm.contracts import ModelActivity
+from app.llm.registry import ModelRegistry
+from app.llm.test_fake import ScriptedChatModelProvider
 
 
 def test_plan_requires_unique_task_ids_and_observable_criteria() -> None:
@@ -36,7 +39,7 @@ def test_plan_requires_unique_task_ids_and_observable_criteria() -> None:
 
 
 def test_terminal_and_outcome_are_strict_domain_contracts() -> None:
-    terminal = TaskTerminalDecision(
+    terminal = FinishTaskArgs(
         status="passed",
         summary="The latest screenshot meets the criterion",
     )
@@ -49,7 +52,7 @@ def test_terminal_and_outcome_are_strict_domain_contracts() -> None:
     )
     assert outcome.evidence_artifact_ids == ["artifact-1"]
     with pytest.raises(ValidationError):
-        TaskTerminalDecision(status="unknown", summary="invalid")
+        FinishTaskArgs(status="unknown", summary="invalid")
     with pytest.raises(ValidationError):
         TaskOutcome(
             status=TaskStatus.FAILED,
@@ -70,35 +73,41 @@ def test_task_type_selects_policy_without_changing_graph_contract() -> None:
     judge = act.model_copy(update={"task_id": "judge", "type": TaskType.JUDGE})
     assert policy_for(act) is ACT_POLICY
     assert policy_for(judge) is JUDGE_POLICY
-    assert ACT_POLICY.allow_device_keys is True
-    assert JUDGE_POLICY.allow_device_keys is False
-    assert JUDGE_POLICY.allow_mutating_external_tools is False
+    assert ACT_POLICY.policy_id == "act"
+    assert JUDGE_POLICY.policy_id == "judge"
 
 
-def test_history_trimming_never_splits_tool_call_and_tool_message() -> None:
-    call = AIMessage(
-        content="",
-        tool_calls=[
+def test_model_snapshot_has_explicit_audit_fields() -> None:
+    snapshot = ScriptedChatModelProvider(model_id="audited").model_snapshot
+
+    assert snapshot == ModelSnapshot(
+        profile_id="audited",
+        provider="scripted",
+        model="deterministic",
+        base_url=None,
+        temperature=0,
+        timeout_seconds=60,
+    )
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        ModelSnapshot.model_validate(
             {
-                "name": "device_wait",
-                "args": {"duration_ms": 100},
-                "id": "paired-call",
-                "type": "tool_call",
+                **snapshot.model_dump(mode="json"),
+                "info": {"id": "duplicated"},
             }
-        ],
-    )
-    result = ToolMessage(
-        content='{"status":"succeeded"}',
-        tool_call_id="paired-call",
-    )
-    history = [
-        HumanMessage(content="old " * 500),
-        call,
-        result,
-        HumanMessage(content="latest observation"),
-    ]
+        )
 
-    trimmed = _trim_history_preserving_tool_pairs(history, max_tokens=10)
 
-    assert trimmed[-1].content == "latest observation"
-    assert (call in trimmed) is (result in trimmed)
+def test_model_registry_defaults_to_first_profile_and_rejects_unknown_routes() -> None:
+    first = ScriptedChatModelProvider(model_id="first")
+    second = ScriptedChatModelProvider(model_id="second")
+    registry = ModelRegistry({"first": first, "second": second})
+
+    assert registry.model_id_for(ModelActivity.PLANNING) == "first"
+    assert registry.model_id_for(ModelActivity.ACT) == "first"
+    assert registry.model_id_for(ModelActivity.JUDGE) == "first"
+
+    with pytest.raises(ValidationError, match="unknown model"):
+        Settings(
+            llm_profiles=[LLMProfileSettings(id="first")],
+            act_model_id="missing",
+        )

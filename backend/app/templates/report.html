@@ -21,6 +21,7 @@
   <section>
     <h2>运行快照</h2>
     <p>设备：{{ report.run.device_id }} · 计划版本：{{ report.snapshot.plan_revision.revision }}</p>
+    <p>模型：规划 {{ report.snapshot.models.planning.profile_id }}（{{ report.snapshot.models.planning.model }}） · 执行 {{ report.snapshot.models.act.profile_id }}（{{ report.snapshot.models.act.model }}） · 判定 {{ report.snapshot.models.judge.profile_id }}（{{ report.snapshot.models.judge.model }}）</p>
     <p>已确认前置条件：{{ report.snapshot.confirmed_assumptions | join("；") or "无" }}</p>
   </section>
   <section>

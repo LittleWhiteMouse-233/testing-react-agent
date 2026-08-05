@@ -106,7 +106,9 @@ export default function RunPage() {
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }}>
           <Descriptions.Item label="设备">{run.data.device_id}</Descriptions.Item>
           <Descriptions.Item label="计划版本">{run.data.snapshot?.plan_revision?.revision}</Descriptions.Item>
-          <Descriptions.Item label="模型">{String(run.data.snapshot?.model?.model ?? "")}</Descriptions.Item>
+          <Descriptions.Item label="规划模型">{run.data.snapshot.models.planning.profile_id}</Descriptions.Item>
+          <Descriptions.Item label="执行模型">{run.data.snapshot.models.act.profile_id}</Descriptions.Item>
+          <Descriptions.Item label="判定模型">{run.data.snapshot.models.judge.profile_id}</Descriptions.Item>
         </Descriptions>
         {activeTask && <><Typography.Text strong>当前任务：{definition?.title}</Typography.Text><Progress percent={percent} format={() => `${activeTask.cycle_count}/${definition?.max_cycles}`} /></>}
       </Card>

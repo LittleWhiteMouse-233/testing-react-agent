@@ -24,7 +24,11 @@ from app.domain.execution import (
     TaskOutcome,
     TaskStatus,
 )
-from app.execution.ports import ExecutionJournal, ExecutionRepository, TaskAgentFactory
+from app.execution.ports import (
+    CompiledTaskAgentFactory,
+    ExecutionJournal,
+    ExecutionRepository,
+)
 from app.services.registry import RunRegistry
 
 
@@ -34,7 +38,7 @@ class RunExecutor:
         *,
         repository: ExecutionRepository,
         journal: ExecutionJournal,
-        agent_factory: TaskAgentFactory,
+        agent_factory: CompiledTaskAgentFactory,
         registry: RunRegistry,
         checkpoint_path: str,
     ) -> None:
@@ -88,15 +92,18 @@ class RunExecutor:
                         )
                         active_task_run_id = task_execution.id
                         context = await self.repository.recent_context(run_id, 10)
-                        agent = self.agent_factory.build(
+                        model_id = (
+                            snapshot.models.act.profile_id
+                            if task.type.value == "act"
+                            else snapshot.models.judge.profile_id
+                        )
+                        agent = await self.agent_factory.build(
                             run_id=run_id,
                             task_run_id=task_execution.id,
                             device_id=snapshot.device.id,
                             task=task,
                             capabilities=snapshot.device.capabilities,
-                            enabled_tool_names={
-                                item.name for item in snapshot.enabled_tools
-                            },
+                            enabled_tool_names=set(snapshot.enabled_tool_names),
                             cross_task_context=context,
                             checkpointer=checkpointer,
                         )
@@ -111,18 +118,17 @@ class RunExecutor:
                                             )
                                         )
                                     ],
-                                    "task": task.model_dump(mode="json"),
-                                    "policy_id": task.type.value,
+                                    "model_id": model_id,
                                     "cycle_count": 0,
                                     "model_attempt": 0,
                                     "latest_observation": None,
-                                    "latest_tool_result": None,
+                                    "pending_invocation": None,
                                     "terminal_outcome": None,
                                     "route": "observe",
                                 },
                                 config={
                                     "configurable": {
-                                        "thread_id": f"execution-v2:{task_execution.id}"
+                                        "thread_id": f"execution-v1:{task_execution.id}"
                                     }
                                 },
                             )

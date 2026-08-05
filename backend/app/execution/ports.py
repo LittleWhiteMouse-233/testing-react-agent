@@ -98,8 +98,8 @@ class CompiledTaskAgent(Protocol):
     ) -> dict[str, Any]: ...
 
 
-class TaskAgentFactory(Protocol):
-    def build(
+class CompiledTaskAgentFactory(Protocol):
+    async def build(
         self,
         *,
         run_id: str,

@@ -65,27 +65,6 @@ class ActionResult(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
-class ToolDefinition(BaseModel):
-    name: str
-    description: str
-    input_schema: dict[str, Any]
-    changes_device_state: bool = False
-    timeout_seconds: float = 15
-    source: str = "builtin"
-
-
-class ToolContext(BaseModel):
-    run_id: str
-    task_run_id: str | None = None
-    device_id: str
-
-
-class ToolResult(BaseModel):
-    success: bool
-    summary: str
-    data: dict[str, Any] = Field(default_factory=dict)
-
-
 class ToolInvocation(BaseModel):
     call_id: str
     name: str

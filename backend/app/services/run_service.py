@@ -12,19 +12,22 @@ from app.config import Settings
 from app.device.contracts import DeviceController
 from app.domain.execution import (
     DeviceSnapshot,
+    ModelSnapshot,
     PlanRevisionSnapshot,
+    RunModelsSnapshot,
     RunSnapshot,
     RunStatus,
     TestCaseSnapshot,
 )
 from app.domain.planning import PlanOutput
-from app.domain.tools import ToolDefinition
+from app.domain.planning import TaskType
 from app.execution.executor import RunExecutor
 from app.execution.ports import ExecutionRepository
-from app.llm.contracts import ChatModelProvider
+from app.llm.contracts import ModelActivity
+from app.llm.registry import ModelRegistry
 from app.persistence.models import PlanRevisionRow, TestCaseRow, TestRunRow
 from app.services.registry import RunRegistry
-from app.services.tools import ToolProvider
+from app.services.tools import ToolBuildRequest, ToolProvider
 
 
 class RunConflict(RuntimeError):
@@ -49,7 +52,7 @@ class RunService:
         repository: ExecutionRepository,
         executor: RunExecutor,
         registry: RunRegistry,
-        model_provider: ChatModelProvider,
+        model_registry: ModelRegistry,
         settings: Settings,
         devices: dict[str, DeviceController],
         tools: ToolProvider,
@@ -58,7 +61,7 @@ class RunService:
         self.repository = repository
         self.executor = executor
         self.registry = registry
-        self.model_provider = model_provider
+        self.model_registry = model_registry
         self.settings = settings
         self.devices = devices
         self.tools = tools
@@ -109,7 +112,28 @@ class RunService:
                         health_message = "Device does not support screenshots"
             except Exception as exc:
                 health_message = str(exc)
-            definitions = self._enabled_tools()
+            enabled_tool_names: list[str] = []
+            if capabilities is not None:
+                configured = frozenset(self.settings.enabled_tool_names)
+                act_tools = await self.tools.build_tools(
+                    ToolBuildRequest(
+                        activity=TaskType.ACT,
+                        device=device,
+                        capabilities=capabilities,
+                        enabled_external_tool_names=configured,
+                    )
+                )
+                judge_tools = await self.tools.build_tools(
+                    ToolBuildRequest(
+                        activity=TaskType.JUDGE,
+                        device=device,
+                        capabilities=capabilities,
+                        enabled_external_tool_names=configured,
+                    )
+                )
+                enabled_tool_names = sorted(act_tools.names | judge_tools.names)
+            act_provider = self.model_registry.for_activity(ModelActivity.ACT)
+            judge_provider = self.model_registry.for_activity(ModelActivity.JUDGE)
             snapshot = RunSnapshot(
                 test_case=TestCaseSnapshot(
                     id=test_case.id,
@@ -128,8 +152,12 @@ class RunService:
                     health_message=health_message,
                     capabilities=capabilities,
                 ),
-                model=self.model_provider.model_info,
-                enabled_tools=definitions,
+                models=RunModelsSnapshot(
+                    planning=ModelSnapshot.model_validate(revision.model_info_json),
+                    act=act_provider.model_snapshot.model_copy(deep=True),
+                    judge=judge_provider.model_snapshot.model_copy(deep=True),
+                ),
+                enabled_tool_names=enabled_tool_names,
                 prompt_versions=prompt_versions(),
                 app_version=self.settings.app_version,
             )
@@ -151,13 +179,6 @@ class RunService:
             )
             self.registry.register(run.id, task)
             return run
-
-    def _enabled_tools(self) -> list[ToolDefinition]:
-        definitions = self.tools.list_tools()
-        configured = set(self.settings.enabled_tool_names)
-        if not configured:
-            return definitions
-        return [item for item in definitions if item.name in configured]
 
     async def cancel(self, run_id: str) -> bool:
         async with self.sessions() as session:

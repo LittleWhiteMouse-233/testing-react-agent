@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.llm import (
     ChatModelProvider,
+    ModelRegistry,
     RealChatModelProvider,
     ScriptedChatModelProvider,
 )
@@ -18,7 +19,7 @@ from app.services.events import EventWriter
 from app.services.registry import RunRegistry
 from app.services.reporting import ReportService
 from app.services.run_service import RunService
-from app.services.tools import StaticToolProvider
+from app.services.tools import FrameworkToolProvider
 
 
 class Container:
@@ -34,7 +35,9 @@ class Container:
             self.sessions,
             self.events,
         )
-        self.tools = StaticToolProvider()
+        self.tools = FrameworkToolProvider(
+            action_timeout_seconds=settings.action_timeout_seconds
+        )
         self.devices: dict[str, DeviceController] = {"fake-tv": FakeDeviceController()}
         if settings.adb_serial:
             self.devices[settings.adb_serial] = AdbDeviceController(
@@ -42,29 +45,44 @@ class Container:
                 settings.adb_path,
                 settings.action_timeout_seconds,
             )
-        self.model_provider: ChatModelProvider
-        if settings.llm_mode == "real":
-            self.model_provider = RealChatModelProvider(
-                base_url=settings.llm_base_url or "",
-                api_key=settings.llm_api_key or "",
-                model=settings.llm_model,
-                temperature=settings.llm_temperature,
-                timeout_seconds=settings.llm_timeout_seconds,
-                save_raw_response=settings.llm_save_raw_response,
-            )
-        else:
-            self.model_provider = ScriptedChatModelProvider()
-        self.planning_graph = PlanningGraph(self.model_provider)
+        self.models: dict[str, ChatModelProvider] = {}
+        for profile in settings.llm_profiles:
+            if profile.mode == "real":
+                provider: ChatModelProvider = RealChatModelProvider(
+                    model_id=profile.id,
+                    base_url=profile.base_url or "",
+                    api_key=profile.api_key or "",
+                    model=profile.model,
+                    temperature=profile.temperature,
+                    timeout_seconds=profile.timeout_seconds,
+                    save_raw_response=profile.save_raw_response,
+                )
+            elif profile.mode == "scripted":
+                provider = ScriptedChatModelProvider(
+                    model_id=profile.id,
+                    timeout_seconds=profile.timeout_seconds,
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported model profile mode: {profile.mode}"
+                )
+            self.models[profile.id] = provider
+        self.model_registry = ModelRegistry(
+            self.models,
+            planning_model_id=settings.planning_model_id,
+            act_model_id=settings.act_model_id,
+            judge_model_id=settings.judge_model_id,
+        )
+        self.planning_graph = PlanningGraph(self.model_registry)
         self.repository = SqlAlchemyExecutionRepository(self.sessions, self.events)
         self.agent_factory = TaskAgentFactory(
             repository=self.repository,
             journal=self.events,
             artifacts=self.artifacts,
-            model_provider=self.model_provider,
+            model_registry=self.model_registry,
             tool_provider=self.tools,
             registry=self.registry,
             devices=self.devices,
-            action_timeout_seconds=settings.action_timeout_seconds,
             history_max_tokens=settings.agent_history_max_tokens,
         )
         self.executor = RunExecutor(
@@ -79,7 +97,7 @@ class Container:
             repository=self.repository,
             executor=self.executor,
             registry=self.registry,
-            model_provider=self.model_provider,
+            model_registry=self.model_registry,
             settings=settings,
             devices=self.devices,
             tools=self.tools,

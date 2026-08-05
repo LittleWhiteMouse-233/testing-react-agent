@@ -5,6 +5,7 @@ from typing import Annotated, Any, Generic, Literal, TypeVar
 from pydantic import BaseModel, Field
 
 from app.domain.execution import (
+    ModelSnapshot,
     ObservationRef,
     OverallResult,
     RunSnapshot,
@@ -62,7 +63,7 @@ class PlanRevisionResponse(BaseModel):
     source: str
     parent_revision_id: str | None = None
     plan: PlanOutput
-    model_info: dict[str, Any]
+    model_info: ModelSnapshot
     created_at: str
 
 

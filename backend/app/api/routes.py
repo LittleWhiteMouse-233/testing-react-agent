@@ -38,6 +38,7 @@ from app.persistence.models import (
     TestCaseRow,
     TestRunRow,
 )
+from app.llm.contracts import ModelActivity
 from app.services.events import serialize_event
 from app.services.reporting import artifact_dict
 from app.services.run_service import RunConflict
@@ -168,7 +169,9 @@ async def create_plan(
         revision=revision,
         source="llm",
         plan_json=plan.model_dump(mode="json"),
-        model_info_json=app.model_provider.model_info,
+        model_info_json=app.model_registry.for_activity(
+            ModelActivity.PLANNING
+        ).model_snapshot.model_dump(mode="json"),
     )
     async with app.sessions() as session:
         session.add(row)

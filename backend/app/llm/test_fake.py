@@ -11,7 +11,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
 from pydantic import PrivateAttr
 
-from app.domain.execution import TaskTerminalDecision
+from app.domain.execution import ModelSnapshot
 from app.domain.planning import PlanOutput, PlanRequest, Task, TaskType
 
 
@@ -49,8 +49,7 @@ class ScriptedChatModel(BaseChatModel):
         self,
         *,
         plans: list[PlanOutput | dict[str, Any] | Exception] | None = None,
-        turns: list[AIMessage | TaskTerminalDecision | dict[str, Any] | Exception]
-        | None = None,
+        turns: list[AIMessage | dict[str, Any] | Exception] | None = None,
     ) -> None:
         super().__init__()
         self._plans = deque(plans or [])
@@ -73,25 +72,37 @@ class ScriptedChatModel(BaseChatModel):
         value: Any = (
             self._turns.popleft()
             if self._turns
-            else TaskTerminalDecision(
-                status="passed",
-                summary="脚本模型确认当前截图满足任务成功标准",
-            )
+            else {
+                "status": "passed",
+                "summary": "脚本模型确认当前截图满足任务成功标准",
+            }
         )
         if isinstance(value, Exception):
             raise value
         if isinstance(value, AIMessage):
             return value
-        if isinstance(value, TaskTerminalDecision):
-            terminal = value
-        elif isinstance(value, dict) and "tool_calls" in value:
+        if isinstance(value, dict) and "tool_calls" in value:
             return AIMessage(
                 content=value.get("content", ""),
                 tool_calls=value["tool_calls"],
             )
-        else:
-            terminal = TaskTerminalDecision.model_validate(value)
-        return AIMessage(content="", additional_kwargs={"parsed": terminal})
+        if not isinstance(value, dict):
+            raise TypeError(f"Unsupported scripted turn: {type(value).__name__}")
+        status = str(value.get("status", ""))
+        summary = str(value.get("summary", ""))
+        if status not in {"passed", "failed", "blocked"} or not summary:
+            raise ValueError("Scripted terminal turn is invalid")
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "finish_task",
+                    "args": {"status": status, "summary": summary},
+                    "id": f"finish-{status}",
+                    "type": "tool_call",
+                }
+            ],
+        )
 
     def bind_tools(
         self,
@@ -141,15 +152,22 @@ def _request_from_messages(messages: Any) -> PlanRequest:
 class ScriptedChatModelProvider:
     def __init__(
         self,
+        model_id: str = "default",
+        timeout_seconds: float = 60,
         plans: list[PlanOutput | dict[str, Any] | Exception] | None = None,
-        turns: list[AIMessage | TaskTerminalDecision | dict[str, Any] | Exception]
-        | None = None,
+        turns: list[AIMessage | dict[str, Any] | Exception] | None = None,
     ) -> None:
+        self.model_id = model_id
+        self.timeout_seconds = timeout_seconds
         self._model = ScriptedChatModel(plans=plans, turns=turns)
-        self.model_info: dict[str, object] = {
-            "provider": "scripted",
-            "model": "deterministic",
-        }
+        self.model_snapshot = ModelSnapshot(
+            profile_id=model_id,
+            provider="scripted",
+            model="deterministic",
+            base_url=None,
+            temperature=0,
+            timeout_seconds=timeout_seconds,
+        )
 
     def create_model(self) -> BaseChatModel:
         return self._model

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.errors import ReasonCode
 from app.domain.planning import PlanOutput, Task
-from app.domain.tools import DeviceCapabilities, ToolDefinition, ToolExecutionResult, ToolInvocation
+from app.domain.tools import DeviceCapabilities
 
 
 class RunStatus(StrEnum):
@@ -51,6 +50,23 @@ class DeviceSnapshot(BaseModel):
     capabilities: DeviceCapabilities | None = None
 
 
+class ModelSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    base_url: str | None = None
+    temperature: float
+    timeout_seconds: float = Field(gt=0)
+
+
+class RunModelsSnapshot(BaseModel):
+    planning: ModelSnapshot
+    act: ModelSnapshot
+    judge: ModelSnapshot
+
+
 class RunSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -59,11 +75,11 @@ class RunSnapshot(BaseModel):
     plan: PlanOutput
     confirmed_assumptions: list[str]
     device: DeviceSnapshot
-    model: dict[str, Any]
-    enabled_tools: list[ToolDefinition]
+    models: RunModelsSnapshot
+    enabled_tool_names: list[str]
     prompt_versions: dict[str, str]
     app_version: str
-    execution_protocol_version: str = "2"
+    execution_protocol_version: str = "1"
 
 
 class ObservationRef(BaseModel):
@@ -71,31 +87,6 @@ class ObservationRef(BaseModel):
     mime_type: str
     activity: str | None = None
     cycle_count: int = Field(ge=1)
-
-
-class TaskTerminalDecision(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    status: Literal["passed", "failed", "blocked"]
-    summary: str = Field(min_length=1)
-
-
-class ActionSelected(BaseModel):
-    type: Literal["action_selected"] = "action_selected"
-    invocation: ToolInvocation
-    result: ToolExecutionResult | None = None
-
-
-class TerminalSelected(BaseModel):
-    type: Literal["terminal_selected"] = "terminal_selected"
-    decision: TaskTerminalDecision
-    evidence_artifact_ids: list[str] = Field(default_factory=list)
-
-
-AgentTurn = Annotated[
-    ActionSelected | TerminalSelected,
-    Field(discriminator="type"),
-]
 
 
 class TaskOutcome(BaseModel):

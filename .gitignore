@@ -22,8 +22,10 @@ backend/.env
 
 # dev
 .agents/
-.dev/
-.workbuddy/
 AGENTS.md
+CLAUDE.md
+.workbuddy/
+.dev/
+.VSCodeCounter/
 spec*
 review*
