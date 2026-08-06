@@ -1,161 +1,188 @@
 from __future__ import annotations
 
-import asyncio
+from dataclasses import dataclass
 
 import pytest
-from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
-from langgraph.prebuilt import ToolNode
-from langgraph.graph import END, START, MessagesState, StateGraph
-from langsmith import tracing_context
 
-from app.device.test_fake import FakeDeviceController
-from app.domain.errors import TransientToolError
-from app.domain.planning import TaskType
-from app.domain.tools import ToolExecutionResult, ToolExecutionStatus
-from app.services.tools import FrameworkToolProvider, ToolBuildRequest
+from app.domain.activity import Activity
+from app.domain.tools import DeviceCapabilities, ToolEntry
+from app.tools import CatalogToolProvider
 
 
-async def _build(
-    provider: FrameworkToolProvider,
-    activity: TaskType,
-):
-    device = FakeDeviceController()
-    return await provider.build_tools(
-        ToolBuildRequest(
-            activity=activity,
-            device=device,
-            capabilities=await device.capabilities(),
+@dataclass
+class CapabilitySource:
+    device_id: str
+    entries: tuple[ToolEntry, ...]
+    calls: int = 0
+
+    def capabilities(self) -> DeviceCapabilities:
+        self.calls += 1
+        return DeviceCapabilities(
+            device_id=self.device_id,
+            provider="test",
+            metadata={"fixture": True},
+            tools=self.entries,
         )
-    )
 
 
-async def _invoke(tool_set, name: str, args: dict[str, object]) -> ToolExecutionResult:
-    node = ToolNode(
-        tool_set.tools,
-        handle_tool_errors=False,
-        awrap_tool_call=tool_set.awrap_tool_call,
-    )
-    graph = StateGraph(MessagesState)
-    graph.add_node("tools", node)
-    graph.add_edge(START, "tools")
-    graph.add_edge("tools", END)
-    with tracing_context(enabled=False):
-        output = await graph.compile().ainvoke(
-            {
-                "messages": [
-                    AIMessage(
-                        content="invoke",
-                        tool_calls=[
-                            {
-                                "name": name,
-                                "args": args,
-                                "id": "test-call",
-                                "type": "tool_call",
-                            }
-                        ],
-                    )
-                ]
-            }
-        )
-    message = output["messages"][-1]
-    assert isinstance(message, ToolMessage)
-    return ToolExecutionResult.model_validate(message.artifact)
-
-
-@pytest.mark.asyncio
-async def test_provider_preserves_schema_and_filters_explicit_scopes() -> None:
-    provider = FrameworkToolProvider()
-
+def test_catalog_preserves_tools_and_matches_activity_values() -> None:
     @tool
     async def act_only(value: str) -> str:
-        """Mutate a setting."""
+        """Mutate a setting with the supplied value."""
         return value
 
     @tool
     async def read_only(value: str) -> str:
-        """Read a setting."""
+        """Read a setting with the supplied value."""
         return value
 
-    read_only.metadata = {"atv.scopes": ["act", "judge"]}
-    provider.register(act_only)
-    provider.register(read_only)
+    @tool
+    async def future_tool() -> str:
+        """Serve a future workflow."""
+        return "future"
 
-    act = await _build(provider, TaskType.ACT)
-    judge = await _build(provider, TaskType.JUDGE)
+    source = CapabilitySource(
+        "device-a",
+        (
+            ToolEntry(act_only, frozenset({"act"})),
+            ToolEntry(read_only, frozenset({"act", "judge"})),
+            ToolEntry(future_tool, frozenset({"future"})),
+        ),
+    )
+    catalog = CatalogToolProvider([source])
 
-    assert {"device_press_key", "device_input_text", "device_wait"} <= act.names
-    assert {"act_only", "read_only"} <= act.names
-    assert judge.names == {"device_wait", "read_only"}
-    schema = next(tool for tool in act.tools if tool.name == "act_only").args_schema
-    assert schema is not None
-    assert "value" in schema.model_json_schema()["required"]
+    assert source.calls == 1
+    assert catalog.tools_for("device-a", Activity.ACT).tools[0] is act_only
+    assert catalog.tools_for("device-a", Activity.ACT).names == {
+        "act_only",
+        "read_only",
+    }
+    assert catalog.tools_for("device-a", Activity.JUDGE).names == {"read_only"}
+    assert catalog.tools_for("device-a", Activity.PLANNING).names == set()
+    assert act_only.description == "Mutate a setting with the supplied value."
+    assert "value" in act_only.get_input_jsonschema()["required"]
+
+    snapshot = catalog.capabilities_for("device-a")
+    assert snapshot.device_id == "device-a"
+    assert {item.name for item in snapshot.tools} == {
+        "act_only",
+        "read_only",
+        "future_tool",
+    }
+    assert next(item for item in snapshot.tools if item.name == "act_only").description == (
+        act_only.description
+    )
 
 
-@pytest.mark.asyncio
-async def test_provider_times_out_without_replaying_unknown_result() -> None:
-    provider = FrameworkToolProvider(action_timeout_seconds=0.01)
-    attempts = 0
+def test_catalog_isolates_device_owners_and_merges_shared_tools() -> None:
+    @tool("same_name")
+    async def first_device_tool() -> str:
+        """Run on the first device."""
+        return "first"
+
+    @tool("same_name")
+    async def second_device_tool() -> str:
+        """Run on the second device."""
+        return "second"
 
     @tool
-    async def slow_tool() -> str:
-        """Run a slow operation."""
-        nonlocal attempts
-        attempts += 1
-        await asyncio.sleep(0.1)
-        return "done"
+    async def shared_read() -> str:
+        """Read shared state."""
+        return "shared"
 
-    provider.register(slow_tool)
-    tool_set = await _build(provider, TaskType.ACT)
-    result = await _invoke(tool_set, "slow_tool", {})
+    catalog = CatalogToolProvider(
+        [
+            CapabilitySource(
+                "first",
+                (ToolEntry(first_device_tool, frozenset({"act"})),),
+            ),
+            CapabilitySource(
+                "second",
+                (ToolEntry(second_device_tool, frozenset({"act"})),),
+            ),
+        ],
+        shared_capability_sources=(
+            CapabilitySource(
+                "shared",
+                (ToolEntry(shared_read, frozenset({"act", "judge"})),),
+            ),
+        ),
+    )
 
-    assert result.status == ToolExecutionStatus.TIMED_OUT
-    assert attempts == 1
+    first = catalog.tools_for("first", Activity.ACT)
+    second = catalog.tools_for("second", Activity.ACT)
+    assert first.names == second.names == {"same_name", "shared_read"}
+    assert first.tools[0] is first_device_tool
+    assert second.tools[0] is second_device_tool
+    assert catalog.tools_for("first", Activity.JUDGE).names == {
+        "shared_read"
+    }
+    assert {tool.name for tool in catalog.capabilities_for("first").tools} == {
+        "same_name",
+        "shared_read",
+    }
 
 
-@pytest.mark.asyncio
-async def test_provider_retries_only_transient_tool_errors() -> None:
-    provider = FrameworkToolProvider()
-    attempts = 0
-
-    @tool
-    async def flaky_tool() -> str:
-        """Run an operation with transient failures."""
-        nonlocal attempts
-        attempts += 1
-        if attempts < 3:
-            raise TransientToolError("retry")
-        return "recovered"
-
-    provider.register(flaky_tool)
-    tool_set = await _build(provider, TaskType.ACT)
-    result = await _invoke(tool_set, "flaky_tool", {})
-
-    assert result.status == ToolExecutionStatus.SUCCEEDED
-    assert result.summary == "recovered"
-    assert attempts == 3
-
-
-def test_provider_rejects_duplicate_and_reserved_tool_names() -> None:
-    provider = FrameworkToolProvider()
-
-    @tool("external")
+def test_catalog_rejects_invalid_scopes_duplicates_and_reserved_names() -> None:
+    @tool("duplicate")
     def first() -> str:
         """First tool."""
         return "first"
 
-    @tool("external")
+    @tool("duplicate")
     def duplicate() -> str:
         """Duplicate tool."""
         return "duplicate"
+
+    with pytest.raises(ValueError, match="at least one scope"):
+        CatalogToolProvider(
+            [CapabilitySource("empty", (ToolEntry(first, frozenset()),))]
+        )
+    with pytest.raises(ValueError, match="invalid scope"):
+        CatalogToolProvider(
+            [CapabilitySource("blank", (ToolEntry(first, frozenset({" "})),))]
+        )
+    with pytest.raises(ValueError, match="Duplicate"):
+        CatalogToolProvider(
+            [
+                CapabilitySource(
+                    "duplicate",
+                    (
+                        ToolEntry(first, frozenset({"act"})),
+                        ToolEntry(duplicate, frozenset({"act"})),
+                    ),
+                )
+            ]
+        )
 
     @tool("finish_task")
     def reserved() -> str:
         """Reserved tool."""
         return "reserved"
 
-    provider.register(first)
-    with pytest.raises(ValueError, match="Duplicate"):
-        provider.register(duplicate)
     with pytest.raises(ValueError, match="reserved"):
-        provider.register(reserved)
+        CatalogToolProvider(
+            [CapabilitySource("reserved", (ToolEntry(reserved, frozenset({"act"})),))]
+        )
+
+    with pytest.raises(TypeError, match="frozenset"):
+        CatalogToolProvider(
+            [CapabilitySource("mutable", (ToolEntry(first, {"act"}),))]  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError, match="device collision view"):
+        CatalogToolProvider(
+            [
+                CapabilitySource(
+                    "collision",
+                    (ToolEntry(first, frozenset({"act"})),),
+                )
+            ],
+            shared_capability_sources=(
+                CapabilitySource(
+                    "shared",
+                    (ToolEntry(duplicate, frozenset({"judge"})),),
+                ),
+            ),
+        )

@@ -12,7 +12,7 @@ from app.domain.execution import (
     TaskOutcome,
 )
 from app.domain.planning import Task
-from app.domain.tools import DeviceHealth, DeviceCapabilities
+from app.domain.tools import DeviceHealth
 
 
 class ExecutionRepository(Protocol):
@@ -83,9 +83,8 @@ class ArtifactRepository(Protocol):
     async def load_content(self, artifact_id: str) -> tuple[bytes, str]: ...
 
 
-class DeviceControllerPort(Protocol):
+class DeviceProviderPort(Protocol):
     async def health(self) -> DeviceHealth: ...
-    async def capabilities(self) -> DeviceCapabilities: ...
 
 
 class CancellationRegistry(Protocol):
@@ -106,8 +105,6 @@ class CompiledTaskAgentFactory(Protocol):
         task_run_id: str,
         device_id: str,
         task: Task,
-        capabilities: DeviceCapabilities,
-        enabled_tool_names: set[str],
         cross_task_context: list[dict[str, Any]],
         checkpointer: BaseCheckpointSaver[str] | None,
     ) -> CompiledTaskAgent: ...

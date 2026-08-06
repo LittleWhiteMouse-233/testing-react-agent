@@ -88,8 +88,16 @@ export interface RunSnapshot {
   confirmed_assumptions: string[];
   device: {
     id: string;
-    health_message: string;
-    capabilities?: Record<string, unknown>;
+    health: {
+      available: boolean;
+      message: string;
+    };
+    description: {
+      model: string | null;
+      resolution: string | null;
+      locale: string | null;
+    } | null;
+    capabilities: Record<string, unknown> | null;
   };
   models: {
     planning: ModelSnapshot;

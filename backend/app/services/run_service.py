@@ -9,7 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
-from app.device.contracts import DeviceController
+from app.device.contracts import DeviceProvider
+from app.domain.activity import Activity
 from app.domain.execution import (
     DeviceSnapshot,
     ModelSnapshot,
@@ -20,14 +21,13 @@ from app.domain.execution import (
     TestCaseSnapshot,
 )
 from app.domain.planning import PlanOutput
-from app.domain.planning import TaskType
+from app.domain.tools import DeviceHealth
 from app.execution.executor import RunExecutor
 from app.execution.ports import ExecutionRepository
-from app.llm.contracts import ModelActivity
 from app.llm.registry import ModelRegistry
 from app.persistence.models import PlanRevisionRow, TestCaseRow, TestRunRow
 from app.services.registry import RunRegistry
-from app.services.tools import ToolBuildRequest, ToolProvider
+from app.tools import ToolProvider
 
 
 class RunConflict(RuntimeError):
@@ -54,7 +54,7 @@ class RunService:
         registry: RunRegistry,
         model_registry: ModelRegistry,
         settings: Settings,
-        devices: dict[str, DeviceController],
+        devices: dict[str, DeviceProvider],
         tools: ToolProvider,
     ) -> None:
         self.sessions = sessions
@@ -99,41 +99,31 @@ class RunService:
             device = self.devices.get(device_id)
             if device is None:
                 raise LookupError("Device not found")
-            health_message = ""
+            health = DeviceHealth(available=False)
+            description = None
             capabilities = None
             try:
                 health = await device.health()
-                health_message = health.message
                 if health.available:
-                    candidate = await device.capabilities()
-                    if candidate.screenshot:
-                        capabilities = candidate
-                    else:
-                        health_message = "Device does not support screenshots"
+                    capabilities = self.tools.capabilities_for(device_id)
+                    description = await device.describe()
             except Exception as exc:
-                health_message = str(exc)
+                health = DeviceHealth(available=False, message=str(exc))
             enabled_tool_names: list[str] = []
             if capabilities is not None:
-                configured = frozenset(self.settings.enabled_tool_names)
-                act_tools = await self.tools.build_tools(
-                    ToolBuildRequest(
-                        activity=TaskType.ACT,
-                        device=device,
-                        capabilities=capabilities,
-                        enabled_external_tool_names=configured,
+                enabled_tool_names = sorted(
+                    self.tools.names_for(
+                        device_id,
+                        Activity.ACT,
+                        Activity.JUDGE,
                     )
                 )
-                judge_tools = await self.tools.build_tools(
-                    ToolBuildRequest(
-                        activity=TaskType.JUDGE,
-                        device=device,
-                        capabilities=capabilities,
-                        enabled_external_tool_names=configured,
-                    )
-                )
-                enabled_tool_names = sorted(act_tools.names | judge_tools.names)
-            act_provider = self.model_registry.for_activity(ModelActivity.ACT)
-            judge_provider = self.model_registry.for_activity(ModelActivity.JUDGE)
+            act_model_snapshot = self.model_registry.for_activity(
+                Activity.ACT
+            ).model_snapshot.model_copy(deep=True)
+            judge_model_snapshot = self.model_registry.for_activity(
+                Activity.JUDGE
+            ).model_snapshot.model_copy(deep=True)
             snapshot = RunSnapshot(
                 test_case=TestCaseSnapshot(
                     id=test_case.id,
@@ -149,13 +139,14 @@ class RunService:
                 confirmed_assumptions=confirmed_assumptions,
                 device=DeviceSnapshot(
                     id=device_id,
-                    health_message=health_message,
+                    health=health,
+                    description=description,
                     capabilities=capabilities,
                 ),
                 models=RunModelsSnapshot(
                     planning=ModelSnapshot.model_validate(revision.model_info_json),
-                    act=act_provider.model_snapshot.model_copy(deep=True),
-                    judge=judge_provider.model_snapshot.model_copy(deep=True),
+                    act=act_model_snapshot,
+                    judge=judge_model_snapshot,
                 ),
                 enabled_tool_names=enabled_tool_names,
                 prompt_versions=prompt_versions(),

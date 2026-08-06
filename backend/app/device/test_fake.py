@@ -4,13 +4,17 @@ from collections.abc import Iterable
 from pathlib import Path
 import base64
 
+from langchain_core.tools import tool
+from pydantic import Field, create_model
+
+from app.device.base_atv import RemoteKey
 from app.domain.errors import CaptureFailed, UnsupportedAction
 from app.domain.tools import (
-    ActionResult,
     DeviceCapabilities,
+    DeviceDescription,
     DeviceHealth,
-    RemoteKey,
     ScreenshotData,
+    ToolEntry,
 )
 
 _PNG_1X1 = base64.b64decode(
@@ -32,13 +36,58 @@ class FakeDeviceController:
         self.capture_failures = capture_failures
         self.frame_index = 0
         self.actions: list[dict[str, object]] = []
+        self._capabilities = self._build_capabilities()
+
+    def _build_capabilities(self) -> DeviceCapabilities:
+        press_args = create_model("FakePressKeyArgs", key=(RemoteKey, ...))
+
+        @tool(args_schema=press_args)
+        async def device_press_key(key: RemoteKey) -> str:
+            """Press one supported fake Android TV remote key."""
+            return await self.press(key)
+
+        input_args = create_model(
+            "FakeInputTextArgs",
+            text=(str, Field(min_length=1, max_length=1000)),
+        )
+
+        @tool(args_schema=input_args)
+        async def device_input_text(text: str) -> str:
+            """Enter text into the currently focused fake TV input."""
+            return await self.input_text(text)
+
+        wait_args = create_model(
+            "FakeWaitArgs",
+            duration_ms=(int, Field(ge=100, le=10_000)),
+        )
+
+        @tool(args_schema=wait_args)
+        async def device_wait(duration_ms: int) -> str:
+            """Wait briefly without changing the tested business state."""
+            return await self.wait(duration_ms)
+
+        return DeviceCapabilities(
+            device_id=self.device_id,
+            provider=type(self).__name__,
+            metadata={"transport": "fake"},
+            tools=(
+                ToolEntry(device_press_key, frozenset({"act"})),
+                ToolEntry(device_input_text, frozenset({"act"})),
+                ToolEntry(device_wait, frozenset({"act", "judge"})),
+            ),
+        )
 
     async def health(self) -> DeviceHealth:
         return DeviceHealth(available=self.available, message="fake device")
 
-    async def capabilities(self) -> DeviceCapabilities:
-        return DeviceCapabilities(
-            model="Fake Android TV", resolution="1920x1080", locale="zh-CN"
+    def capabilities(self) -> DeviceCapabilities:
+        return self._capabilities
+
+    async def describe(self) -> DeviceDescription:
+        return DeviceDescription(
+            model="Fake Android TV",
+            resolution="1920x1080",
+            locale="zh-CN",
         )
 
     async def screenshot(self) -> ScreenshotData:
@@ -50,19 +99,19 @@ class FakeDeviceController:
         frame = self.frames[min(self.frame_index, len(self.frames) - 1)]
         return ScreenshotData(content=frame, activity=f"fake/frame/{self.frame_index}")
 
-    async def press(self, key: RemoteKey) -> ActionResult:
+    async def press(self, key: RemoteKey) -> str:
         self.actions.append({"type": "PRESS_KEY", "key": key.value})
         self.frame_index = min(self.frame_index + 1, len(self.frames) - 1)
-        return ActionResult(summary=f"Pressed {key.value}")
+        return f"Pressed {key.value}"
 
-    async def input_text(self, text: str) -> ActionResult:
+    async def input_text(self, text: str) -> str:
         self.actions.append({"type": "INPUT_TEXT", "text": text})
         self.frame_index = min(self.frame_index + 1, len(self.frames) - 1)
-        return ActionResult(summary="Entered text")
+        return "Entered text"
 
-    async def wait(self, duration_ms: int) -> ActionResult:
+    async def wait(self, duration_ms: int) -> str:
         self.actions.append({"type": "WAIT", "duration_ms": duration_ms})
-        return ActionResult(summary=f"Waited {duration_ms} ms")
+        return f"Waited {duration_ms} ms"
 
 
 class ReplayDeviceController(FakeDeviceController):
@@ -88,14 +137,14 @@ class ReplayDeviceController(FakeDeviceController):
                 f"Replay action mismatch at index {index}: {action}"
             )
 
-    async def press(self, key: RemoteKey) -> ActionResult:
+    async def press(self, key: RemoteKey) -> str:
         self._verify({"type": "PRESS_KEY", "key": key.value})
         return await super().press(key)
 
-    async def input_text(self, text: str) -> ActionResult:
+    async def input_text(self, text: str) -> str:
         self._verify({"type": "INPUT_TEXT", "text": text})
         return await super().input_text(text)
 
-    async def wait(self, duration_ms: int) -> ActionResult:
+    async def wait(self, duration_ms: int) -> str:
         self._verify({"type": "WAIT", "duration_ms": duration_ms})
         return await super().wait(duration_ms)

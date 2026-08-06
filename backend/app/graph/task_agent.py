@@ -5,11 +5,10 @@ import base64
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Any, Literal, cast
 
 from langchain_core.messages import (
     AIMessage,
-    AnyMessage,
     HumanMessage,
     SystemMessage,
     ToolMessage,
@@ -17,12 +16,15 @@ from langchain_core.messages import (
 )
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
+from langgraph.errors import NodeError, NodeTimeoutError
+from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt.tool_node import ToolInvocationError
+from langgraph.types import Command, RetryPolicy, TimeoutPolicy
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.device.contracts import DeviceController
+from app.device.contracts import DeviceProvider
+from app.domain.activity import Activity
 from app.domain.errors import ReasonCode
 from app.domain.events import (
     AgentActionSelectedEvent,
@@ -36,7 +38,6 @@ from app.domain.events import (
 from app.domain.execution import ObservationRef, TaskOutcome, TaskStatus
 from app.domain.planning import Task, TaskType
 from app.domain.tools import (
-    DeviceCapabilities,
     ToolExecutionResult,
     ToolExecutionStatus,
     ToolInvocation,
@@ -44,11 +45,10 @@ from app.domain.tools import (
 from app.execution.ports import ArtifactRepository, ExecutionJournal, ExecutionRepository
 from app.llm.registry import ModelRegistry
 from app.services.registry import RunRegistry
-from app.services.tools import ToolBuildRequest, ToolProvider
+from app.tools import ToolProvider
 
 
-class TaskAgentState(TypedDict, total=False):
-    messages: Annotated[list[AnyMessage], add_messages]
+class TaskAgentState(MessagesState):
     model_id: str
     cycle_count: int
     model_attempt: int
@@ -101,8 +101,11 @@ class TaskAgentFactory:
         model_registry: ModelRegistry,
         tool_provider: ToolProvider,
         registry: RunRegistry,
-        devices: dict[str, DeviceController],
+        devices: dict[str, DeviceProvider],
         history_max_tokens: int = 8_000,
+        action_timeout_seconds: float = 15,
+        tool_timeout_max_attempts: int = 3,
+        tool_call_max_attempts: int = 3,
     ) -> None:
         self.repository = repository
         self.journal = journal
@@ -112,6 +115,9 @@ class TaskAgentFactory:
         self.registry = registry
         self.devices = devices
         self.history_max_tokens = history_max_tokens
+        self.action_timeout_seconds = action_timeout_seconds
+        self.tool_timeout_max_attempts = tool_timeout_max_attempts
+        self.tool_call_max_attempts = tool_call_max_attempts
 
     async def build(
         self,
@@ -120,8 +126,6 @@ class TaskAgentFactory:
         task_run_id: str,
         device_id: str,
         task: Task,
-        capabilities: DeviceCapabilities,
-        enabled_tool_names: set[str],
         cross_task_context: list[dict[str, Any]],
         checkpointer: BaseCheckpointSaver | None,
     ) -> Any:
@@ -129,13 +133,9 @@ class TaskAgentFactory:
         if device is None:
             raise LookupError(f"Device is not registered: {device_id}")
         policy = policy_for(task)
-        tool_set = await self.tool_provider.build_tools(
-            ToolBuildRequest(
-                activity=task.type,
-                device=device,
-                capabilities=capabilities,
-                enabled_external_tool_names=frozenset(enabled_tool_names),
-            )
+        tool_set = self.tool_provider.tools_for(
+            device_id,
+            Activity(task.type.value),
         )
         runtime = _TaskRuntime(
             repository=self.repository,
@@ -147,25 +147,40 @@ class TaskAgentFactory:
             task_run_id=task_run_id,
             task=task,
             policy=policy,
-            capabilities=capabilities,
             cross_task_context=cross_task_context,
             device=device,
             tools=tool_set.tools,
             tool_names=tool_set.names,
             prompt_text=_prompt(policy.prompt_name),
             history_max_tokens=self.history_max_tokens,
+            tool_call_max_attempts=self.tool_call_max_attempts,
         )
         tool_node = ToolNode(
             tool_set.tools,
             handle_tool_errors=False,
-            awrap_tool_call=tool_set.awrap_tool_call,
         )
 
         graph = StateGraph(TaskAgentState)
         graph.add_node("guard_and_observe", runtime.guard_and_observe)
         graph.add_node("call_model", runtime.call_model)
+        graph.add_node("repair_tool_call", runtime.repair_tool_call)
         graph.add_node("before_tools", runtime.before_tools)
-        graph.add_node("tools", tool_node)
+        graph.add_node(
+            "tools",
+            tool_node,
+            timeout=TimeoutPolicy(run_timeout=self.action_timeout_seconds),
+            retry_policy=RetryPolicy(
+                initial_interval=0,
+                backoff_factor=1,
+                max_interval=0,
+                max_attempts=self.tool_timeout_max_attempts,
+                jitter=False,
+                retry_on=NodeTimeoutError,
+            ),
+            # LangGraph injects NodeError into handlers at runtime, but its
+            # StateNode static type does not yet describe that extra parameter.
+            error_handler=cast(Any, runtime.handle_tool_error),
+        )
         graph.add_node("after_tools", runtime.after_tools)
         graph.add_edge(START, "guard_and_observe")
         graph.add_conditional_edges(
@@ -176,7 +191,12 @@ class TaskAgentFactory:
         graph.add_conditional_edges(
             "call_model",
             lambda state: state["route"],
-            {"tools": "before_tools", "retry": "call_model", "end": END},
+            {"tools": "before_tools", "repair": "repair_tool_call", "end": END},
+        )
+        graph.add_conditional_edges(
+            "repair_tool_call",
+            lambda state: state["route"],
+            {"tools": "before_tools", "repair": "repair_tool_call", "end": END},
         )
         graph.add_conditional_edges(
             "before_tools",
@@ -187,7 +207,7 @@ class TaskAgentFactory:
         graph.add_conditional_edges(
             "after_tools",
             lambda state: state["route"],
-            {"observe": "guard_and_observe", "retry": "call_model", "end": END},
+            {"observe": "guard_and_observe", "repair": "repair_tool_call", "end": END},
         )
         return graph.compile(checkpointer=checkpointer)
 
@@ -203,13 +223,13 @@ class _TaskRuntime:
     task_run_id: str
     task: Task
     policy: TaskAgentPolicy
-    capabilities: DeviceCapabilities
     cross_task_context: list[dict[str, Any]]
-    device: DeviceController
-    tools: list[BaseTool]
+    device: DeviceProvider
+    tools: tuple[BaseTool, ...]
     tool_names: frozenset[str]
     prompt_text: str
     history_max_tokens: int
+    tool_call_max_attempts: int
     bound_models: dict[str, Any] = field(default_factory=dict)
 
     async def guard_and_observe(self, state: TaskAgentState) -> dict[str, Any]:
@@ -302,10 +322,19 @@ class _TaskRuntime:
         }
 
     async def call_model(self, state: TaskAgentState) -> dict[str, Any]:
+        return await self._call_model(state, include_observation=True)
+
+    async def repair_tool_call(self, state: TaskAgentState) -> dict[str, Any]:
+        return await self._call_model(state, include_observation=False)
+
+    async def _call_model(
+        self,
+        state: TaskAgentState,
+        *,
+        include_observation: bool,
+    ) -> dict[str, Any]:
         attempt = state.get("model_attempt", 0) + 1
         observation = ObservationRef.model_validate(state["latest_observation"])
-        raw, mime_type = await self.artifacts.load_content(observation.artifact_id)
-        encoded = base64.b64encode(raw).decode("ascii")
         history = trim_messages(
             state.get("messages", []),
             max_tokens=self.history_max_tokens,
@@ -319,7 +348,6 @@ class _TaskRuntime:
             "policy": self.policy.policy_id,
             "cycle_count": state["cycle_count"],
             "max_cycles": self.task.max_cycles,
-            "device_capabilities": self.capabilities.model_dump(mode="json"),
             "recent_cross_task_context": self.cross_task_context,
             "latest_artifact_id": observation.artifact_id,
         }
@@ -327,22 +355,29 @@ class _TaskRuntime:
             SystemMessage(content=self.prompt_text),
             HumanMessage(content=json.dumps(context, ensure_ascii=False)),
             *history,
-            HumanMessage(
-                content=[
-                    {
-                        "type": "text",
-                        "text": (
-                            "Use this latest screenshot for the current decision. "
-                            f"artifact_id={observation.artifact_id}"
-                        ),
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
-                    },
-                ]
-            ),
         ]
+        if include_observation:
+            raw, mime_type = await self.artifacts.load_content(observation.artifact_id)
+            encoded = base64.b64encode(raw).decode("ascii")
+            messages.append(
+                HumanMessage(
+                    content=[
+                        {
+                            "type": "text",
+                            "text": (
+                                "Use this latest screenshot for the current decision. "
+                                f"artifact_id={observation.artifact_id}"
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{encoded}"
+                            },
+                        },
+                    ]
+                )
+            )
         model_id = state["model_id"]
         provider = self.model_registry.get(model_id)
         bound_model = self.bound_models.get(model_id)
@@ -368,6 +403,18 @@ class _TaskRuntime:
                 state, attempt, "Response must contain exactly one tool call"
             )
         call = response.tool_calls[0]
+        call_id = call.get("id")
+        if not call_id:
+            return await self._invalid_response(
+                state, attempt, "Tool call requires a non-empty id"
+            )
+        pending = state.get("pending_invocation")
+        if pending is not None and call_id == pending.get("call_id"):
+            return await self._invalid_response(
+                state,
+                attempt,
+                "A repaired tool call must use a new tool call id",
+            )
         if call["name"] == finish_task.name:
             try:
                 terminal = FinishTaskArgs.model_validate(call.get("args") or {})
@@ -421,7 +468,7 @@ class _TaskRuntime:
                 state, attempt, "Tool call requires an explanation in message content"
             )
         invocation = ToolInvocation(
-            call_id=call["id"],
+            call_id=call_id,
             name=call["name"],
             arguments=dict(call.get("args") or {}),
             decision_summary=summary,
@@ -433,7 +480,7 @@ class _TaskRuntime:
                 cycle_count=state["cycle_count"],
                 invocation=invocation,
             ),
-            dedup_key=f"{self.run_id}:{self.task_run_id}:{call['id']}:selected",
+            dedup_key=f"{self.run_id}:{self.task_run_id}:{call_id}:selected",
         )
         return {
             "route": "tools",
@@ -471,24 +518,65 @@ class _TaskRuntime:
             )
         )
 
+    async def handle_tool_error(
+        self,
+        state: TaskAgentState,
+        error: NodeError,
+    ) -> Command[Literal["after_tools"]]:
+        invocation = ToolInvocation.model_validate(state["pending_invocation"])
+        if isinstance(error.error, NodeTimeoutError):
+            status = ToolExecutionStatus.TIMED_OUT
+            fallback = f"Tool {invocation.name} timed out"
+        elif isinstance(error.error, ToolInvocationError):
+            status = ToolExecutionStatus.INVALID
+            fallback = f"Tool {invocation.name} arguments are invalid"
+        else:
+            status = ToolExecutionStatus.BLOCKED
+            fallback = f"Tool {invocation.name} failed"
+        result = ToolExecutionResult(
+            status=status,
+            summary=str(error.error) or fallback,
+        )
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=result.summary,
+                        artifact=result.model_dump(mode="json"),
+                        name=invocation.name,
+                        tool_call_id=invocation.call_id,
+                        status="error",
+                    )
+                ]
+            },
+            goto="after_tools",
+        )
+
     async def after_tools(self, state: TaskAgentState) -> dict[str, Any]:
         last = state.get("messages", [])[-1]
-        if not isinstance(last, ToolMessage) or last.artifact is None:
+        if not isinstance(last, ToolMessage):
             return self._outcome_update(
                 TaskOutcome(
                     status=TaskStatus.BLOCKED,
                     reason_code=ReasonCode.TOOL_FAILED,
-                    summary="ToolNode did not return a structured tool result",
+                    summary="ToolNode did not return a ToolMessage",
                     cycle_count=state["cycle_count"],
                 )
             )
         invocation = ToolInvocation.model_validate(state["pending_invocation"])
-        try:
-            result = ToolExecutionResult.model_validate(last.artifact)
-        except Exception as exc:
+        if last.status == "error":
+            try:
+                result = ToolExecutionResult.model_validate(last.artifact)
+            except Exception as exc:
+                result = ToolExecutionResult(
+                    status=ToolExecutionStatus.BLOCKED,
+                    summary=f"Tool error result is invalid: {exc}",
+                )
+        else:
             result = ToolExecutionResult(
-                status=ToolExecutionStatus.BLOCKED,
-                summary=f"Tool result is invalid: {exc}",
+                status=ToolExecutionStatus.SUCCEEDED,
+                summary=self._content_text(last.content),
+                data=self._result_data(last),
             )
         await self._record_tool_finished(state, invocation, result)
         if result.status == ToolExecutionStatus.CANCELLED:
@@ -500,22 +588,50 @@ class _TaskRuntime:
                     cycle_count=state["cycle_count"],
                 )
             )
-        if result.status == ToolExecutionStatus.BLOCKED:
-            return self._outcome_update(
-                TaskOutcome(
-                    status=TaskStatus.BLOCKED,
-                    reason_code=ReasonCode.TOOL_FAILED,
-                    summary=result.summary,
-                    cycle_count=state["cycle_count"],
-                )
-            )
         if result.status == ToolExecutionStatus.INVALID:
             return await self._invalid_response(
                 state, state.get("model_attempt", 0), result.summary
             )
+        if result.status in {
+            ToolExecutionStatus.BLOCKED,
+            ToolExecutionStatus.TIMED_OUT,
+        }:
+            return self._tool_failure(state, result)
         return {
             "route": "observe",
             "pending_invocation": None,
+        }
+
+    def _tool_failure(
+        self,
+        state: TaskAgentState,
+        result: ToolExecutionResult,
+    ) -> dict[str, Any]:
+        attempt = state.get("model_attempt", 0)
+        if attempt >= self.tool_call_max_attempts:
+            return self._outcome_update(
+                TaskOutcome(
+                    status=TaskStatus.BLOCKED,
+                    reason_code=ReasonCode.TOOL_FAILED,
+                    summary=(
+                        "Tool calls failed after "
+                        f"{self.tool_call_max_attempts} model attempts: {result.summary}"
+                    ),
+                    cycle_count=state["cycle_count"],
+                )
+            )
+        return {
+            "route": "repair",
+            "messages": [
+                HumanMessage(
+                    content=(
+                        "The tool call failed without changing the observation. "
+                        "Use the error and the existing decision context to return "
+                        "exactly one new allowed tool call, or finish as blocked if "
+                        f"no safe alternative exists. Error: {result.summary}"
+                    )
+                )
+            ],
         }
 
     async def _record_tool_finished(
@@ -552,17 +668,20 @@ class _TaskRuntime:
                 state["cycle_count"], f"invalid_response:{attempt}"
             ),
         )
-        if attempt >= 3:
+        if attempt >= self.tool_call_max_attempts:
             return self._outcome_update(
                 TaskOutcome(
                     status=TaskStatus.BLOCKED,
                     reason_code=ReasonCode.INVALID_MODEL_RESPONSE,
-                    summary=f"Invalid model response after 3 attempts: {message}",
+                    summary=(
+                        "Invalid model response after "
+                        f"{self.tool_call_max_attempts} attempts: {message}"
+                    ),
                     cycle_count=state["cycle_count"],
                 )
             )
         return {
-            "route": "retry",
+            "route": "repair",
             "model_attempt": attempt,
             "messages": [
                 HumanMessage(
@@ -573,6 +692,23 @@ class _TaskRuntime:
                 )
             ],
         }
+
+    @staticmethod
+    def _content_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content or "Tool completed"
+        return json.dumps(content, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def _result_data(message: ToolMessage) -> dict[str, Any]:
+        value = message.artifact if message.artifact is not None else message.content
+        if isinstance(value, dict):
+            return value
+        try:
+            serialized = json.loads(json.dumps(value, default=str))
+        except (TypeError, ValueError):
+            serialized = str(value)
+        return {"output": serialized}
 
     @staticmethod
     def _outcome_update(outcome: TaskOutcome) -> dict[str, Any]:

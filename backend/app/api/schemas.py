@@ -16,7 +16,8 @@ from app.domain.execution import (
 from app.domain.errors import ReasonCode
 from app.domain.planning import DeviceProfile, PlanOutput, Task
 from app.domain.tools import (
-    DeviceCapabilities,
+    DeviceCapabilitiesSnapshot,
+    DeviceDescription,
     DeviceHealth,
     ToolExecutionResult,
     ToolInvocation,
@@ -321,7 +322,8 @@ class DeviceSummaryResponse(BaseModel):
 class DeviceHealthResponse(BaseModel):
     id: str
     health: DeviceHealth
-    capabilities: DeviceCapabilities | None = None
+    description: DeviceDescription | None = None
+    capabilities: DeviceCapabilitiesSnapshot | None = None
 
 
 class CancelResponse(BaseModel):

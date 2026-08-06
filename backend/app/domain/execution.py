@@ -6,7 +6,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.errors import ReasonCode
 from app.domain.planning import PlanOutput, Task
-from app.domain.tools import DeviceCapabilities
+from app.domain.tools import (
+    DeviceCapabilitiesSnapshot,
+    DeviceDescription,
+    DeviceHealth,
+)
 
 
 class RunStatus(StrEnum):
@@ -46,8 +50,9 @@ class PlanRevisionSnapshot(BaseModel):
 
 class DeviceSnapshot(BaseModel):
     id: str
-    health_message: str = ""
-    capabilities: DeviceCapabilities | None = None
+    health: DeviceHealth
+    description: DeviceDescription | None = None
+    capabilities: DeviceCapabilitiesSnapshot | None = None
 
 
 class ModelSnapshot(BaseModel):

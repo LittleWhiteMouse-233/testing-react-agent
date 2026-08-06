@@ -1,26 +1,53 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import time
 from pathlib import Path
+from typing import Any, cast
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolRuntime
 
-from app.config import Settings
+from app.config import LLMProfileSettings, Settings
+from app.container import Container
 from app.device.test_fake import FakeDeviceController
+from app.domain.tools import DeviceCapabilities, ToolEntry
 from app.llm.test_fake import ScriptedChatModelProvider
-from app.config import LLMProfileSettings
 from app.main import create_app
+from app.tools import CatalogToolProvider
+
+
+ScriptedTurn = AIMessage | dict[str, Any] | Exception
 
 
 class BoundaryDevice(FakeDeviceController):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+
     async def wait(self, duration_ms: int):
+        self.attempts += 1
         await asyncio.sleep(0.1)
         return await super().wait(100)
+
+
+class StaticCapabilitySource:
+    def __init__(self, entries: tuple[ToolEntry, ...]) -> None:
+        self.device_id = "shared-tools"
+        self.entries = entries
+
+    def capabilities(self) -> DeviceCapabilities:
+        return DeviceCapabilities(
+            device_id=self.device_id,
+            provider="test-shared",
+            metadata={},
+            tools=self.entries,
+        )
 
 
 def build_client(tmp_path: Path) -> TestClient:
@@ -32,11 +59,44 @@ def build_client(tmp_path: Path) -> TestClient:
     return TestClient(create_app(settings))
 
 
-def set_scripted_turns(client: TestClient, turns: list[object]) -> None:
+def get_container(client: TestClient) -> Container:
+    app = cast(FastAPI, client.app)
+    return cast(Container, app.state.container)
+
+
+def get_fake_device(client: TestClient) -> FakeDeviceController:
+    return cast(
+        FakeDeviceController,
+        get_container(client).devices["fake-tv"],
+    )
+
+
+def set_scripted_turns(
+    client: TestClient, turns: list[ScriptedTurn]
+) -> ScriptedChatModelProvider:
     provider = ScriptedChatModelProvider(model_id="default", turns=turns)
-    container = client.app.state.container
+    container = get_container(client)
     container.models.clear()
     container.models["default"] = provider
+    return provider
+
+
+def rebuild_tool_catalog(
+    client: TestClient,
+    *,
+    shared_entries: tuple[ToolEntry, ...] = (),
+) -> None:
+    container = get_container(client)
+    shared_sources = (
+        (StaticCapabilitySource(shared_entries),) if shared_entries else ()
+    )
+    catalog = CatalogToolProvider(
+        list(container.devices.values()),
+        shared_capability_sources=shared_sources,
+    )
+    container.tools = catalog
+    container.agent_factory.tool_provider = catalog
+    container.run_service.tools = catalog
 
 
 def wait_for_run(client: TestClient, run_id: str) -> dict:
@@ -121,6 +181,26 @@ def external_tool_call(
     )
 
 
+def test_device_health_keeps_description_separate_from_capabilities() -> None:
+    with tempfile.TemporaryDirectory(
+        ignore_cleanup_errors=True
+    ) as directory, build_client(Path(directory)) as client:
+        response = client.get("/api/devices/fake-tv/health")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["health"] == {
+            "available": True,
+            "message": "fake device",
+        }
+        assert payload["description"] == {
+            "model": "Fake Android TV",
+            "resolution": "1920x1080",
+            "locale": "zh-CN",
+        }
+        assert payload["capabilities"]["metadata"] == {"transport": "fake"}
+
+
 def test_complete_scripted_run_and_exports() -> None:
     with tempfile.TemporaryDirectory(
         ignore_cleanup_errors=True
@@ -136,6 +216,18 @@ def test_complete_scripted_run_and_exports() -> None:
         created = start_run(client, revision)
         run = wait_for_run(client, created["id"])
         assert run["overall_result"] == "PASS"
+        assert run["snapshot"]["device"]["health"] == {
+            "available": True,
+            "message": "fake device",
+        }
+        assert run["snapshot"]["device"]["description"] == {
+            "model": "Fake Android TV",
+            "resolution": "1920x1080",
+            "locale": "zh-CN",
+        }
+        assert run["snapshot"]["device"]["capabilities"]["metadata"] == {
+            "transport": "fake"
+        }
         assert [task["status"] for task in run["task_runs"]] == [
             "passed",
             "passed",
@@ -222,7 +314,7 @@ def test_capture_failure_becomes_blocked() -> None:
         ignore_cleanup_errors=True
     ) as directory, build_client(Path(directory)) as client:
         _, revision = create_case_and_plan(client, source_text="截图失败")
-        client.app.state.container.devices["fake-tv"].capture_failures = 3
+        get_fake_device(client).capture_failures = 3
         created = start_run(client, revision)
         run = wait_for_run(client, created["id"])
         assert run["overall_result"] == "BLOCKED"
@@ -236,7 +328,8 @@ def test_cancel_is_applied_at_tool_boundary() -> None:
     ) as directory, build_client(Path(directory)) as client:
         _, revision = create_case_and_plan(client, source_text="等待后取消")
         set_scripted_turns(client, [wait_call()])
-        client.app.state.container.devices["fake-tv"] = BoundaryDevice()
+        get_container(client).devices["fake-tv"] = BoundaryDevice()
+        rebuild_tool_catalog(client)
         created = start_run(client, revision)
         run_id = created["id"]
         for _ in range(100):
@@ -274,7 +367,7 @@ def test_task_agent_runs_multiple_observe_decide_act_cycles() -> None:
 
         assert run["overall_result"] == "PASS"
         assert [task["cycle_count"] for task in run["task_runs"]] == [3, 1]
-        assert client.app.state.container.devices["fake-tv"].actions == [
+        assert get_fake_device(client).actions == [
             {"type": "PRESS_KEY", "key": "DPAD_DOWN"},
             {"type": "WAIT", "duration_ms": 100},
         ]
@@ -342,7 +435,7 @@ def test_judge_policy_rejects_device_state_changing_tools() -> None:
             run["task_runs"][1]["outcome"]["reason_code"]
             == "invalid_model_response"
         )
-        assert client.app.state.container.devices["fake-tv"].actions == []
+        assert get_fake_device(client).actions == []
         events = client.get(f"/api/runs/{created['id']}/events").json()["items"]
         assert sum(item["type"] == "agent.response_invalid" for item in events) == 3
         assert not any(
@@ -352,12 +445,12 @@ def test_judge_policy_rejects_device_state_changing_tools() -> None:
         )
 
 
-def test_tool_timeout_is_not_replayed_and_forces_a_fresh_observation() -> None:
+def test_tool_timeout_retries_node_then_repairs_without_observing() -> None:
     with tempfile.TemporaryDirectory(
         ignore_cleanup_errors=True
     ) as directory, build_client(Path(directory)) as client:
         _, revision = create_case_and_plan(client, source_text="Wait for a slow render")
-        set_scripted_turns(
+        scripted = set_scripted_turns(
             client,
             [
                 wait_call("slow-wait"),
@@ -365,20 +458,33 @@ def test_tool_timeout_is_not_replayed_and_forces_a_fresh_observation() -> None:
                 {"status": "passed", "summary": "The expected result is visible"},
             ],
         )
-        client.app.state.container.devices["fake-tv"] = BoundaryDevice()
-        client.app.state.container.tools.action_timeout_seconds = 0.01
+        boundary = BoundaryDevice()
+        get_container(client).devices["fake-tv"] = boundary
+        rebuild_tool_catalog(client)
+        get_container(client).agent_factory.action_timeout_seconds = 0.01
         created = start_run(client, revision)
         run = wait_for_run(client, created["id"])
 
         assert run["overall_result"] == "PASS"
-        assert run["task_runs"][0]["cycle_count"] == 2
+        assert run["task_runs"][0]["cycle_count"] == 1
+        assert boundary.attempts == 3
+        initial_payload = json.dumps(
+            [message.content for message in scripted.invocations[0]],
+            default=str,
+        )
+        repair_payload = json.dumps(
+            [message.content for message in scripted.invocations[1]],
+            default=str,
+        )
+        assert "data:image/png;base64" in initial_payload
+        assert "data:image/png;base64" not in repair_payload
         events = client.get(f"/api/runs/{created['id']}/events").json()["items"]
         act_task_id = run["task_runs"][0]["id"]
         assert sum(
             item["type"] == "observation.captured"
             and item["task_run_id"] == act_task_id
             for item in events
-        ) == 2
+        ) == 1
         finished = [
             item
             for item in events
@@ -387,6 +493,150 @@ def test_tool_timeout_is_not_replayed_and_forces_a_fresh_observation() -> None:
         ]
         assert len(finished) == 1
         assert finished[0]["payload"]["result"]["status"] == "timed_out"
+
+
+def test_tool_timeout_retry_can_succeed_before_model_repair() -> None:
+    attempts = 0
+
+    @tool
+    async def eventually_ready() -> str:
+        """Wait for a resource that becomes ready."""
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            await asyncio.sleep(0.1)
+        return "ready"
+
+    with tempfile.TemporaryDirectory(
+        ignore_cleanup_errors=True
+    ) as directory, build_client(Path(directory)) as client:
+        rebuild_tool_catalog(
+            client,
+            shared_entries=(ToolEntry(eventually_ready, frozenset({"act"})),),
+        )
+        get_container(client).agent_factory.action_timeout_seconds = 0.05
+        _, revision = create_case_and_plan(client, source_text="Wait until ready")
+        set_scripted_turns(
+            client,
+            [
+                external_tool_call("eventually_ready", {}, "eventually-ready"),
+                {"status": "passed", "summary": "The resource is ready"},
+                {"status": "passed", "summary": "The result is visible"},
+            ],
+        )
+
+        created = start_run(client, revision)
+        run = wait_for_run(client, created["id"])
+
+        assert run["overall_result"] == "PASS"
+        assert attempts == 3
+        assert run["task_runs"][0]["cycle_count"] == 2
+        events = client.get(f"/api/runs/{created['id']}/events").json()["items"]
+        finished = [
+            item
+            for item in events
+            if item["type"] == "tool.finished"
+            and item["task_run_id"] == run["task_runs"][0]["id"]
+        ]
+        assert [item["payload"]["result"]["status"] for item in finished] == [
+            "succeeded"
+        ]
+
+
+def test_runtime_tool_error_repairs_without_reexecution_or_observation() -> None:
+    attempts = 0
+
+    @tool
+    async def broken_action(value: str) -> str:
+        """Run an action that reports a provider failure."""
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError(f"provider rejected {value}")
+
+    with tempfile.TemporaryDirectory(
+        ignore_cleanup_errors=True
+    ) as directory, build_client(Path(directory)) as client:
+        rebuild_tool_catalog(
+            client,
+            shared_entries=(ToolEntry(broken_action, frozenset({"act"})),),
+        )
+        _, revision = create_case_and_plan(client, source_text="Handle a tool error")
+        set_scripted_turns(
+            client,
+            [
+                external_tool_call("broken_action", {"value": "once"}, "broken"),
+                {"status": "passed", "summary": "A safe alternative was selected"},
+                {"status": "passed", "summary": "The result is visible"},
+            ],
+        )
+
+        created = start_run(client, revision)
+        run = wait_for_run(client, created["id"])
+
+        assert run["overall_result"] == "PASS"
+        assert attempts == 1
+        assert run["task_runs"][0]["cycle_count"] == 1
+        events = client.get(f"/api/runs/{created['id']}/events").json()["items"]
+        act_task_id = run["task_runs"][0]["id"]
+        assert sum(
+            item["type"] == "observation.captured"
+            and item["task_run_id"] == act_task_id
+            for item in events
+        ) == 1
+        assert next(
+            item
+            for item in events
+            if item["type"] == "tool.finished"
+            and item["task_run_id"] == act_task_id
+        )["payload"]["result"]["status"] == "blocked"
+
+
+def test_invalid_tool_schema_repairs_without_invoking_tool() -> None:
+    attempts = 0
+
+    @tool
+    async def requires_value(value: int) -> str:
+        """Use a required integer value."""
+        nonlocal attempts
+        attempts += 1
+        return str(value)
+
+    with tempfile.TemporaryDirectory(
+        ignore_cleanup_errors=True
+    ) as directory, build_client(Path(directory)) as client:
+        rebuild_tool_catalog(
+            client,
+            shared_entries=(ToolEntry(requires_value, frozenset({"act"})),),
+        )
+        _, revision = create_case_and_plan(client, source_text="Repair invalid arguments")
+        set_scripted_turns(
+            client,
+            [
+                external_tool_call("requires_value", {}, "invalid-schema"),
+                {"status": "passed", "summary": "The invalid action was avoided"},
+                {"status": "passed", "summary": "The result is visible"},
+            ],
+        )
+
+        created = start_run(client, revision)
+        run = wait_for_run(client, created["id"])
+
+        assert run["overall_result"] == "PASS"
+        assert attempts == 0
+        assert run["task_runs"][0]["cycle_count"] == 1
+        events = client.get(f"/api/runs/{created['id']}/events").json()["items"]
+        act_task_id = run["task_runs"][0]["id"]
+        assert next(
+            item
+            for item in events
+            if item["type"] == "tool.finished"
+            and item["task_run_id"] == act_task_id
+        )["payload"]["result"]["status"] == "invalid"
+        assert sum(
+            item["type"] == "agent.response_invalid"
+            and item["task_run_id"] == act_task_id
+            for item in events
+        ) == 1
 
 
 def test_policies_bind_mutating_tools_only_to_act_and_read_tools_to_both() -> None:
@@ -404,15 +654,16 @@ def test_policies_bind_mutating_tools_only_to_act_and_read_tools_to_both() -> No
         executed.append(f"{runtime.tool_call_id}:{value}")
         return "Tool completed"
 
-    mutate_setting.metadata = {"atv.scopes": ["act"]}
-    read_setting.metadata = {"atv.scopes": ["act", "judge"]}
-
     with tempfile.TemporaryDirectory(
         ignore_cleanup_errors=True
     ) as directory, build_client(Path(directory)) as client:
-        tools = client.app.state.container.tools
-        tools.register(mutate_setting)
-        tools.register(read_setting)
+        rebuild_tool_catalog(
+            client,
+            shared_entries=(
+                ToolEntry(mutate_setting, frozenset({"act"})),
+                ToolEntry(read_setting, frozenset({"act", "judge"})),
+            ),
+        )
         _, revision = create_case_and_plan(client, source_text="Use policy-bound tools")
         set_scripted_turns(
             client,
@@ -458,7 +709,7 @@ def test_planning_act_and_judge_use_independent_models() -> None:
             judge_model_id="judge",
         )
         with TestClient(create_app(settings)) as client:
-            container = client.app.state.container
+            container = get_container(client)
             container.models["planner"] = ScriptedChatModelProvider(
                 model_id="planner"
             )

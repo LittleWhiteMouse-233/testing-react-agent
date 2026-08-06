@@ -44,6 +44,7 @@ def _default_plan(request: PlanRequest) -> PlanOutput:
 class ScriptedChatModel(BaseChatModel):
     _plans: deque[Any] = PrivateAttr()
     _turns: deque[Any] = PrivateAttr()
+    _invocations: list[list[BaseMessage]] = PrivateAttr()
 
     def __init__(
         self,
@@ -54,6 +55,11 @@ class ScriptedChatModel(BaseChatModel):
         super().__init__()
         self._plans = deque(plans or [])
         self._turns = deque(turns or [])
+        self._invocations = []
+
+    @property
+    def invocations(self) -> list[list[BaseMessage]]:
+        return self._invocations
 
     @property
     def _llm_type(self) -> str:
@@ -111,7 +117,8 @@ class ScriptedChatModel(BaseChatModel):
         tool_choice: dict | str | bool | None = None,
         **kwargs: Any,
     ) -> Runnable[Any, AIMessage]:
-        async def invoke(_: Any) -> AIMessage:
+        async def invoke(messages: list[BaseMessage]) -> AIMessage:
+            self._invocations.append(list(messages))
             return self._next_turn()
 
         return RunnableLambda(invoke)
@@ -171,3 +178,7 @@ class ScriptedChatModelProvider:
 
     def create_model(self) -> BaseChatModel:
         return self._model
+
+    @property
+    def invocations(self) -> list[list[BaseMessage]]:
+        return self._model.invocations

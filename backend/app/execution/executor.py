@@ -63,7 +63,7 @@ class RunExecutor:
                 await self._finish_blocked_run(
                     run_id,
                     ReasonCode.DEVICE_UNAVAILABLE,
-                    snapshot.device.health_message or "Device is unavailable",
+                    snapshot.device.health.message or "Device is unavailable",
                 )
                 return
             async with AsyncSqliteSaver.from_conn_string(
@@ -102,8 +102,6 @@ class RunExecutor:
                             task_run_id=task_execution.id,
                             device_id=snapshot.device.id,
                             task=task,
-                            capabilities=snapshot.device.capabilities,
-                            enabled_tool_names=set(snapshot.enabled_tool_names),
                             cross_task_context=context,
                             checkpointer=checkpointer,
                         )

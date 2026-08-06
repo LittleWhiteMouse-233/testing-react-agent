@@ -29,6 +29,7 @@ from app.api.schemas import (
     TestCaseResponse,
 )
 from app.container import Container
+from app.domain.activity import Activity
 from app.domain.planning import PlanOutput, PlanRequest
 from app.persistence.models import (
     ArtifactRow,
@@ -38,7 +39,6 @@ from app.persistence.models import (
     TestCaseRow,
     TestRunRow,
 )
-from app.llm.contracts import ModelActivity
 from app.services.events import serialize_event
 from app.services.reporting import artifact_dict
 from app.services.run_service import RunConflict
@@ -170,7 +170,7 @@ async def create_plan(
         source="llm",
         plan_json=plan.model_dump(mode="json"),
         model_info_json=app.model_registry.for_activity(
-            ModelActivity.PLANNING
+            Activity.PLANNING
         ).model_snapshot.model_dump(mode="json"),
     )
     async with app.sessions() as session:
@@ -469,9 +469,16 @@ async def device_health(device_id: str, request: Request) -> dict[str, Any]:
     if not device:
         raise HTTPException(404, "Device not found")
     health = await device.health()
-    capabilities = await device.capabilities() if health.available else None
+    description = None
+    capabilities = None
+    if health.available:
+        capabilities = container(request).tools.capabilities_for(device_id)
+        description = await device.describe()
     return {
         "id": device_id,
         "health": health.model_dump(mode="json"),
+        "description": (
+            description.model_dump(mode="json") if description else None
+        ),
         "capabilities": capabilities.model_dump(mode="json") if capabilities else None,
     }

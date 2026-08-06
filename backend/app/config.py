@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
-        env_prefix="ATV_",
+        env_prefix="TEST_AGENT_",
         extra="ignore",
         populate_by_name=True,
     )
@@ -41,23 +41,23 @@ class Settings(BaseSettings):
 
     llm_profiles: list[LLMProfileSettings] = Field(
         default_factory=lambda: [LLMProfileSettings(id="default")],
-        validation_alias=AliasChoices("LLM_PROFILES", "ATV_LLM_PROFILES"),
+        validation_alias="LLM_PROFILES",
     )
     planning_model_id: str | None = None
     act_model_id: str | None = None
     judge_model_id: str | None = None
 
-    adb_path: str = Field(
-        default="adb",
-        validation_alias=AliasChoices("ADB_PATH", "ATV_ADB_PATH"),
-    )
-    adb_serial: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("ADB_SERIAL", "ATV_ADB_SERIAL"),
-    )
+    adb_path: str = Field(default="adb", validation_alias="ADB_PATH")
+    adb_serial: str | None = Field(default=None, validation_alias="ADB_SERIAL")
     action_timeout_seconds: float = 15
-    agent_history_max_tokens: int = Field(default=8_000, ge=1_000, le=100_000)
-    enabled_tools: str = Field(default="")
+    tool_timeout_max_attempts: int = Field(default=3, ge=1, le=10)
+    tool_call_max_attempts: int = Field(default=3, ge=1, le=10)
+    agent_history_max_tokens: int = Field(
+        default=8_000,
+        ge=1_000,
+        le=100_000,
+        validation_alias="TEST_AGENT_HISTORY_MAX_TOKENS",
+    )
 
     @model_validator(mode="after")
     def model_routes_are_valid(self) -> "Settings":
@@ -98,10 +98,6 @@ class Settings(BaseSettings):
     @property
     def allowed_origins(self) -> list[str]:
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
-
-    @property
-    def enabled_tool_names(self) -> list[str]:
-        return [item.strip() for item in self.enabled_tools.split(",") if item.strip()]
 
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)

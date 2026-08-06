@@ -1,0 +1,15 @@
+{
+  "include": [
+    "backend/app",
+    "backend/tests"
+  ],
+  "exclude": [
+    "backend/alembic",
+    "**/__pycache__"
+  ],
+  "extraPaths": [
+    "backend"
+  ],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "standard"
+}

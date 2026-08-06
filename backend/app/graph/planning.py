@@ -3,21 +3,19 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Annotated, Any, TypedDict
+from typing import Any
 
-from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
+from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.graph import END, START, MessagesState, StateGraph
 from langsmith import tracing_context
 
+from app.domain.activity import Activity
 from app.domain.errors import PlanningFailure
 from app.domain.planning import PlanOutput, PlanRequest
-from app.llm.contracts import ModelActivity
 from app.llm.registry import ModelRegistry
 
 
-class PlanningState(TypedDict, total=False):
-    messages: Annotated[list[AnyMessage], add_messages]
+class PlanningState(MessagesState):
     request: dict[str, Any]
     attempt: int
     result: dict[str, Any] | None
@@ -64,7 +62,7 @@ class PlanningGraph:
 
     async def _generate(self, state: PlanningState) -> dict[str, Any]:
         attempt = state.get("attempt", 0) + 1
-        provider = self.model_registry.for_activity(ModelActivity.PLANNING)
+        provider = self.model_registry.for_activity(Activity.PLANNING)
         model = provider.create_model().with_structured_output(
             PlanOutput,
             method="json_schema",

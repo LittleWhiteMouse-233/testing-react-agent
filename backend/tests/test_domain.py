@@ -13,7 +13,7 @@ from app.graph.task_agent import (
     JUDGE_POLICY,
     policy_for,
 )
-from app.llm.contracts import ModelActivity
+from app.domain.activity import Activity
 from app.llm.registry import ModelRegistry
 from app.llm.test_fake import ScriptedChatModelProvider
 
@@ -52,7 +52,9 @@ def test_terminal_and_outcome_are_strict_domain_contracts() -> None:
     )
     assert outcome.evidence_artifact_ids == ["artifact-1"]
     with pytest.raises(ValidationError):
-        FinishTaskArgs(status="unknown", summary="invalid")
+        FinishTaskArgs.model_validate(
+            {"status": "unknown", "summary": "invalid"}
+        )
     with pytest.raises(ValidationError):
         TaskOutcome(
             status=TaskStatus.FAILED,
@@ -73,6 +75,8 @@ def test_task_type_selects_policy_without_changing_graph_contract() -> None:
     judge = act.model_copy(update={"task_id": "judge", "type": TaskType.JUDGE})
     assert policy_for(act) is ACT_POLICY
     assert policy_for(judge) is JUDGE_POLICY
+    assert Activity(act.type.value) is Activity.ACT
+    assert Activity(judge.type.value) is Activity.JUDGE
     assert ACT_POLICY.policy_id == "act"
     assert JUDGE_POLICY.policy_id == "judge"
 
@@ -102,9 +106,9 @@ def test_model_registry_defaults_to_first_profile_and_rejects_unknown_routes() -
     second = ScriptedChatModelProvider(model_id="second")
     registry = ModelRegistry({"first": first, "second": second})
 
-    assert registry.model_id_for(ModelActivity.PLANNING) == "first"
-    assert registry.model_id_for(ModelActivity.ACT) == "first"
-    assert registry.model_id_for(ModelActivity.JUDGE) == "first"
+    assert registry.model_id_for(Activity.PLANNING) == "first"
+    assert registry.model_id_for(Activity.ACT) == "first"
+    assert registry.model_id_for(Activity.JUDGE) == "first"
 
     with pytest.raises(ValidationError, match="unknown model"):
         Settings(

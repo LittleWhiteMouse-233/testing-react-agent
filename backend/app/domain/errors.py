@@ -37,13 +37,5 @@ class UnsupportedAction(ValueError):
     pass
 
 
-class InvalidArguments(ValueError):
-    pass
-
-
-class TransientToolError(RuntimeError):
-    pass
-
-
 class PlanningFailure(RuntimeError):
     pass

@@ -7,7 +7,7 @@ import pytest
 
 from app.device.test_fake import FakeDeviceController, ReplayDeviceController
 from app.domain.errors import CaptureFailed, UnsupportedAction
-from app.domain.tools import RemoteKey
+from app.device.base_atv import RemoteKey
 
 
 @pytest.mark.asyncio

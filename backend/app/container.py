@@ -6,7 +6,7 @@ from app.llm import (
     RealChatModelProvider,
     ScriptedChatModelProvider,
 )
-from app.device import DeviceController, FakeDeviceController, AdbDeviceController
+from app.device import DeviceProvider, FakeDeviceController, AdbDeviceController
 from app.config import Settings
 from app.execution.executor import RunExecutor
 from app.graph.planning import PlanningGraph
@@ -19,7 +19,7 @@ from app.services.events import EventWriter
 from app.services.registry import RunRegistry
 from app.services.reporting import ReportService
 from app.services.run_service import RunService
-from app.services.tools import FrameworkToolProvider
+from app.tools import CatalogToolProvider
 
 
 class Container:
@@ -35,16 +35,14 @@ class Container:
             self.sessions,
             self.events,
         )
-        self.tools = FrameworkToolProvider(
-            action_timeout_seconds=settings.action_timeout_seconds
-        )
-        self.devices: dict[str, DeviceController] = {"fake-tv": FakeDeviceController()}
+        self.devices: dict[str, DeviceProvider] = {"fake-tv": FakeDeviceController()}
         if settings.adb_serial:
             self.devices[settings.adb_serial] = AdbDeviceController(
                 settings.adb_serial,
                 settings.adb_path,
                 settings.action_timeout_seconds,
             )
+        self.tools = CatalogToolProvider(list(self.devices.values()))
         self.models: dict[str, ChatModelProvider] = {}
         for profile in settings.llm_profiles:
             if profile.mode == "real":
@@ -84,6 +82,9 @@ class Container:
             registry=self.registry,
             devices=self.devices,
             history_max_tokens=settings.agent_history_max_tokens,
+            action_timeout_seconds=settings.action_timeout_seconds,
+            tool_timeout_max_attempts=settings.tool_timeout_max_attempts,
+            tool_call_max_attempts=settings.tool_call_max_attempts,
         )
         self.executor = RunExecutor(
             repository=self.repository,

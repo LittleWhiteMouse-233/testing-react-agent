@@ -1,42 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from langchain_core.tools import BaseTool
+from langchain_core.utils.pydantic import model_json_schema
 from pydantic import BaseModel, Field
-
-
-class RemoteKey(StrEnum):
-    DPAD_UP = "DPAD_UP"
-    DPAD_DOWN = "DPAD_DOWN"
-    DPAD_LEFT = "DPAD_LEFT"
-    DPAD_RIGHT = "DPAD_RIGHT"
-    DPAD_CENTER = "DPAD_CENTER"
-    BACK = "BACK"
-    HOME = "HOME"
-    MENU = "MENU"
-    POWER = "POWER"
-    VOLUME_UP = "VOLUME_UP"
-    VOLUME_DOWN = "VOLUME_DOWN"
-    MUTE = "MUTE"
-    PLAY = "PLAY"
-    PAUSE = "PAUSE"
-    STOP = "STOP"
-    NEXT = "NEXT"
-    PREVIOUS = "PREVIOUS"
-    TAB = "TAB"
-    ENTER = "ENTER"
-    DEL = "DEL"
-    DIGIT_0 = "DIGIT_0"
-    DIGIT_1 = "DIGIT_1"
-    DIGIT_2 = "DIGIT_2"
-    DIGIT_3 = "DIGIT_3"
-    DIGIT_4 = "DIGIT_4"
-    DIGIT_5 = "DIGIT_5"
-    DIGIT_6 = "DIGIT_6"
-    DIGIT_7 = "DIGIT_7"
-    DIGIT_8 = "DIGIT_8"
-    DIGIT_9 = "DIGIT_9"
 
 
 class DeviceHealth(BaseModel):
@@ -44,25 +14,64 @@ class DeviceHealth(BaseModel):
     message: str = ""
 
 
-class DeviceCapabilities(BaseModel):
-    screenshot: bool = True
-    input_text: bool = True
-    supported_keys: list[RemoteKey] = Field(default_factory=lambda: list(RemoteKey))
+class DeviceDescription(BaseModel):
     model: str | None = None
     resolution: str | None = None
     locale: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolEntry:
+    tool: BaseTool
+    scopes: frozenset[str]
+
+
+class ToolCapabilitySnapshot(BaseModel):
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    scopes: list[str]
+
+
+class DeviceCapabilitiesSnapshot(BaseModel):
+    device_id: str
+    provider: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    tools: list[ToolCapabilitySnapshot] = Field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DeviceCapabilities:
+    device_id: str
+    provider: str
+    tools: tuple[ToolEntry, ...]
+    metadata: dict[str, Any]
+
+    def to_snapshot(self) -> DeviceCapabilitiesSnapshot:
+        def input_schema(tool: BaseTool) -> dict[str, Any]:
+            schema = tool.tool_call_schema
+            return schema if isinstance(schema, dict) else model_json_schema(schema)
+
+        return DeviceCapabilitiesSnapshot(
+            device_id=self.device_id,
+            provider=self.provider,
+            metadata=dict(self.metadata),
+            tools=[
+                ToolCapabilitySnapshot(
+                    name=entry.tool.name,
+                    description=entry.tool.description or "",
+                    input_schema=input_schema(entry.tool),
+                    scopes=sorted(entry.scopes),
+                )
+                for entry in self.tools
+            ],
+        )
 
 
 class ScreenshotData(BaseModel):
     content: bytes
     mime_type: str = "image/png"
     activity: str | None = None
-
-
-class ActionResult(BaseModel):
-    success: bool = True
-    summary: str = ""
-    data: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolInvocation(BaseModel):
