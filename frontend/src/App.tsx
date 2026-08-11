@@ -3,8 +3,8 @@ import { Layout, Menu, Typography } from "antd";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import CasesPage from "./pages/CasesPage";
 import PlanPage from "./pages/PlanPage";
-import RunPage from "./pages/RunPage";
 import ReportPage from "./pages/ReportPage";
+import RunPage from "./pages/RunPage";
 
 export default function App() {
   const location = useLocation();
@@ -36,4 +36,3 @@ export default function App() {
     </Layout>
   );
 }
-

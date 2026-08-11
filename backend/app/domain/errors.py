@@ -13,7 +13,6 @@ class ReasonCode(StrEnum):
     MODEL_UNAVAILABLE = "model_unavailable"
     INVALID_MODEL_RESPONSE = "invalid_model_response"
     AGENT_BLOCKED = "agent_blocked"
-    TOOL_UNAVAILABLE = "tool_unavailable"
     TOOL_FAILED = "tool_failed"
     PROCESS_RESTARTED = "process_restarted"
     GLOBAL_FAIL_FAST = "global_fail_fast"
@@ -30,6 +29,10 @@ class CaptureFailed(RuntimeError):
 
 
 class ActionTimeout(RuntimeError):
+    pass
+
+
+class ModelCallTimeout(TimeoutError):
     pass
 
 

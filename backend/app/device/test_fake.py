@@ -8,14 +8,11 @@ from langchain_core.tools import tool
 from pydantic import Field, create_model
 
 from app.device.base_atv import RemoteKey
+from app.device.contracts import ScreenshotCapture
+from app.domain.activity import AgentActivity
+from app.domain.device import DeviceHealth, DeviceInfo
 from app.domain.errors import CaptureFailed, UnsupportedAction
-from app.domain.tools import (
-    DeviceCapabilities,
-    DeviceDescription,
-    DeviceHealth,
-    ScreenshotData,
-    ToolEntry,
-)
+from app.tools.contracts import DeviceToolManifest, ToolBinding
 
 _PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -23,6 +20,8 @@ _PNG_1X1 = base64.b64decode(
 
 
 class FakeDeviceController:
+    provider = "fake"
+
     def __init__(
         self,
         device_id: str = "fake-tv",
@@ -36,9 +35,9 @@ class FakeDeviceController:
         self.capture_failures = capture_failures
         self.frame_index = 0
         self.actions: list[dict[str, object]] = []
-        self._capabilities = self._build_capabilities()
+        self._tool_manifest = self._build_tool_manifest()
 
-    def _build_capabilities(self) -> DeviceCapabilities:
+    def _build_tool_manifest(self) -> DeviceToolManifest:
         press_args = create_model("FakePressKeyArgs", key=(RemoteKey, ...))
 
         @tool(args_schema=press_args)
@@ -66,38 +65,41 @@ class FakeDeviceController:
             """Wait briefly without changing the tested business state."""
             return await self.wait(duration_ms)
 
-        return DeviceCapabilities(
-            device_id=self.device_id,
-            provider=type(self).__name__,
-            metadata={"transport": "fake"},
-            tools=(
-                ToolEntry(device_press_key, frozenset({"act"})),
-                ToolEntry(device_input_text, frozenset({"act"})),
-                ToolEntry(device_wait, frozenset({"act", "judge"})),
+        return DeviceToolManifest(
+            bindings=(
+                ToolBinding(device_press_key, frozenset({AgentActivity.ACT}), True),
+                ToolBinding(device_input_text, frozenset({AgentActivity.ACT}), True),
+                ToolBinding(
+                    device_wait,
+                    frozenset({AgentActivity.ACT, AgentActivity.JUDGE}),
+                    False,
+                ),
             ),
         )
 
     async def health(self) -> DeviceHealth:
         return DeviceHealth(available=self.available, message="fake device")
 
-    def capabilities(self) -> DeviceCapabilities:
-        return self._capabilities
+    def tool_manifest(self) -> DeviceToolManifest:
+        return self._tool_manifest
 
-    async def describe(self) -> DeviceDescription:
-        return DeviceDescription(
+    async def describe(self) -> DeviceInfo:
+        return DeviceInfo(
             model="Fake Android TV",
             resolution="1920x1080",
             locale="zh-CN",
         )
 
-    async def screenshot(self) -> ScreenshotData:
+    async def screenshot(self) -> ScreenshotCapture:
         if not self.available:
             raise CaptureFailed("Fake device is unavailable")
         if self.capture_failures > 0:
             self.capture_failures -= 1
             raise CaptureFailed("Injected screenshot failure")
         frame = self.frames[min(self.frame_index, len(self.frames) - 1)]
-        return ScreenshotData(content=frame, activity=f"fake/frame/{self.frame_index}")
+        return ScreenshotCapture(
+            content=frame, activity=f"fake/frame/{self.frame_index}"
+        )
 
     async def press(self, key: RemoteKey) -> str:
         self.actions.append({"type": "PRESS_KEY", "key": key.value})
@@ -115,6 +117,8 @@ class FakeDeviceController:
 
 
 class ReplayDeviceController(FakeDeviceController):
+    provider = "replay"
+
     def __init__(
         self,
         fixture_dir: Path,

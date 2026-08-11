@@ -3,112 +3,110 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from langchain_core.messages import (
     AIMessage,
+    BaseMessage,
     HumanMessage,
     SystemMessage,
     ToolMessage,
+    filter_messages,
     trim_messages,
 )
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.errors import NodeError, NodeTimeoutError
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
-from langgraph.prebuilt.tool_node import ToolInvocationError
-from langgraph.types import Command, RetryPolicy, TimeoutPolicy
+from langgraph.types import RetryPolicy, TimeoutPolicy
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.device.contracts import DeviceProvider
-from app.domain.activity import Activity
-from app.domain.errors import ReasonCode
-from app.domain.events import (
-    AgentActionSelectedEvent,
-    AgentResponseInvalidEvent,
-    AgentTerminalSelectedEvent,
-    CycleStartedEvent,
-    ExecutionErrorEvent,
-    ToolFinishedEvent,
-    ToolStartedEvent,
+from app.domain.activity import activity_for_task
+from app.domain.errors import (
+    ActionTimeout,
+    CaptureFailed,
+    DeviceUnavailable,
+    ModelCallTimeout,
+    ReasonCode,
 )
-from app.domain.execution import ObservationRef, TaskOutcome, TaskStatus
-from app.domain.planning import Task, TaskType
-from app.domain.tools import (
-    ToolExecutionResult,
-    ToolExecutionStatus,
-    ToolInvocation,
+from app.domain.execution import (
+    TaskAgentCompletion,
+    TaskRun,
+    TaskRunResult,
+    TaskRunStatus,
 )
-from app.execution.ports import ArtifactRepository, ExecutionJournal, ExecutionRepository
+from app.domain.ids import ArtifactId
+from app.domain.planning import TestTask, TestTaskType
+from app.graph.signals import MessageValidationSignal, ToolStartedSignal
+from app.llm.contracts import ChatModelProvider
 from app.llm.registry import ModelRegistry
+from app.services.artifacts import ArtifactStore
 from app.services.registry import RunRegistry
 from app.tools import ToolProvider
 
 
-class TaskAgentState(MessagesState):
-    model_id: str
+TaskRoute = Literal["guard", "capture", "model", "validate", "tools", "end"]
+_FRAMEWORK_DEFAULT_RETRY = RetryPolicy().retry_on
+
+
+def _retry_model_error(exc: Exception) -> bool:
+    """Extend the framework default for asyncio model-call timeouts."""
+
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(_FRAMEWORK_DEFAULT_RETRY, type):
+        return isinstance(exc, _FRAMEWORK_DEFAULT_RETRY)
+    if callable(_FRAMEWORK_DEFAULT_RETRY):
+        return _FRAMEWORK_DEFAULT_RETRY(exc)
+    return isinstance(exc, tuple(_FRAMEWORK_DEFAULT_RETRY))
+
+
+class TaskAgentGraphState(MessagesState):
     cycle_count: int
     model_attempt: int
-    latest_observation: dict[str, Any] | None
-    pending_invocation: dict[str, Any] | None
-    terminal_outcome: dict[str, Any] | None
-    route: str
+    completion: TaskAgentCompletion | None
+    route: TaskRoute
 
 
-@dataclass(frozen=True)
-class TaskAgentPolicy:
-    policy_id: str
-    prompt_name: str
-
-
-ACT_POLICY = TaskAgentPolicy(policy_id="act", prompt_name="act.txt")
-JUDGE_POLICY = TaskAgentPolicy(policy_id="judge", prompt_name="judge.txt")
-
-
-def policy_for(task: Task) -> TaskAgentPolicy:
-    return ACT_POLICY if task.type == TaskType.ACT else JUDGE_POLICY
-
-
-def _prompt(name: str) -> str:
-    return (
-        Path(__file__).resolve().parents[1] / "prompts" / name
-    ).read_text("utf-8")
-
-
-class FinishTaskArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class FinishTaskRunToolInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     status: Literal["passed", "failed", "blocked"]
     summary: str = Field(min_length=1)
 
 
-@tool(args_schema=FinishTaskArgs)
+@tool(args_schema=FinishTaskRunToolInput)
 async def finish_task(status: str, summary: str) -> str:
     """Finish the current task with an evidence-based terminal decision."""
+
     return f"{status}: {summary}"
+
+
+def _prompt(task_type: TestTaskType) -> str:
+    path = Path(__file__).resolve().parents[1] / "prompts" / f"{task_type.value}.txt"
+    return path.read_text("utf-8")
 
 
 class TaskAgentFactory:
     def __init__(
         self,
         *,
-        repository: ExecutionRepository,
-        journal: ExecutionJournal,
-        artifacts: ArtifactRepository,
+        artifacts: ArtifactStore,
         model_registry: ModelRegistry,
         tool_provider: ToolProvider,
         registry: RunRegistry,
         devices: dict[str, DeviceProvider],
         history_max_tokens: int = 8_000,
         action_timeout_seconds: float = 15,
-        tool_timeout_max_attempts: int = 3,
-        tool_call_max_attempts: int = 3,
+        capture_max_attempts: int = 3,
+        model_call_max_attempts: int = 3,
+        model_response_max_attempts: int = 3,
     ) -> None:
-        self.repository = repository
-        self.journal = journal
         self.artifacts = artifacts
         self.model_registry = model_registry
         self.tool_provider = tool_provider
@@ -116,90 +114,92 @@ class TaskAgentFactory:
         self.devices = devices
         self.history_max_tokens = history_max_tokens
         self.action_timeout_seconds = action_timeout_seconds
-        self.tool_timeout_max_attempts = tool_timeout_max_attempts
-        self.tool_call_max_attempts = tool_call_max_attempts
+        self.capture_max_attempts = capture_max_attempts
+        self.model_call_max_attempts = model_call_max_attempts
+        self.model_response_max_attempts = model_response_max_attempts
 
     async def build(
         self,
         *,
-        run_id: str,
+        test_run_id: str,
         task_run_id: str,
         device_id: str,
-        task: Task,
-        cross_task_context: list[dict[str, Any]],
-        checkpointer: BaseCheckpointSaver | None,
-    ) -> Any:
+        task: TestTask,
+        previous_task_runs: list[TaskRun],
+        checkpointer: BaseCheckpointSaver[Any] | None,
+    ) -> tuple[Any, TaskAgentGraphState]:
         device = self.devices.get(device_id)
         if device is None:
             raise LookupError(f"Device is not registered: {device_id}")
-        policy = policy_for(task)
-        tool_set = self.tool_provider.tools_for(
-            device_id,
-            Activity(task.type.value),
-        )
+        activity = activity_for_task(task.definition.type)
+        tools = self.tool_provider.tools_for(device_id, activity)
+        provider = self.model_registry.for_activity(activity)
         runtime = _TaskRuntime(
-            repository=self.repository,
-            journal=self.journal,
             artifacts=self.artifacts,
-            model_registry=self.model_registry,
             registry=self.registry,
-            run_id=run_id,
+            test_run_id=test_run_id,
             task_run_id=task_run_id,
             task=task,
-            policy=policy,
-            cross_task_context=cross_task_context,
+            previous_task_runs=previous_task_runs,
             device=device,
-            tools=tool_set.tools,
-            tool_names=tool_set.names,
-            prompt_text=_prompt(policy.prompt_name),
+            tools=tools,
+            provider=provider,
+            prompt_text=_prompt(task.definition.type),
             history_max_tokens=self.history_max_tokens,
-            tool_call_max_attempts=self.tool_call_max_attempts,
+            model_response_max_attempts=self.model_response_max_attempts,
         )
-        tool_node = ToolNode(
-            tool_set.tools,
-            handle_tool_errors=False,
-        )
+        all_tools = (*tools, finish_task)
+        tool_node = ToolNode(all_tools, handle_tool_errors=True)
 
-        graph = StateGraph(TaskAgentState)
-        graph.add_node("guard_and_observe", runtime.guard_and_observe)
-        graph.add_node("call_model", runtime.call_model)
-        graph.add_node("repair_tool_call", runtime.repair_tool_call)
-        graph.add_node("before_tools", runtime.before_tools)
+        graph = StateGraph(TaskAgentGraphState)
+        graph.add_node("initialize", runtime.initialize)
+        graph.add_node("guard", runtime.guard)
         graph.add_node(
-            "tools",
-            tool_node,
-            timeout=TimeoutPolicy(run_timeout=self.action_timeout_seconds),
+            "capture",
+            runtime.capture,
             retry_policy=RetryPolicy(
                 initial_interval=0,
                 backoff_factor=1,
                 max_interval=0,
-                max_attempts=self.tool_timeout_max_attempts,
+                max_attempts=self.capture_max_attempts,
                 jitter=False,
-                retry_on=NodeTimeoutError,
+                retry_on=(CaptureFailed, DeviceUnavailable, ActionTimeout),
             ),
-            # LangGraph injects NodeError into handlers at runtime, but its
-            # StateNode static type does not yet describe that extra parameter.
-            error_handler=cast(Any, runtime.handle_tool_error),
+        )
+        graph.add_node(
+            "model",
+            runtime.call_model,
+            retry_policy=RetryPolicy(
+                initial_interval=0.25,
+                backoff_factor=2,
+                max_interval=1,
+                max_attempts=self.model_call_max_attempts,
+                jitter=False,
+                retry_on=_retry_model_error,
+            ),
+        )
+        graph.add_node("validate", runtime.validate_message)
+        graph.add_node("announce_tool", runtime.announce_tool)
+        graph.add_node(
+            "tools",
+            tool_node,
+            timeout=TimeoutPolicy(run_timeout=self.action_timeout_seconds),
         )
         graph.add_node("after_tools", runtime.after_tools)
-        graph.add_edge(START, "guard_and_observe")
+        graph.add_edge(START, "initialize")
+        graph.add_edge("initialize", "guard")
         graph.add_conditional_edges(
-            "guard_and_observe",
+            "guard", lambda state: state["route"], {"capture": "capture", "end": END}
+        )
+        graph.add_edge("capture", "model")
+        graph.add_edge("model", "validate")
+        graph.add_conditional_edges(
+            "validate",
             lambda state: state["route"],
-            {"model": "call_model", "end": END},
+            {"tools": "announce_tool", "model": "model", "end": END},
         )
         graph.add_conditional_edges(
-            "call_model",
-            lambda state: state["route"],
-            {"tools": "before_tools", "repair": "repair_tool_call", "end": END},
-        )
-        graph.add_conditional_edges(
-            "repair_tool_call",
-            lambda state: state["route"],
-            {"tools": "before_tools", "repair": "repair_tool_call", "end": END},
-        )
-        graph.add_conditional_edges(
-            "before_tools",
+            "announce_tool",
             lambda state: state["route"],
             {"tools": "tools", "end": END},
         )
@@ -207,515 +207,335 @@ class TaskAgentFactory:
         graph.add_conditional_edges(
             "after_tools",
             lambda state: state["route"],
-            {"observe": "guard_and_observe", "repair": "repair_tool_call", "end": END},
+            {"guard": "guard", "model": "model", "end": END},
         )
-        return graph.compile(checkpointer=checkpointer)
+        compiled = graph.compile(checkpointer=checkpointer)
+        initial: TaskAgentGraphState = {
+            "messages": [],
+            "cycle_count": 0,
+            "model_attempt": 0,
+            "completion": None,
+            "route": "guard",
+        }
+        return compiled, initial
 
 
 @dataclass
 class _TaskRuntime:
-    repository: ExecutionRepository
-    journal: ExecutionJournal
-    artifacts: ArtifactRepository
-    model_registry: ModelRegistry
+    artifacts: ArtifactStore
     registry: RunRegistry
-    run_id: str
+    test_run_id: str
     task_run_id: str
-    task: Task
-    policy: TaskAgentPolicy
-    cross_task_context: list[dict[str, Any]]
+    task: TestTask
+    previous_task_runs: list[TaskRun]
     device: DeviceProvider
     tools: tuple[BaseTool, ...]
-    tool_names: frozenset[str]
+    provider: ChatModelProvider
     prompt_text: str
     history_max_tokens: int
-    tool_call_max_attempts: int
-    bound_models: dict[str, Any] = field(default_factory=dict)
+    model_response_max_attempts: int
+    bound_model: Any = field(default=None, init=False)
 
-    async def guard_and_observe(self, state: TaskAgentState) -> dict[str, Any]:
-        if self.registry.cancellation(self.run_id).is_set():
-            return self._outcome_update(
-                TaskOutcome(
-                    status=TaskStatus.SKIPPED,
-                    reason_code=ReasonCode.USER_CANCELLED,
-                    summary="Cancelled by user",
-                    cycle_count=state.get("cycle_count", 0),
-                )
-            )
+    async def initialize(self, state: TaskAgentGraphState) -> dict[str, object]:
+        context = {
+            "task": self.task.model_dump(mode="json"),
+            "previous_task_runs": [
+                item.model_dump(mode="json") for item in self.previous_task_runs
+            ],
+        }
+        return {
+            "messages": [
+                SystemMessage(content=self.prompt_text),
+                HumanMessage(content=json.dumps(context, ensure_ascii=False)),
+            ],
+            "route": "guard",
+        }
+
+    async def guard(self, state: TaskAgentGraphState) -> dict[str, object]:
         cycle_count = state.get("cycle_count", 0)
-        if cycle_count >= self.task.max_cycles:
-            latest = state.get("latest_observation")
-            evidence = [latest["artifact_id"]] if latest else []
-            return self._outcome_update(
-                TaskOutcome(
-                    status=TaskStatus.FAILED,
-                    reason_code=ReasonCode.CYCLE_LIMIT,
-                    summary=f"Reached max_cycles={self.task.max_cycles}",
-                    cycle_count=cycle_count,
-                    evidence_artifact_ids=evidence,
-                )
+        if self.registry.cancellation(self.test_run_id).is_set():
+            return self._completion(
+                TaskRunStatus.SKIPPED,
+                ReasonCode.USER_CANCELLED,
+                "Cancelled by user",
+                cycle_count,
             )
-        cycle_count += 1
-        await self.repository.update_cycle(
-            self.task_run_id,
-            cycle_count,
-            CycleStartedEvent(
-                run_id=self.run_id,
-                task_run_id=self.task_run_id,
-                cycle_count=cycle_count,
-            ),
+        if cycle_count >= self.task.definition.max_cycles:
+            return self._completion(
+                TaskRunStatus.FAILED,
+                ReasonCode.CYCLE_LIMIT,
+                f"Reached max_cycles={self.task.definition.max_cycles}",
+                cycle_count,
+                evidence=self._latest_artifact_ids(state["messages"]),
+            )
+        return {
+            "cycle_count": cycle_count + 1,
+            "model_attempt": 0,
+            "route": "capture",
+        }
+
+    async def capture(self, state: TaskAgentGraphState) -> dict[str, object]:
+        screenshot = await self.device.screenshot()
+        encoded_task = asyncio.to_thread(
+            lambda: base64.b64encode(screenshot.content).decode("ascii")
         )
-        screenshot = None
-        last_error: Exception | None = None
-        for _ in range(3):
-            try:
-                screenshot = await self.device.screenshot()
-                break
-            except Exception as exc:
-                last_error = exc
-        if screenshot is None:
-            await self.journal.append(
-                ExecutionErrorEvent(
-                    run_id=self.run_id,
-                    task_run_id=self.task_run_id,
-                    reason_code=ReasonCode.CAPTURE_FAILED,
-                    message=str(last_error),
-                ),
-                dedup_key=self._dedup(cycle_count, "capture_failed"),
-            )
-            return self._outcome_update(
-                TaskOutcome(
-                    status=TaskStatus.BLOCKED,
-                    reason_code=ReasonCode.CAPTURE_FAILED,
-                    summary=f"Screenshot failed: {last_error}",
-                    cycle_count=cycle_count,
-                )
-            )
-        artifact = await self.artifacts.save_observation(
-            run_id=self.run_id,
+        artifact_task = self.artifacts.save_screenshot(
             task_run_id=self.task_run_id,
             content=screenshot.content,
             mime_type=screenshot.mime_type,
-            activity=screenshot.activity,
-            cycle_count=cycle_count,
         )
-        observation = ObservationRef(
-            artifact_id=artifact.id,
-            mime_type=screenshot.mime_type,
-            activity=screenshot.activity,
-            cycle_count=cycle_count,
+        encoded, artifact = await asyncio.gather(encoded_task, artifact_task)
+        message = HumanMessage(
+            content=[
+                {
+                    "type": "text",
+                    "text": (
+                        f"Cycle {state['cycle_count']} screenshot; "
+                        f"activity={screenshot.activity or 'unknown'}"
+                    ),
+                },
+                {
+                    "type": "image",
+                    "base64": encoded,
+                    "mime_type": screenshot.mime_type,
+                    "id": artifact.id,
+                },
+            ]
         )
-        return {
-            "route": "model",
-            "cycle_count": cycle_count,
-            "model_attempt": 0,
-            "latest_observation": observation.model_dump(mode="json"),
-            "pending_invocation": None,
-            "messages": [
-                HumanMessage(
-                    content=(
-                        f"Cycle {cycle_count}: captured observation "
-                        f"artifact_id={artifact.id}, activity={screenshot.activity}."
-                    )
-                )
-            ],
-        }
+        return {"messages": [message], "route": "model"}
 
-    async def call_model(self, state: TaskAgentState) -> dict[str, Any]:
-        return await self._call_model(state, include_observation=True)
-
-    async def repair_tool_call(self, state: TaskAgentState) -> dict[str, Any]:
-        return await self._call_model(state, include_observation=False)
-
-    async def _call_model(
-        self,
-        state: TaskAgentState,
-        *,
-        include_observation: bool,
-    ) -> dict[str, Any]:
-        attempt = state.get("model_attempt", 0) + 1
-        observation = ObservationRef.model_validate(state["latest_observation"])
-        history = trim_messages(
-            state.get("messages", []),
-            max_tokens=self.history_max_tokens,
-            token_counter="approximate",
-            strategy="last",
-            allow_partial=False,
-            start_on=(HumanMessage, AIMessage),
-        )
-        context = {
-            "task": self.task.model_dump(mode="json"),
-            "policy": self.policy.policy_id,
-            "cycle_count": state["cycle_count"],
-            "max_cycles": self.task.max_cycles,
-            "recent_cross_task_context": self.cross_task_context,
-            "latest_artifact_id": observation.artifact_id,
-        }
-        messages = [
-            SystemMessage(content=self.prompt_text),
-            HumanMessage(content=json.dumps(context, ensure_ascii=False)),
-            *history,
-        ]
-        if include_observation:
-            raw, mime_type = await self.artifacts.load_content(observation.artifact_id)
-            encoded = base64.b64encode(raw).decode("ascii")
-            messages.append(
-                HumanMessage(
-                    content=[
-                        {
-                            "type": "text",
-                            "text": (
-                                "Use this latest screenshot for the current decision. "
-                                f"artifact_id={observation.artifact_id}"
-                            ),
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{encoded}"
-                            },
-                        },
-                    ]
-                )
-            )
-        model_id = state["model_id"]
-        provider = self.model_registry.get(model_id)
-        bound_model = self.bound_models.get(model_id)
-        if bound_model is None:
-            bound_model = provider.create_model().bind_tools(
+    async def call_model(self, state: TaskAgentGraphState) -> dict[str, object]:
+        if self.bound_model is None:
+            self.bound_model = self.provider.create_model().bind_tools(
                 [*self.tools, finish_task], parallel_tool_calls=False
             )
-            self.bound_models[model_id] = bound_model
         try:
             response = await asyncio.wait_for(
-                bound_model.ainvoke(messages), timeout=provider.timeout_seconds
+                self.bound_model.ainvoke(self._model_window(state["messages"])),
+                timeout=self.provider.timeout_seconds,
             )
-        except Exception as exc:
-            return await self._invalid_response(
-                state, attempt, f"Model call failed: {exc}"
-            )
+        except TimeoutError as exc:
+            raise ModelCallTimeout("Model call timed out") from exc
         if not isinstance(response, AIMessage):
-            return await self._invalid_response(
-                state, attempt, "Model response is not an AIMessage"
-            )
-        if len(response.tool_calls) != 1:
-            return await self._invalid_response(
-                state, attempt, "Response must contain exactly one tool call"
-            )
-        call = response.tool_calls[0]
-        call_id = call.get("id")
-        if not call_id:
-            return await self._invalid_response(
-                state, attempt, "Tool call requires a non-empty id"
-            )
-        pending = state.get("pending_invocation")
-        if pending is not None and call_id == pending.get("call_id"):
-            return await self._invalid_response(
-                state,
-                attempt,
-                "A repaired tool call must use a new tool call id",
-            )
-        if call["name"] == finish_task.name:
-            try:
-                terminal = FinishTaskArgs.model_validate(call.get("args") or {})
-            except Exception as exc:
-                return await self._invalid_response(
-                    state, attempt, f"finish_task arguments are invalid: {exc}"
-                )
-            evidence = (
-                [observation.artifact_id]
-                if terminal.status in {"passed", "failed"}
-                else []
-            )
-            await self.journal.append(
-                AgentTerminalSelectedEvent(
-                    run_id=self.run_id,
-                    task_run_id=self.task_run_id,
-                    cycle_count=state["cycle_count"],
-                    status=terminal.status,
-                    summary=terminal.summary,
-                    evidence_artifact_ids=evidence,
-                ),
-                dedup_key=self._dedup(state["cycle_count"], "terminal"),
-            )
-            reason = {
-                "passed": ReasonCode.COMPLETED,
-                "failed": (
-                    ReasonCode.GOAL_UNREACHABLE
-                    if self.task.type == TaskType.ACT
-                    else ReasonCode.ASSERTION_FAILED
-                ),
-                "blocked": ReasonCode.AGENT_BLOCKED,
-            }[terminal.status]
-            update = self._outcome_update(
-                TaskOutcome(
-                    status=TaskStatus(terminal.status),
-                    reason_code=reason,
-                    summary=terminal.summary,
-                    cycle_count=state["cycle_count"],
-                    evidence_artifact_ids=evidence,
-                )
-            )
-            update["messages"] = [response]
-            return update
-        if call["name"] not in self.tool_names:
-            return await self._invalid_response(
-                state, attempt, f"Tool is not available: {call['name']}"
-            )
-        summary = response.text.strip()
-        if not summary:
-            return await self._invalid_response(
-                state, attempt, "Tool call requires an explanation in message content"
-            )
-        invocation = ToolInvocation(
-            call_id=call_id,
-            name=call["name"],
-            arguments=dict(call.get("args") or {}),
-            decision_summary=summary,
-        )
-        await self.journal.append(
-            AgentActionSelectedEvent(
-                run_id=self.run_id,
-                task_run_id=self.task_run_id,
-                cycle_count=state["cycle_count"],
-                invocation=invocation,
-            ),
-            dedup_key=f"{self.run_id}:{self.task_run_id}:{call_id}:selected",
-        )
+            raise TypeError("chat model must return AIMessage")
         return {
-            "route": "tools",
-            "model_attempt": attempt,
-            "pending_invocation": invocation.model_dump(mode="json"),
             "messages": [response],
+            "model_attempt": state.get("model_attempt", 0) + 1,
+            "route": "validate",
         }
 
-    async def before_tools(self, state: TaskAgentState) -> dict[str, Any]:
-        invocation = ToolInvocation.model_validate(state["pending_invocation"])
-        await self.journal.append(
-            ToolStartedEvent(
-                run_id=self.run_id,
-                task_run_id=self.task_run_id,
-                cycle_count=state["cycle_count"],
-                invocation=invocation,
-            ),
-            dedup_key=self._dedup(
-                state["cycle_count"], f"tool.started:{invocation.call_id}"
-            ),
-        )
-        if not self.registry.cancellation(self.run_id).is_set():
-            return {"route": "tools"}
-        result = ToolExecutionResult(
-            status=ToolExecutionStatus.CANCELLED,
-            summary="Cancelled before tool execution",
-        )
-        await self._record_tool_finished(state, invocation, result)
-        return self._outcome_update(
-            TaskOutcome(
-                status=TaskStatus.SKIPPED,
-                reason_code=ReasonCode.USER_CANCELLED,
-                summary=result.summary,
-                cycle_count=state["cycle_count"],
-            )
-        )
-
-    async def handle_tool_error(
-        self,
-        state: TaskAgentState,
-        error: NodeError,
-    ) -> Command[Literal["after_tools"]]:
-        invocation = ToolInvocation.model_validate(state["pending_invocation"])
-        if isinstance(error.error, NodeTimeoutError):
-            status = ToolExecutionStatus.TIMED_OUT
-            fallback = f"Tool {invocation.name} timed out"
-        elif isinstance(error.error, ToolInvocationError):
-            status = ToolExecutionStatus.INVALID
-            fallback = f"Tool {invocation.name} arguments are invalid"
+    async def validate_message(
+        self, state: TaskAgentGraphState
+    ) -> dict[str, object]:
+        message = state["messages"][-1]
+        if not isinstance(message, AIMessage):
+            raise TypeError("validation node requires the latest AIMessage")
+        reason: str | None = None
+        if len(message.tool_calls) != 1:
+            reason = "response must contain exactly one tool call"
         else:
-            status = ToolExecutionStatus.BLOCKED
-            fallback = f"Tool {invocation.name} failed"
-        result = ToolExecutionResult(
-            status=status,
-            summary=str(error.error) or fallback,
+            call = message.tool_calls[0]
+            if not call.get("id"):
+                reason = "tool call requires a non-empty id"
+            elif call.get("name") not in {tool.name for tool in self.tools} | {
+                finish_task.name
+            }:
+                reason = f"tool is not available: {call.get('name')}"
+            elif call.get("name") == finish_task.name:
+                try:
+                    FinishTaskRunToolInput.model_validate(call.get("args") or {})
+                except Exception as exc:
+                    reason = f"finish_task arguments are invalid: {exc}"
+        if reason is None:
+            return {"route": "tools"}
+        if message.id is None:
+            raise ValueError("LangGraph add_messages did not assign a message id")
+        get_stream_writer()(
+            MessageValidationSignal(
+                message_id=message.id,
+                attempt=state["model_attempt"],
+                reason=reason,
+            ).model_dump(mode="json")
         )
-        return Command(
-            update={
-                "messages": [
+        if state["model_attempt"] >= self.model_response_max_attempts:
+            return self._completion(
+                TaskRunStatus.BLOCKED,
+                ReasonCode.INVALID_MODEL_RESPONSE,
+                reason,
+                state["cycle_count"],
+            )
+        repair_messages: list[BaseMessage] = []
+        for call in message.tool_calls:
+            call_id = call.get("id")
+            if call_id:
+                repair_messages.append(
                     ToolMessage(
-                        content=result.summary,
-                        artifact=result.model_dump(mode="json"),
-                        name=invocation.name,
-                        tool_call_id=invocation.call_id,
+                        content=reason,
+                        tool_call_id=call_id,
+                        name=call.get("name"),
                         status="error",
                     )
-                ]
-            },
-            goto="after_tools",
+                )
+        repair_messages.append(
+            HumanMessage(
+                content=(
+                    "The previous response was invalid. Return exactly one allowed "
+                    f"tool call with a new id. Error: {reason}"
+                )
+            )
         )
+        return {"messages": repair_messages, "route": "model"}
 
-    async def after_tools(self, state: TaskAgentState) -> dict[str, Any]:
-        last = state.get("messages", [])[-1]
-        if not isinstance(last, ToolMessage):
-            return self._outcome_update(
-                TaskOutcome(
-                    status=TaskStatus.BLOCKED,
-                    reason_code=ReasonCode.TOOL_FAILED,
-                    summary="ToolNode did not return a ToolMessage",
-                    cycle_count=state["cycle_count"],
-                )
-            )
-        invocation = ToolInvocation.model_validate(state["pending_invocation"])
-        if last.status == "error":
-            try:
-                result = ToolExecutionResult.model_validate(last.artifact)
-            except Exception as exc:
-                result = ToolExecutionResult(
-                    status=ToolExecutionStatus.BLOCKED,
-                    summary=f"Tool error result is invalid: {exc}",
-                )
-        else:
-            result = ToolExecutionResult(
-                status=ToolExecutionStatus.SUCCEEDED,
-                summary=self._content_text(last.content),
-                data=self._result_data(last),
-            )
-        await self._record_tool_finished(state, invocation, result)
-        if result.status == ToolExecutionStatus.CANCELLED:
-            return self._outcome_update(
-                TaskOutcome(
-                    status=TaskStatus.SKIPPED,
-                    reason_code=ReasonCode.USER_CANCELLED,
-                    summary=result.summary,
-                    cycle_count=state["cycle_count"],
-                )
-            )
-        if result.status == ToolExecutionStatus.INVALID:
-            return await self._invalid_response(
-                state, state.get("model_attempt", 0), result.summary
-            )
-        if result.status in {
-            ToolExecutionStatus.BLOCKED,
-            ToolExecutionStatus.TIMED_OUT,
-        }:
-            return self._tool_failure(state, result)
-        return {
-            "route": "observe",
-            "pending_invocation": None,
-        }
+    async def announce_tool(
+        self, state: TaskAgentGraphState
+    ) -> dict[str, object]:
+        call = self._latest_ai_call(state["messages"])
+        if self.registry.cancellation(self.test_run_id).is_set():
+            return {
+                "messages": [
+                    ToolMessage(
+                        content="Cancelled before tool execution",
+                        tool_call_id=call["id"],
+                        name=call["name"],
+                        status="error",
+                    )
+                ],
+                **self._completion(
+                    TaskRunStatus.SKIPPED,
+                    ReasonCode.USER_CANCELLED,
+                    "Cancelled before tool execution",
+                    state["cycle_count"],
+                ),
+            }
+        get_stream_writer()(
+            ToolStartedSignal(call_id=call["id"]).model_dump(mode="json")
+        )
+        return {"route": "tools"}
 
-    def _tool_failure(
-        self,
-        state: TaskAgentState,
-        result: ToolExecutionResult,
-    ) -> dict[str, Any]:
-        attempt = state.get("model_attempt", 0)
-        if attempt >= self.tool_call_max_attempts:
-            return self._outcome_update(
-                TaskOutcome(
-                    status=TaskStatus.BLOCKED,
-                    reason_code=ReasonCode.TOOL_FAILED,
-                    summary=(
-                        "Tool calls failed after "
-                        f"{self.tool_call_max_attempts} model attempts: {result.summary}"
-                    ),
-                    cycle_count=state["cycle_count"],
-                )
+    async def after_tools(self, state: TaskAgentGraphState) -> dict[str, object]:
+        tool_message = state["messages"][-1]
+        if not isinstance(tool_message, ToolMessage):
+            raise TypeError("ToolNode must append a ToolMessage")
+        call = self._latest_ai_call(state["messages"][:-1])
+        if call["name"] == finish_task.name:
+            terminal = FinishTaskRunToolInput.model_validate(call.get("args") or {})
+            status = TaskRunStatus(terminal.status)
+            reason = {
+                TaskRunStatus.PASSED: ReasonCode.COMPLETED,
+                TaskRunStatus.FAILED: (
+                    ReasonCode.GOAL_UNREACHABLE
+                    if self.task.definition.type == TestTaskType.ACT
+                    else ReasonCode.ASSERTION_FAILED
+                ),
+                TaskRunStatus.BLOCKED: ReasonCode.AGENT_BLOCKED,
+            }[status]
+            evidence = (
+                self._latest_artifact_ids(state["messages"])
+                if status in {TaskRunStatus.PASSED, TaskRunStatus.FAILED}
+                else []
+            )
+            return self._completion(
+                status,
+                reason,
+                terminal.summary,
+                state["cycle_count"],
+                evidence=evidence,
+            )
+        if tool_message.status != "error":
+            return {"route": "guard"}
+        error_text = tool_message.text or "Tool execution failed"
+        if state["model_attempt"] >= self.model_response_max_attempts:
+            return self._completion(
+                TaskRunStatus.BLOCKED,
+                ReasonCode.TOOL_FAILED,
+                error_text,
+                state["cycle_count"],
             )
         return {
-            "route": "repair",
             "messages": [
                 HumanMessage(
                     content=(
-                        "The tool call failed without changing the observation. "
-                        "Use the error and the existing decision context to return "
-                        "exactly one new allowed tool call, or finish as blocked if "
-                        f"no safe alternative exists. Error: {result.summary}"
+                        "The tool failed. Use the existing screenshot and tool result "
+                        "to select one safe alternative call, or finish as blocked."
                     )
                 )
             ],
+            "route": "model",
         }
 
-    async def _record_tool_finished(
-        self,
-        state: TaskAgentState,
-        invocation: ToolInvocation,
-        result: ToolExecutionResult,
-    ) -> None:
-        await self.journal.append(
-            ToolFinishedEvent(
-                run_id=self.run_id,
-                task_run_id=self.task_run_id,
-                cycle_count=state["cycle_count"],
-                invocation=invocation,
-                result=result,
-            ),
-            dedup_key=self._dedup(
-                state["cycle_count"], f"tool.finished:{invocation.call_id}"
-            ),
+    def _model_window(self, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+        image_message_ids = [
+            message.id
+            for message in messages
+            if message.id is not None and self._message_has_image(message)
+        ]
+        selected = filter_messages(
+            list(messages),
+            exclude_ids=image_message_ids[:-1],
+        )
+        return trim_messages(
+            selected,
+            max_tokens=self.history_max_tokens,
+            token_counter=self._estimated_tokens,
+            strategy="last",
+            allow_partial=False,
+            include_system=True,
+            start_on="human",
         )
 
-    async def _invalid_response(
-        self, state: TaskAgentState, attempt: int, message: str
-    ) -> dict[str, Any]:
-        await self.journal.append(
-            AgentResponseInvalidEvent(
-                run_id=self.run_id,
-                task_run_id=self.task_run_id,
-                cycle_count=state["cycle_count"],
-                attempt=attempt,
-                message=message,
+    @staticmethod
+    def _estimated_tokens(messages: list[BaseMessage]) -> int:
+        total = 0
+        for message in messages:
+            for block in message.content_blocks:
+                if block.get("type") == "image":
+                    total += 256
+                else:
+                    total += max(1, len(json.dumps(block, ensure_ascii=False)) // 4)
+            total += len(getattr(message, "tool_calls", [])) * 64
+        return total
+
+    @staticmethod
+    def _message_has_image(message: BaseMessage) -> bool:
+        return any(block.get("type") == "image" for block in message.content_blocks)
+
+    @staticmethod
+    def _latest_ai_call(messages: Sequence[BaseMessage]) -> dict[str, Any]:
+        for message in reversed(messages):
+            if isinstance(message, AIMessage) and len(message.tool_calls) == 1:
+                return dict(message.tool_calls[0])
+        raise ValueError("No single AI tool call is available")
+
+    @staticmethod
+    def _latest_artifact_ids(
+        messages: Sequence[BaseMessage],
+    ) -> list[ArtifactId]:
+        for message in reversed(messages):
+            ids: list[ArtifactId] = []
+            for block in message.content_blocks:
+                value = block.get("id")
+                if block.get("type") == "image" and isinstance(value, str):
+                    ids.append(cast(ArtifactId, value))
+            if ids:
+                return ids
+        return []
+
+    @staticmethod
+    def _completion(
+        status: TaskRunStatus,
+        reason_code: ReasonCode,
+        summary: str,
+        cycle_count: int,
+        *,
+        evidence: list[ArtifactId] | None = None,
+    ) -> dict[str, object]:
+        completion = TaskAgentCompletion(
+            status=status,
+            result=TaskRunResult(
+                reason_code=reason_code,
+                summary=summary,
+                evidence_artifact_ids=evidence or [],
             ),
-            dedup_key=self._dedup(
-                state["cycle_count"], f"invalid_response:{attempt}"
-            ),
+            cycle_count=cycle_count,
         )
-        if attempt >= self.tool_call_max_attempts:
-            return self._outcome_update(
-                TaskOutcome(
-                    status=TaskStatus.BLOCKED,
-                    reason_code=ReasonCode.INVALID_MODEL_RESPONSE,
-                    summary=(
-                        "Invalid model response after "
-                        f"{self.tool_call_max_attempts} attempts: {message}"
-                    ),
-                    cycle_count=state["cycle_count"],
-                )
-            )
-        return {
-            "route": "repair",
-            "model_attempt": attempt,
-            "messages": [
-                HumanMessage(
-                    content=(
-                        "The previous response was invalid. Return exactly one "
-                        f"allowed tool call. Error: {message}"
-                    )
-                )
-            ],
-        }
-
-    @staticmethod
-    def _content_text(content: Any) -> str:
-        if isinstance(content, str):
-            return content or "Tool completed"
-        return json.dumps(content, ensure_ascii=False, default=str)
-
-    @staticmethod
-    def _result_data(message: ToolMessage) -> dict[str, Any]:
-        value = message.artifact if message.artifact is not None else message.content
-        if isinstance(value, dict):
-            return value
-        try:
-            serialized = json.loads(json.dumps(value, default=str))
-        except (TypeError, ValueError):
-            serialized = str(value)
-        return {"output": serialized}
-
-    @staticmethod
-    def _outcome_update(outcome: TaskOutcome) -> dict[str, Any]:
-        return {
-            "route": "end",
-            "terminal_outcome": outcome.model_dump(mode="json"),
-        }
-
-    def _dedup(self, cycle: int, suffix: str) -> str:
-        return f"{self.run_id}:{self.task_run_id}:{cycle}:{suffix}"
+        return {"completion": completion, "route": "end"}

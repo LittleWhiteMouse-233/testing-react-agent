@@ -1,34 +1,45 @@
 from __future__ import annotations
 
-from collections import Counter
-from uuid import uuid4
+from typing import Any, cast
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import BaseMessage
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.errors import NodeTimeoutError
+from langgraph.graph import add_messages
 from langsmith import tracing_context
 
-from app.domain.errors import ReasonCode
+from app.domain.errors import (
+    ActionTimeout,
+    CaptureFailed,
+    DeviceUnavailable,
+    ModelCallTimeout,
+    ReasonCode,
+)
 from app.domain.events import (
     ExecutionErrorEvent,
-    RunCancelledEvent,
-    RunFinishedEvent,
-    RunStartedEvent,
-    TaskFinishedEvent,
-    TaskStartedEvent,
-    TasksSkippedEvent,
+    MessageAppendedEvent,
+    MessageValidationFailedEvent,
+    RunEvent,
+    ToolStartedEvent,
 )
 from app.domain.execution import (
-    OverallResult,
-    RunOutcome,
-    TaskExecution,
-    TaskOutcome,
-    TaskStatus,
+    TaskAgentCompletion,
+    TaskRun,
+    TaskRunResult,
+    TaskRunStatus,
+    TestRunVerdict,
+    aggregate_test_run_verdict,
 )
-from app.execution.ports import (
-    CompiledTaskAgentFactory,
-    ExecutionJournal,
-    ExecutionRepository,
+from app.domain.planning import TestTask
+from app.graph.signals import (
+    GRAPH_SIGNAL_ADAPTER,
+    MessageValidationSignal,
+    ToolStartedSignal,
 )
+from app.graph.task_agent import TaskAgentFactory
+from app.persistence.execution_repository import SqlAlchemyExecutionRepository
+from app.services.message_projector import project_run_message
 from app.services.registry import RunRegistry
 
 
@@ -36,250 +47,239 @@ class RunExecutor:
     def __init__(
         self,
         *,
-        repository: ExecutionRepository,
-        journal: ExecutionJournal,
-        agent_factory: CompiledTaskAgentFactory,
+        repository: SqlAlchemyExecutionRepository,
+        agent_factory: TaskAgentFactory,
         registry: RunRegistry,
         checkpoint_path: str,
     ) -> None:
         self.repository = repository
-        self.journal = journal
         self.agent_factory = agent_factory
         self.registry = registry
         self.checkpoint_path = checkpoint_path
 
-    async def run(self, run_id: str) -> None:
-        active_task_run_id: str | None = None
+    async def run(self, test_run_id: str) -> None:
+        active_task: TaskRun | None = None
         try:
-            snapshot = await self.repository.load_snapshot(run_id)
-            await self.repository.start_run(
-                run_id,
-                RunStartedEvent(
-                    run_id=run_id,
-                    device_id=snapshot.device.id,
-                ),
-            )
-            if snapshot.device.capabilities is None:
-                await self._finish_blocked_run(
-                    run_id,
+            detail = await self.repository.get_detail(test_run_id)
+            await self.repository.start_run(test_run_id)
+            if not detail.snapshot.device_environment.health.available:
+                await self._block_run(
+                    test_run_id,
                     ReasonCode.DEVICE_UNAVAILABLE,
-                    snapshot.device.health.message or "Device is unavailable",
+                    detail.snapshot.device_environment.health.message
+                    or "Device is unavailable",
                 )
                 return
+            completed: list[TaskRun] = []
             async with AsyncSqliteSaver.from_conn_string(
                 self.checkpoint_path
             ) as checkpointer:
                 with tracing_context(enabled=False):
-                    for index, task in enumerate(snapshot.plan.tasks):
-                        if self.registry.cancellation(run_id).is_set():
-                            await self._finish_cancelled(run_id)
+                    for index, test_task in enumerate(detail.test_plan.content.tasks):
+                        if self.registry.cancellation(test_run_id).is_set():
+                            await self.repository.finish_run(
+                                test_run_id, TestRunVerdict.CANCELLED
+                            )
                             return
-                        pending_execution = TaskExecution(
-                            id=str(uuid4()),
-                            task=task,
-                            task_index=index,
-                            status=TaskStatus.RUNNING,
+                        active_task = await self.repository.start_task(
+                            test_run_id, test_task
                         )
-                        task_execution = await self.repository.start_task(
-                            run_id,
-                            pending_execution,
-                            TaskStartedEvent(
-                                run_id=run_id,
-                                task_run_id=pending_execution.id,
-                                task_index=index,
-                                task=task,
-                            ),
-                        )
-                        active_task_run_id = task_execution.id
-                        context = await self.repository.recent_context(run_id, 10)
-                        model_id = (
-                            snapshot.models.act.profile_id
-                            if task.type.value == "act"
-                            else snapshot.models.judge.profile_id
-                        )
-                        agent = await self.agent_factory.build(
-                            run_id=run_id,
-                            task_run_id=task_execution.id,
-                            device_id=snapshot.device.id,
-                            task=task,
-                            cross_task_context=context,
+                        completion = await self._execute_task(
+                            test_run_id=test_run_id,
+                            task_run=active_task,
+                            test_task=test_task,
+                            device_id=detail.run.device_id,
+                            previous_task_runs=completed,
                             checkpointer=checkpointer,
                         )
-                        try:
-                            state = await agent.ainvoke(
-                                {
-                                    "messages": [
-                                        HumanMessage(
-                                            content=(
-                                                f"Begin {task.type.value} task: "
-                                                f"{task.title}"
-                                            )
-                                        )
-                                    ],
-                                    "model_id": model_id,
-                                    "cycle_count": 0,
-                                    "model_attempt": 0,
-                                    "latest_observation": None,
-                                    "pending_invocation": None,
-                                    "terminal_outcome": None,
-                                    "route": "observe",
-                                },
-                                config={
-                                    "configurable": {
-                                        "thread_id": f"execution-v1:{task_execution.id}"
-                                    }
-                                },
-                            )
-                            outcome = TaskOutcome.model_validate(
-                                state.get("terminal_outcome")
-                            )
-                        except Exception as exc:
-                            cycle_count = await self._current_cycle(
-                                run_id, task_execution.id
-                            )
-                            outcome = TaskOutcome(
-                                status=TaskStatus.BLOCKED,
-                                reason_code=ReasonCode.UNEXPECTED_ERROR,
-                                summary=f"Task agent failed unexpectedly: {exc}",
-                                cycle_count=cycle_count,
-                            )
-                            await self.journal.append(
-                                ExecutionErrorEvent(
-                                    run_id=run_id,
-                                    task_run_id=task_execution.id,
-                                    reason_code=ReasonCode.UNEXPECTED_ERROR,
-                                    message=str(exc),
-                                ),
-                                dedup_key=(f"{run_id}:{task_execution.id}:unexpected"),
-                            )
                         await self.repository.finish_task(
-                            task_execution.id,
-                            outcome,
-                            TaskFinishedEvent(
-                                run_id=run_id,
-                                task_run_id=task_execution.id,
-                                outcome=outcome,
-                            ),
+                            active_task.id,
+                            status=completion.status,
+                            result=completion.result,
+                            cycle_count=completion.cycle_count,
                         )
-                        active_task_run_id = None
-                        if outcome.reason_code == ReasonCode.USER_CANCELLED:
-                            await self._finish_cancelled(run_id)
+                        active_task = (
+                            await self.repository.list_task_runs(test_run_id)
+                        )[-1]
+                        completed.append(active_task)
+                        if completion.result.reason_code == ReasonCode.USER_CANCELLED:
+                            await self.repository.finish_run(
+                                test_run_id, TestRunVerdict.CANCELLED
+                            )
                             return
-                        if outcome.status in {
-                            TaskStatus.FAILED,
-                            TaskStatus.BLOCKED,
+                        if completion.status in {
+                            TaskRunStatus.FAILED,
+                            TaskRunStatus.BLOCKED,
                         }:
-                            skipped_executions: list[TaskExecution] = []
-                            for skipped_index in range(
-                                index + 1, len(snapshot.plan.tasks)
-                            ):
-                                skipped_task = snapshot.plan.tasks[skipped_index]
-                                skipped_outcome = TaskOutcome(
-                                    status=TaskStatus.SKIPPED,
-                                    reason_code=ReasonCode.GLOBAL_FAIL_FAST,
-                                    summary="Skipped by global fail-fast",
-                                    cycle_count=0,
-                                )
-                                skipped_executions.append(
-                                    TaskExecution(
-                                        id=str(uuid4()),
-                                        task=skipped_task,
-                                        task_index=skipped_index,
-                                        status=TaskStatus.SKIPPED,
-                                        outcome=skipped_outcome,
-                                    )
-                                )
-                            if skipped_executions:
+                            remaining = detail.test_plan.content.tasks[index + 1 :]
+                            if remaining:
                                 await self.repository.skip_remaining(
-                                    run_id,
-                                    skipped_executions,
-                                    TasksSkippedEvent(
-                                        run_id=run_id,
-                                        task_ids=[
-                                            item.task.task_id
-                                            for item in skipped_executions
-                                        ],
-                                    ),
+                                    test_run_id,
+                                    remaining,
                                 )
                             break
-            outcome = await self._aggregate(run_id)
+                        active_task = None
+            task_runs = await self.repository.list_task_runs(test_run_id)
             await self.repository.finish_run(
-                run_id,
-                outcome.result,
-                RunFinishedEvent(run_id=run_id, result=outcome.result),
+                test_run_id, aggregate_test_run_verdict(task_runs)
             )
         except Exception as exc:
-            if active_task_run_id is not None:
-                cycle_count = await self._current_cycle(run_id, active_task_run_id)
-                outcome = TaskOutcome(
-                    status=TaskStatus.BLOCKED,
-                    reason_code=ReasonCode.UNEXPECTED_ERROR,
-                    summary=str(exc),
-                    cycle_count=cycle_count,
+            reason = self._reason_for_exception(exc)
+            if active_task is not None:
+                latest = await self.repository.list_task_runs(test_run_id)
+                current = next(
+                    (task for task in latest if task.id == active_task.id), active_task
                 )
-                await self.repository.finish_task(
-                    active_task_run_id,
-                    outcome,
-                    TaskFinishedEvent(
-                        run_id=run_id,
-                        task_run_id=active_task_run_id,
-                        outcome=outcome,
-                    ),
-                )
-            await self._finish_blocked_run(
-                run_id, ReasonCode.UNEXPECTED_ERROR, str(exc)
-            )
+                if current.status == TaskRunStatus.RUNNING:
+                    await self.repository.finish_task(
+                        current.id,
+                        status=TaskRunStatus.BLOCKED,
+                        result=TaskRunResult(
+                            reason_code=reason,
+                            summary=f"Task agent failed: {exc}",
+                            evidence_artifact_ids=[],
+                        ),
+                        cycle_count=current.cycle_count,
+                    )
+            await self._block_run(test_run_id, reason, str(exc))
         finally:
-            self.registry.unregister(run_id)
+            self.registry.unregister(test_run_id)
 
-    async def _aggregate(self, run_id: str) -> RunOutcome:
-        tasks = await self.repository.list_task_executions(run_id)
-        statuses = [item.status for item in tasks]
-        if any(status == TaskStatus.FAILED for status in statuses):
-            result = OverallResult.FAIL
-        elif any(
-            status in {TaskStatus.BLOCKED, TaskStatus.SKIPPED} for status in statuses
+    async def _execute_task(
+        self,
+        *,
+        test_run_id: str,
+        task_run: TaskRun,
+        test_task: TestTask,
+        device_id: str,
+        previous_task_runs: list[TaskRun],
+        checkpointer: BaseCheckpointSaver[Any],
+    ) -> TaskAgentCompletion:
+        graph, initial = await self.agent_factory.build(
+            test_run_id=test_run_id,
+            task_run_id=task_run.id,
+            device_id=device_id,
+            task=test_task,
+            previous_task_runs=previous_task_runs,
+            checkpointer=checkpointer,
+        )
+        completion: TaskAgentCompletion | None = None
+        async for part in graph.astream(
+            initial,
+            config={"configurable": {"thread_id": f"task-run:{task_run.id}"}},
+            stream_mode=["updates", "custom"],
+            version="v2",
+            durability="exit",
         ):
-            result = OverallResult.BLOCKED
-        elif statuses and all(status == TaskStatus.PASSED for status in statuses):
-            result = OverallResult.PASS
-        else:
-            result = OverallResult.BLOCKED
-        counts = Counter(status.value for status in statuses)
-        return RunOutcome(result=result, task_counts=dict(counts))
+            mode = part["type"]
+            data = part["data"]
+            if mode == "updates":
+                completion = await self._consume_updates(
+                    test_run_id, task_run.id, data, completion
+                )
+            elif mode == "custom":
+                await self._consume_signal(test_run_id, task_run.id, data)
+        if completion is None:
+            raise RuntimeError("TaskAgent ended without TaskAgentCompletion")
+        return completion
 
-    async def _current_cycle(self, run_id: str, task_run_id: str) -> int:
-        executions = await self.repository.list_task_executions(run_id)
-        return next(
-            (
-                execution.cycle_count
-                for execution in executions
-                if execution.id == task_run_id
-            ),
-            0,
-        )
+    async def _consume_updates(
+        self,
+        test_run_id: str,
+        task_run_id: str,
+        data: object,
+        completion: TaskAgentCompletion | None,
+    ) -> TaskAgentCompletion | None:
+        if not isinstance(data, dict):
+            raise TypeError("LangGraph updates stream must contain a node mapping")
+        for update in data.values():
+            if not isinstance(update, dict):
+                continue
+            messages = update.get("messages", [])
+            if isinstance(messages, BaseMessage):
+                messages = [messages]
+            normalized_messages = add_messages([], cast(Any, messages))
+            message_events: list[tuple[RunEvent, str | None]] = []
+            for message in normalized_messages:
+                if not isinstance(message, BaseMessage):
+                    raise TypeError("updates.messages must contain BaseMessage")
+                projected = project_run_message(message)
+                message_events.append(
+                    (
+                        MessageAppendedEvent(
+                            test_run_id=test_run_id,
+                            task_run_id=task_run_id,
+                            message=projected,
+                        ),
+                        f"{test_run_id}:{task_run_id}:message:{projected.message_id}",
+                    )
+                )
+            if message_events:
+                await self.repository.append_events(message_events)
+            cycle_count = update.get("cycle_count")
+            if isinstance(cycle_count, int) and cycle_count > 0:
+                await self.repository.update_cycle(task_run_id, cycle_count)
+            value = update.get("completion")
+            if value is not None:
+                completion = (
+                    value
+                    if isinstance(value, TaskAgentCompletion)
+                    else TaskAgentCompletion.model_validate(value)
+                )
+        return completion
 
-    async def _finish_cancelled(self, run_id: str) -> None:
-        await self.repository.finish_run(
-            run_id,
-            OverallResult.CANCELLED,
-            RunCancelledEvent(run_id=run_id),
-            cancelled=True,
-        )
-
-    async def _finish_blocked_run(
-        self, run_id: str, reason: ReasonCode, message: str
+    async def _consume_signal(
+        self, test_run_id: str, task_run_id: str, data: object
     ) -> None:
-        await self.journal.append(
+        signal = GRAPH_SIGNAL_ADAPTER.validate_python(data)
+        if isinstance(signal, MessageValidationSignal):
+            event = MessageValidationFailedEvent(
+                test_run_id=test_run_id,
+                task_run_id=task_run_id,
+                message_id=signal.message_id,
+                attempt=signal.attempt,
+                reason=signal.reason,
+            )
+            suffix = f"validation:{signal.message_id}:{signal.attempt}"
+        elif isinstance(signal, ToolStartedSignal):
+            event = ToolStartedEvent(
+                test_run_id=test_run_id,
+                task_run_id=task_run_id,
+                call_id=signal.call_id,
+            )
+            suffix = f"tool.started:{signal.call_id}"
+        else:
+            raise TypeError(f"unsupported graph signal: {type(signal).__name__}")
+        await self.repository.append_event(
+            event, dedup_key=f"{test_run_id}:{task_run_id}:{suffix}"
+        )
+
+    async def _block_run(
+        self, test_run_id: str, reason: ReasonCode, message: str
+    ) -> None:
+        await self.repository.append_event(
             ExecutionErrorEvent(
-                run_id=run_id,
+                test_run_id=test_run_id,
+                task_run_id=None,
                 reason_code=reason,
-                message=message,
+                message=message or reason.value,
             ),
-            dedup_key=f"{run_id}:run.error:{reason.value}",
+            dedup_key=f"{test_run_id}:run.error:{reason.value}",
         )
-        await self.repository.finish_run(
-            run_id,
-            OverallResult.BLOCKED,
-            RunFinishedEvent(run_id=run_id, result=OverallResult.BLOCKED),
-        )
+        run = await self.repository.get_test_run(test_run_id)
+        if run.status.value != "finished":
+            await self.repository.finish_run(test_run_id, TestRunVerdict.BLOCKED)
+
+    @staticmethod
+    def _reason_for_exception(exc: Exception) -> ReasonCode:
+        if isinstance(exc, DeviceUnavailable):
+            return ReasonCode.DEVICE_UNAVAILABLE
+        if isinstance(exc, (CaptureFailed, ActionTimeout)):
+            return ReasonCode.CAPTURE_FAILED
+        if isinstance(exc, ModelCallTimeout):
+            return ReasonCode.MODEL_UNAVAILABLE
+        if isinstance(exc, NodeTimeoutError) and exc.node == "tools":
+            return ReasonCode.TOOL_FAILED
+        if isinstance(exc, TimeoutError):
+            return ReasonCode.TOOL_FAILED
+        return ReasonCode.UNEXPECTED_ERROR

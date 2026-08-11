@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.domain.activity import Activity
+from app.domain.activity import AgentActivity
 from app.llm.contracts import ChatModelProvider
 
 
@@ -17,9 +17,9 @@ class ModelRegistry:
             raise ValueError("At least one model provider is required")
         self.models = models
         self.routes = {
-            Activity.PLANNING: planning_model_id,
-            Activity.ACT: act_model_id,
-            Activity.JUDGE: judge_model_id,
+            AgentActivity.PLANNING: planning_model_id,
+            AgentActivity.ACT: act_model_id,
+            AgentActivity.JUDGE: judge_model_id,
         }
         for activity, model_id in self.routes.items():
             if model_id is not None and model_id not in models:
@@ -31,7 +31,7 @@ class ModelRegistry:
     def default_model_id(self) -> str:
         return next(iter(self.models))
 
-    def model_id_for(self, activity: Activity) -> str:
+    def model_id_for(self, activity: AgentActivity) -> str:
         return self.routes[activity] or self.default_model_id
 
     def get(self, model_id: str) -> ChatModelProvider:
@@ -40,5 +40,5 @@ class ModelRegistry:
         except KeyError as exc:
             raise LookupError(f"Model is not registered: {model_id}") from exc
 
-    def for_activity(self, activity: Activity) -> ChatModelProvider:
+    def for_activity(self, activity: AgentActivity) -> ChatModelProvider:
         return self.get(self.model_id_for(activity))

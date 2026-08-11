@@ -1,38 +1,51 @@
 # Android TV 主观测试 Agent
 
-基于 `PRD.md` 与 `spec3.md` 实现的 A+B 阶段验证系统。它把自然语言测试用例转换为可人工确认的任务计划，并通过通用 ReAct Task Agent 控制或观察 Android TV，保存证据、实时事件和确定性测试报告。
+这是一个面向内部测试人员的 Android TV 主观测试系统：把自然语言用例转换为可人工确认的语义任务计划，再由截图驱动的 Task Agent 自适应执行或判定，最终生成可追溯的确定性结果和证据报告。
 
-当前实现包括：
+当前交付范围是 PRD P0/P1：一台设备对应一次运行、全局同时只执行一个 TestRun。PDF、通用 DAG、多运行调度、进程中断后的自动续跑、Skills/MCP 管理平台属于未来范围。
 
-- 不可变 TestCase/PlanRevision/TestRun 快照；
-- PlanningGraph 与通用 TaskAgentGraph；Act/Judge 共享循环并通过 Policy 隔离能力；
-- Task 级多轮观察—决策—单工具调用、cycle 上限、全局 fail-fast 和带外取消；
-- ADB、Fake、Replay DeviceController；
-- planning/act/judge 独立路由的多模型注册表、OpenAI 兼容 Provider 和确定性 Scripted Provider；
-- SQLite WAL、Alembic、每 Task 独立的 LangGraph SQLite checkpoint、强类型幂等事件；
-- FastAPI REST、可补拉 SSE、JSON/HTML 报告；
-- React、TypeScript、Ant Design 管理界面。
+## 当前架构
 
-PDF、自动崩溃恢复入口、Skills、MCP、React Flow 和多运行并发属于阶段 C，不在当前版本内。
+核心事实沿一条单向链路流动：
 
-## 环境
+```text
+TestCase
+  -> immutable TestPlan(version + ordered TestTask)
+  -> TestRun(snapshot) + TaskRun
+  -> LangChain Message
+  -> RunMessage -> message.appended
+  -> TestRunDetail -> TestRunReport -> JSON/HTML Artifact
+```
+
+- `backend/app/domain/` 保存与框架无关的 canonical models、ID aliases、状态、结果、公开 Message/Event 和 Artifact。
+- `backend/app/graph/` 使用 LangGraph 的公开 `MessagesState`、`add_messages`、`ToolNode`、retry/timeout 与 stream API。
+- `backend/app/device/`、`llm/`、`tools/` 保存 provider、`BaseTool` 和瞬时截图 bytes 等集成对象。
+- `backend/app/persistence/` 保存 SQLAlchemy Row、集中 JSON adapter、Row mapper 和查询/事务边界。
+- `backend/app/services/` 保存 planning、run、event、artifact、report 和公开 Message 投影等应用边界。
+- `backend/app/api/` 只定义 command request、分页、错误及路由；同形且安全的 domain/read model 直接作为响应。
+- `frontend/src/api/schema.d.ts` 由已提交的 OpenAPI 合同生成，页面保留 snake_case wire 字段。
+
+结构治理、信息家族、唯一转换责任和 W/O/N 审计详见 [数据结构整理.md](数据结构整理.md)。产品语义以 [PRD.md](PRD.md) 为准，运行设计以 [spec3.md](spec3.md) 为准。
+
+## 环境与启动
 
 - Conda 环境：`llm-dev`（Python 3.12）
 - Node.js 22 或更高
-- 可选：Android SDK Platform Tools/ADB
+- 可选：Android SDK Platform Tools / ADB
 
-所有后端命令都从 `backend` 目录执行：
+后端命令从 `backend` 执行。PowerShell 中应在第一次 `conda run` 前启用 UTF-8：
 
 ```powershell
 cd backend
+$env:PYTHONUTF8 = "1"
 conda run -n llm-dev python -m pip install -e ".[dev]"
 conda run -n llm-dev python -m alembic upgrade head
 conda run -n llm-dev python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-后端必须使用单个 Uvicorn worker；当前版本的 RunRegistry 和 SSE EventBus 是进程内组件。
+后端必须使用单个 Uvicorn worker；RunRegistry 与 SSE EventBus 是进程内组件。
 
-前端：
+前端单独启动：
 
 ```powershell
 cd frontend
@@ -40,29 +53,22 @@ npm.cmd install
 npm.cmd run dev
 ```
 
-浏览器打开 `http://localhost:5173`。Vite 会把 `/api` 和 `/health` 代理到 `http://localhost:8000`。
+打开 `http://localhost:5173`。Vite 会把 `/api` 与 `/health` 代理到 `http://localhost:8000`。
 
 ## 配置
 
-复制 `.env.example` 为 `.env`。应用级配置使用与设备类型无关的 `TEST_AGENT_` 前缀；模型和设备适配器配置分别使用 `LLM_`、`ADB_` 等技术域前缀。默认模型列表只有一个 scripted profile，无需网络或密钥，`fake-tv` 始终可用。
+复制 `.env.example` 为 `.env`。默认使用无需网络或凭据的 scripted model，并始终注册 `fake-tv`。
 
-真实模型模式：
+真实 OpenAI-compatible 模型配置示例：
 
 ```dotenv
-LLM_PROFILES=[{"id":"planner","mode":"real","base_url":"https://example.com/v1","api_key":"...","model":"planner-model","timeout_seconds":60},{"id":"vision","mode":"real","base_url":"https://example.com/v1","api_key":"...","model":"vision-tool-model","timeout_seconds":60}]
+LLM_PROFILES=[{"id":"planner","mode":"real","base_url":"https://example.com/v1","api_key":"...","model":"planner-model","timeout_seconds":60},{"id":"vision","mode":"real","base_url":"https://example.com/v1","api_key":"...","model":"vision-model","timeout_seconds":60}]
 TEST_AGENT_PLANNING_MODEL_ID=planner
 TEST_AGENT_ACT_MODEL_ID=vision
 TEST_AGENT_JUDGE_MODEL_ID=vision
 ```
 
-兼容端点必须支持：
-
-- Chat Completions 图文输入；
-- `response_format.type=json_schema`；
-- strict JSON Schema 输出；
-- 标准 tool calling，并支持禁用并行 tool calls。
-
-`LLM_PROFILES` 的顺序稳定，未显式配置活动路由时使用首项。系统不会从非法自由文本中正则提取计划、动作或终态：规划 Structured Output 最多调用三次；Task Agent 每轮必须调用一个工具，终态统一调用 `finish_task`，格式、未知工具或参数错误在当前 cycle 内最多重试三次。
+模型端点需要支持多模态输入、structured output 和标准 tool calling。Task Agent 每次有效响应必须恰好包含一个 tool call；任务通过正常的 `finish_task` 调用结束。
 
 注册真实电视：
 
@@ -71,9 +77,9 @@ ADB_PATH=adb
 ADB_SERIAL=192.168.1.10:5555
 ```
 
-系统启动时会同时提供 `fake-tv` 和配置的 ADB serial。
+重试配置分别控制幂等截图、模型调用异常和无效模型响应。可能改变设备状态且结果未知的工具不会被自动重试。
 
-## 数据
+## 数据与不兼容基线
 
 默认运行数据位于：
 
@@ -81,79 +87,89 @@ ADB_SERIAL=192.168.1.10:5555
 data/
   app.db
   checkpoints.db
-  artifacts/{run_id}/
+  artifacts/{owner_id}/{artifact_id}.{extension}
 ```
 
-截图先写临时文件，再原子重命名并记录 Artifact。数据库只保存相对路径和元数据。历史导出不会覆盖，每次 JSON/HTML 导出都创建新 Artifact。
+业务数据库只有七张表：`test_cases`、`test_plans`、`test_tasks`、`test_runs`、`task_runs`、`run_events`、`artifacts`。截图和导出 bytes 以本地文件为权威，数据库只保存受约束的 owner、类型、相对路径、大小和哈希。
 
-本次执行核心重构直接重写了 `0001` 基线，不提供旧数据库、checkpoint 或事件协议兼容。已有开发数据需要先停止后端，再显式删除 `data/app.db`、`data/checkpoints.db` 和不再需要的 `data/artifacts/`，随后重新建库；应用本身不会自动删除数据。
-
-首次建库或重置后建库：
+本次重构直接重写了 Alembic `0001`。旧数据库、checkpoint、事件、截图和导出均不兼容，应用不会自动迁移或删除它们。需要重置时，先停止后端，人工移走或删除 `data/app.db`、`data/checkpoints.db` 与不再需要的 `data/artifacts/`，再执行：
 
 ```powershell
 cd backend
+$env:PYTHONUTF8 = "1"
 conda run -n llm-dev python -m alembic upgrade head
 ```
 
-应用启动也会为全新开发目录创建当前表结构，但正式的结构版本以 Alembic 为准。
+## 执行与事件
 
-## 执行架构
+TestPlan 不可变。人工编辑生成新的 `manual_revision` TestPlan 和全新的 TestTask ID；重新规划生成 `replanning` TestPlan。只有同一 TestCase 的 latest TestPlan 可以继续修订或创建 TestRun。
 
-`RunExecutor` 只加载不可变 `RunSnapshot`、顺序启动 Task、选择快照中的 act/judge 模型、执行全局 fail-fast，并按固定规则聚合最终结果。每个 Task 由一次 `TaskAgentGraph` 调用完整执行，cycle、截图、模型消息、业务事件与证据都归 Agent 图管理。
+每个 Task Agent cycle 为：取消/上限守卫 → 截图 → 模型决策 → 校验 → 一个工具调用。截图 bytes 获取后，同时执行一次 base64 编码和一次 Artifact 文件写入。完整原始 Message 与 base64 保留在 Graph State/checkpoint 中；模型窗口仅通过公开 `filter_messages`/`trim_messages` 选择已有消息，不写占位符、不重读文件、不重复编码。
 
-每个 cycle 强制执行“取消/cycle 守卫 → 最新完整截图 → 模型决策 → 恰好一个工具调用”。`finish_task` 由图截获为终态；其他工具交给 LangGraph `ToolNode`。成功工具调用后重新截图；schema、运行异常或超时耗尽则携带 ToolMessage 直接让模型修复调用，不重新观察或累计图片上下文。
+运行过程以 Message 为第一事实：
 
-DeviceProvider 通过 `DeviceCapabilities` 声明已经装饰好的 `ToolEntry(BaseTool, scopes)`。全局 `CatalogToolProvider` 在应用初始化时装载并分类全部工具，graph 通过共享的 domain `Activity` 精确选择 act/judge 工具。Catalog 不包装工具、不修改 docstring/schema、不执行重试或标准化结果；节点超时由 LangGraph `TimeoutPolicy + RetryPolicy` 独立处理。MCP 尚未接入，未来适配器产出相同 capability 声明即可进入目录。
+- LangGraph `astream(version="v2", stream_mode=["updates", "custom"])` 的 `updates.messages` 是 `message.appended` 的唯一来源。
+- 公开 `RunMessage` 保留原文本、合法/无效 AI tool call 和 ToolMessage，只把图片 base64 投影为 Artifact ID。
+- `custom` 只补充 Message 没有表达的校验失败和工具开始事实。
+- 生命周期、错误、跳过和终态由少量补充事件表达，不复制 Task、Result、verdict 或设备事实。
+- 不订阅 `messages` token mode，不定义、聚合、持久化或展示 token/chunk。
 
-PASS/FAIL 自动绑定终态决策所在 cycle 的最新截图。checkpoint 只保存消息与 Artifact 引用，不保存截图 bytes/base64。API、SSE、报告和前端消费同一组点分隔的强类型事件。
+REST、SSE、在线报告和导出共同使用 `StoredRunEvent`。SSE 只发送 `id: sequence` 和 `data: StoredRunEvent`，断线后可用 `after` 补拉。每个 Task checkpoint thread 使用 `task-run:{task_run_id}`；执行协议基线是 `"1"`。
 
-## 测试与构建
+## 核心 API
 
-后端：
+完整合同见运行中的 `/docs` 或 `frontend/src/api/openapi.json`。
+
+```text
+POST   /api/test-cases
+GET    /api/test-cases
+GET    /api/test-cases/{test_case_id}
+POST   /api/test-cases/{test_case_id}/plans
+GET    /api/test-cases/{test_case_id}/plans
+POST   /api/test-plans/{test_plan_id}/revisions
+
+POST   /api/runs
+GET    /api/runs
+GET    /api/runs/{test_run_id}
+POST   /api/runs/{test_run_id}/cancel
+GET    /api/runs/{test_run_id}/events?after={sequence}
+GET    /api/runs/{test_run_id}/stream?after={sequence}
+GET    /api/runs/{test_run_id}/report
+POST   /api/runs/{test_run_id}/exports
+
+GET    /api/artifacts/{artifact_id}
+GET    /api/devices
+GET    /api/devices/{device_id}
+```
+
+创建运行的 request 是 `test_plan_id + device_id + assumptions_confirmed: true`。nullable 字段始终显式输出 `null`；错误统一为 `{code, message}`。
+
+## OpenAPI 与验证
+
+后端合同变化后重新导出并生成前端类型：
 
 ```powershell
 cd backend
-$env:PYTHONDONTWRITEBYTECODE = "1"
-conda run -n llm-dev python -m pytest -q
+$env:PYTHONUTF8 = "1"
+conda run -n llm-dev python scripts/export_openapi.py ../frontend/src/api/openapi.json
+cd ../frontend
+npm.cmd run generate:api
 ```
 
-当前受管工作区可能禁止创建 Python bytecode，因此测试命令显式关闭 `.pyc` 写入；项目也关闭了 pytest cache provider。
-
-前端：
+完整验收：
 
 ```powershell
-cd frontend
+cd backend
+$env:PYTHONUTF8 = "1"
+conda run -n llm-dev python -m pytest -q
+conda run -n llm-dev python -m pyright
+conda run -n llm-dev python -m alembic check
+
+cd ../frontend
+npm.cmd run check:api
 npm.cmd test
 npm.cmd run typecheck
 npm.cmd run build
 ```
 
-默认测试不访问网络、不需要模型密钥或真实电视。真实 ADB/模型 smoke 测试应只在显式配置对应环境变量时运行。
-
-## 核心 API
-
-完整 OpenAPI 文档在后端启动后的 `/docs`。
-
-```text
-POST   /api/test-cases
-GET    /api/test-cases
-GET    /api/test-cases/{id}
-POST   /api/test-cases/{id}/plans
-GET    /api/test-cases/{id}/plans
-POST   /api/plan-revisions/{id}/revisions
-
-POST   /api/runs
-GET    /api/runs
-GET    /api/runs/{id}
-POST   /api/runs/{id}/cancel
-GET    /api/runs/{id}/events?after={sequence}
-GET    /api/runs/{id}/stream?after={sequence}
-
-GET    /api/runs/{id}/report
-POST   /api/runs/{id}/exports
-GET    /api/artifacts/{id}
-GET    /api/devices
-GET    /api/devices/{id}/health
-```
-
-创建运行时 `confirmed_assumptions` 必须与计划中的 assumptions 完全匹配。已有 pending/running TestRun 时，新请求返回 HTTP 409。
+自动化测试默认不访问网络，不需要真实模型凭据或真实电视。

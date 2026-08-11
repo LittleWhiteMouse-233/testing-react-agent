@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>{{ report.snapshot.test_case.name }} - 测试报告</title>
+  <title>{{ report.detail.test_plan.content.title }} - 测试报告</title>
   <style>
     body{font-family:system-ui,sans-serif;max-width:1080px;margin:40px auto;padding:0 24px;color:#17202a}
     header{border-bottom:3px solid #1677ff;padding-bottom:20px}.result{font-size:32px;font-weight:700}
@@ -15,30 +15,32 @@
 <body>
   <header>
     <div class="meta">Android TV 主观测试 Agent</div>
-    <h1>{{ report.snapshot.test_case.name }}</h1>
-    <div class="result {{ report.run.overall_result }}">{{ report.run.overall_result }}</div>
+    <h1>{{ report.detail.test_plan.content.title }}</h1>
+    <div class="result {{ report.detail.run.verdict }}">{{ report.detail.run.verdict }}</div>
   </header>
   <section>
     <h2>运行快照</h2>
-    <p>设备：{{ report.run.device_id }} · 计划版本：{{ report.snapshot.plan_revision.revision }}</p>
-    <p>模型：规划 {{ report.snapshot.models.planning.profile_id }}（{{ report.snapshot.models.planning.model }}） · 执行 {{ report.snapshot.models.act.profile_id }}（{{ report.snapshot.models.act.model }}） · 判定 {{ report.snapshot.models.judge.profile_id }}（{{ report.snapshot.models.judge.model }}）</p>
-    <p>已确认前置条件：{{ report.snapshot.confirmed_assumptions | join("；") or "无" }}</p>
+    <p>设备：{{ report.detail.run.device_id }} · 计划版本：{{ report.detail.test_plan.version_number }}</p>
+    <p>执行模型：{{ report.detail.snapshot.act_model.profile_id }} · 判定模型：{{ report.detail.snapshot.judge_model.profile_id }}</p>
   </section>
   <section>
     <h2>任务结果</h2>
-    {% for task in report.tasks %}
+    {% for task_run in report.detail.task_runs %}
+      {% set task = report.detail.test_plan.content.tasks | selectattr('test_task_id', 'equalto', task_run.test_task_id) | first %}
       <article class="task">
-        <h3>{{ task.task_index + 1 }}. {{ task.definition.title }} — {{ task.status }}</h3>
+        <h3>{{ loop.index }}. {{ task.definition.title }} — {{ task_run.status }}</h3>
         <p><strong>目标：</strong>{{ task.definition.goal }}</p>
-        <p><strong>标准：</strong>{{ task.definition.success_criteria | join("；") }}</p>
-        <p><strong>结论：</strong>{{ task.outcome.summary if task.outcome else "无" }}（{{ task.cycle_count }} cycles）</p>
-        {% if task.outcome %}<p><strong>原因：</strong>{{ task.outcome.reason_code }}</p>{% endif %}
-        {% for artifact in task.evidence %}
-          {% if artifact.data_url %}<img src="{{ artifact.data_url }}" alt="证据截图 {{ artifact.id }}">{% endif %}
-        {% endfor %}
+        <p><strong>标准：</strong>{{ task.definition.success_criteria | join('；') }}</p>
+        <p><strong>结论：</strong>{{ task_run.result.summary if task_run.result else '无' }}（{{ task_run.cycle_count }} cycles）</p>
+        {% if task_run.result %}<p><strong>原因：</strong>{{ task_run.result.reason_code }}</p>{% endif %}
+        {% if task_run.result %}
+          {% for artifact_id in task_run.result.evidence_artifact_ids %}
+            {% if image_data_urls.get(artifact_id) %}<img src="{{ image_data_urls[artifact_id] }}" alt="证据截图 {{ artifact_id }}">{% endif %}
+          {% endfor %}
+        {% endif %}
       </article>
     {% endfor %}
   </section>
-  <section><h2>事件统计</h2><p>{{ report.summary.event_count }} 个事件，{{ report.summary.artifact_count }} 个 Artifact。</p></section>
+  <section><h2>事实记录</h2><p>{{ report.events | length }} 个事件，{{ report.artifacts | length }} 个 Artifact。</p></section>
 </body>
 </html>

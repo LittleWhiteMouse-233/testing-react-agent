@@ -3,42 +3,28 @@ from __future__ import annotations
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
-from app.domain.execution import ModelSnapshot
+from app.config import LLMProfileSettings
+from app.llm.snapshots import profile_snapshot_from_settings
 
 
 class RealChatModelProvider:
     def __init__(
         self,
-        *,
-        model_id: str,
-        base_url: str,
-        api_key: str,
-        model: str,
-        temperature: float = 0,
-        timeout_seconds: float = 60,
-        save_raw_response: bool = False,
+        settings: LLMProfileSettings,
     ) -> None:
-        if not base_url or not api_key:
+        if not settings.base_url or not settings.api_key:
             raise ValueError("base_url and api_key are required for real model profiles")
-        self.model_id = model_id
-        self.timeout_seconds = timeout_seconds
+        self.model_id = settings.id
+        self.timeout_seconds = settings.timeout_seconds
         self._settings = {
-            "base_url": base_url,
-            "api_key": api_key,
-            "model": model,
-            "temperature": temperature,
-            "timeout": timeout_seconds,
+            "base_url": settings.base_url,
+            "api_key": settings.api_key,
+            "model": settings.model,
+            "temperature": settings.temperature,
+            "timeout": settings.timeout_seconds,
             "max_retries": 0,
         }
-        self.save_raw_response = save_raw_response
-        self.model_snapshot = ModelSnapshot(
-            profile_id=model_id,
-            provider="openai-compatible",
-            model=model,
-            base_url=base_url,
-            temperature=temperature,
-            timeout_seconds=timeout_seconds,
-        )
+        self.profile_snapshot = profile_snapshot_from_settings(settings)
 
     def create_model(self) -> BaseChatModel:
         return ChatOpenAI(**self._settings)

@@ -3,22 +3,27 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langsmith import tracing_context
 
-from app.domain.activity import Activity
+from app.domain.activity import AgentActivity
 from app.domain.errors import PlanningFailure
-from app.domain.planning import PlanOutput, PlanRequest
+from app.domain.planning import (
+    PlanGenerationInput,
+    TestPlanContent,
+    TestTaskDefinition,
+)
 from app.llm.registry import ModelRegistry
 
 
-class PlanningState(MessagesState):
-    request: dict[str, Any]
+PlanDraft = TestPlanContent[TestTaskDefinition]
+
+
+class PlanningGraphState(MessagesState):
     attempt: int
-    result: dict[str, Any] | None
+    result: PlanDraft | None
     error: str | None
 
 
@@ -34,11 +39,9 @@ class PlanningGraph:
         self._graph = self._build().compile()
 
     def _build(self) -> StateGraph:
-        graph = StateGraph(PlanningState)
-        graph.add_node("prepare", self._prepare)
+        graph = StateGraph(PlanningGraphState)
         graph.add_node("generate", self._generate)
-        graph.add_edge(START, "prepare")
-        graph.add_edge("prepare", "generate")
+        graph.add_edge(START, "generate")
         graph.add_conditional_edges(
             "generate",
             lambda state: "done"
@@ -48,37 +51,20 @@ class PlanningGraph:
         )
         return graph
 
-    async def _prepare(self, state: PlanningState) -> dict[str, Any]:
-        return {
-            "messages": [
-                HumanMessage(
-                    content=json.dumps(state["request"], ensure_ascii=False)
-                )
-            ],
-            "attempt": 0,
-            "result": None,
-            "error": None,
-        }
-
-    async def _generate(self, state: PlanningState) -> dict[str, Any]:
+    async def _generate(self, state: PlanningGraphState) -> dict[str, object]:
         attempt = state.get("attempt", 0) + 1
-        provider = self.model_registry.for_activity(Activity.PLANNING)
+        provider = self.model_registry.for_activity(AgentActivity.PLANNING)
         model = provider.create_model().with_structured_output(
-            PlanOutput,
+            PlanDraft,
             method="json_schema",
             strict=True,
         )
-        messages = [SystemMessage(content=self.prompt_text), *state["messages"]]
         try:
             value = await asyncio.wait_for(
-                model.ainvoke(messages), timeout=provider.timeout_seconds
+                model.ainvoke(state["messages"]), timeout=provider.timeout_seconds
             )
-            plan = value if isinstance(value, PlanOutput) else PlanOutput.model_validate(value)
-            return {
-                "attempt": attempt,
-                "result": plan.model_dump(mode="json"),
-                "error": None,
-            }
+            plan = value if isinstance(value, TestPlanContent) else PlanDraft.model_validate(value)
+            return {"attempt": attempt, "result": plan, "error": None}
         except Exception as exc:
             return {
                 "attempt": attempt,
@@ -86,26 +72,32 @@ class PlanningGraph:
                 "messages": [
                     HumanMessage(
                         content=(
-                            "上一输出未通过 PlanOutput 校验。请严格按 Schema "
+                            "上一输出未通过 TestPlanContent 校验。请严格按 schema "
                             f"重新生成。错误：{exc}"
                         )
                     )
                 ],
             }
 
-    async def generate(self, request: PlanRequest) -> PlanOutput:
+    async def generate(self, request: PlanGenerationInput) -> PlanDraft:
+        initial_messages = [
+            SystemMessage(content=self.prompt_text),
+            HumanMessage(
+                content=json.dumps(request.model_dump(mode="json"), ensure_ascii=False)
+            ),
+        ]
         with tracing_context(enabled=False):
             state = await self._graph.ainvoke(
                 {
-                    "messages": [],
-                    "request": request.model_dump(mode="json"),
+                    "messages": initial_messages,
                     "attempt": 0,
                     "result": None,
                     "error": None,
                 }
             )
-        if state.get("result") is None:
+        result = state.get("result")
+        if result is None:
             raise PlanningFailure(
                 f"Planning failed after 3 attempts: {state.get('error')}"
             )
-        return PlanOutput.model_validate(state["result"])
+        return result if isinstance(result, TestPlanContent) else PlanDraft.model_validate(result)

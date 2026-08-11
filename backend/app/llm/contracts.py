@@ -4,12 +4,12 @@ from typing import Protocol
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from app.domain.execution import ModelSnapshot
+from app.domain.llm import LLMProfileSnapshot
 
 
 class ChatModelProvider(Protocol):
     model_id: str
-    model_snapshot: ModelSnapshot
+    profile_snapshot: LLMProfileSnapshot
     timeout_seconds: float
 
     def create_model(self) -> BaseChatModel: ...

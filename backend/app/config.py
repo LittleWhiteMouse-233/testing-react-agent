@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,13 +13,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 class LLMProfileSettings(BaseModel):
     id: str = Field(min_length=1, max_length=100)
-    mode: str = "scripted"
+    mode: Literal["scripted", "real"] = "scripted"
     base_url: str | None = None
     api_key: str | None = None
     model: str = "deterministic"
     temperature: float = 0
     timeout_seconds: float = Field(default=60, gt=0)
-    save_raw_response: bool = False
 
 
 class Settings(BaseSettings):
@@ -50,8 +50,9 @@ class Settings(BaseSettings):
     adb_path: str = Field(default="adb", validation_alias="ADB_PATH")
     adb_serial: str | None = Field(default=None, validation_alias="ADB_SERIAL")
     action_timeout_seconds: float = 15
-    tool_timeout_max_attempts: int = Field(default=3, ge=1, le=10)
-    tool_call_max_attempts: int = Field(default=3, ge=1, le=10)
+    capture_max_attempts: int = Field(default=3, ge=1, le=10)
+    model_call_max_attempts: int = Field(default=3, ge=1, le=10)
+    model_response_max_attempts: int = Field(default=3, ge=1, le=10)
     agent_history_max_tokens: int = Field(
         default=8_000,
         ge=1_000,

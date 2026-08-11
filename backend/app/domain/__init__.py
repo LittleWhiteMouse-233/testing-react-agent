@@ -1,5 +1,5 @@
-from app.domain.errors import *
-from app.domain.events import *
-from app.domain.execution import *
-from app.domain.planning import *
-from app.domain.tools import *
+"""Framework-independent product contracts.
+
+Import concrete modules explicitly.  Keeping this package entry point empty
+prevents accidental dependency cycles and makes ownership visible at call sites.
+"""

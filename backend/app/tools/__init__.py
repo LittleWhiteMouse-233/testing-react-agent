@@ -1,8 +1,9 @@
 from app.tools.catalog import CatalogToolProvider
-from app.tools.contracts import ToolProvider, ToolSet
+from app.tools.contracts import DeviceToolManifest, ToolBinding, ToolProvider
 
 __all__ = [
     "CatalogToolProvider",
+    "DeviceToolManifest",
+    "ToolBinding",
     "ToolProvider",
-    "ToolSet",
 ]

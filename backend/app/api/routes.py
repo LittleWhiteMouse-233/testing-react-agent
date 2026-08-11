@@ -3,393 +3,223 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from typing import Any
-from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import func, select
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
 
 from app.api.schemas import (
-    ExportCreate,
-    ArtifactResponse,
-    CancelResponse,
-    DeviceHealthResponse,
-    DeviceSummaryResponse,
+    ApiError,
+    GeneratePlanRequest,
     PageResponse,
-    PlanCreate,
-    PlanRevisionResponse,
-    PlanRevisionCreate,
-    ReportResponse,
-    RunCreate,
-    RunDetailResponse,
-    RunResponse,
-    StepEventResponse,
-    TestCaseCreate,
-    TestCaseResponse,
+    ReportExportRequest,
+    ReviseTestPlanRequest,
+    TestCaseCreateRequest,
+    TestRunCreateRequest,
 )
 from app.container import Container
-from app.domain.activity import Activity
-from app.domain.planning import PlanOutput, PlanRequest
-from app.persistence.models import (
-    ArtifactRow,
-    PlanRevisionRow,
-    StepEventRow,
-    TaskRunRow,
-    TestCaseRow,
-    TestRunRow,
-)
-from app.services.events import serialize_event
-from app.services.reporting import artifact_dict
+from app.domain.artifacts import Artifact
+from app.domain.events import StoredRunEvent
+from app.domain.execution import TestRun, TestRunStatus
+from app.domain.ids import ArtifactId, DeviceId, TestCaseId, TestPlanId, TestRunId
+from app.domain.planning import TestPlan
+from app.domain.test_cases import TestCase
+from app.services.read_models import DeviceView, TestRunDetail, TestRunReport
 from app.services.run_service import RunConflict
 
 
-router = APIRouter(prefix="/api")
+router = APIRouter(
+    prefix="/api",
+    responses={
+        404: {"model": ApiError},
+        409: {"model": ApiError},
+        422: {"model": ApiError},
+        502: {"model": ApiError},
+        500: {"model": ApiError},
+    },
+)
 
 
 def container(request: Request) -> Container:
     return request.app.state.container
 
 
-def case_dict(row: TestCaseRow) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "name": row.name,
-        "source_text": row.source_text,
-        "created_at": row.created_at.isoformat(),
-        "updated_at": row.updated_at.isoformat(),
-    }
-
-
-def plan_dict(row: PlanRevisionRow) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "test_case_id": row.test_case_id,
-        "revision": row.revision,
-        "source": row.source,
-        "parent_revision_id": row.parent_revision_id,
-        "plan": row.plan_json,
-        "model_info": row.model_info_json,
-        "created_at": row.created_at.isoformat(),
-    }
-
-
-def run_dict(row: TestRunRow) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "test_case_id": row.test_case_id,
-        "plan_revision_id": row.plan_revision_id,
-        "device_id": row.device_id,
-        "status": row.status,
-        "overall_result": row.overall_result,
-        "snapshot": row.snapshot_json,
-        "started_at": row.started_at.isoformat() if row.started_at else None,
-        "finished_at": row.finished_at.isoformat() if row.finished_at else None,
-        "created_at": row.created_at.isoformat(),
-    }
-
-
-@router.post("/test-cases", status_code=201, response_model=TestCaseResponse)
-async def create_test_case(payload: TestCaseCreate, request: Request) -> dict[str, Any]:
-    app = container(request)
-    row = TestCaseRow(
-        id=str(uuid4()), name=payload.name, source_text=payload.source_text
+def problem(status_code: int, code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code, detail={"code": code, "message": message}
     )
-    async with app.sessions() as session:
-        session.add(row)
-        await session.commit()
-        await session.refresh(row)
-    return case_dict(row)
 
 
-@router.get("/test-cases", response_model=PageResponse[TestCaseResponse])
+@router.post("/test-cases", status_code=201, response_model=TestCase)
+async def create_test_case(
+    payload: TestCaseCreateRequest, request: Request
+) -> TestCase:
+    return await container(request).repository.create_test_case(payload)
+
+
+@router.get("/test-cases", response_model=PageResponse[TestCase])
 async def list_test_cases(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-) -> dict[str, Any]:
-    app = container(request)
-    async with app.sessions() as session:
-        total = await session.scalar(select(func.count()).select_from(TestCaseRow))
-        rows = list(
-            (
-                await session.scalars(
-                    select(TestCaseRow)
-                    .order_by(TestCaseRow.created_at.desc())
-                    .limit(limit)
-                    .offset(offset)
-                )
-            ).all()
-        )
-    return {"items": [case_dict(row) for row in rows], "total": total}
+) -> PageResponse[TestCase]:
+    items, total = await container(request).repository.list_test_cases(
+        limit=limit, offset=offset
+    )
+    return PageResponse[TestCase](items=items, total=total)
 
 
-@router.get("/test-cases/{test_case_id}", response_model=TestCaseResponse)
-async def get_test_case(test_case_id: str, request: Request) -> dict[str, Any]:
-    app = container(request)
-    async with app.sessions() as session:
-        row = await session.get(TestCaseRow, test_case_id)
-    if not row:
-        raise HTTPException(404, "Test case not found")
-    return case_dict(row)
+@router.get("/test-cases/{test_case_id}", response_model=TestCase)
+async def get_test_case(test_case_id: TestCaseId, request: Request) -> TestCase:
+    try:
+        return await container(request).repository.get_test_case(test_case_id)
+    except LookupError as exc:
+        raise problem(404, "test_case_not_found", str(exc)) from exc
 
 
 @router.post(
-    "/test-cases/{test_case_id}/plans",
-    status_code=201,
-    response_model=PlanRevisionResponse,
+    "/test-cases/{test_case_id}/plans", status_code=201, response_model=TestPlan
 )
-async def create_plan(
-    test_case_id: str, payload: PlanCreate, request: Request
-) -> dict[str, Any]:
-    app = container(request)
-    async with app.sessions() as session:
-        test_case = await session.get(TestCaseRow, test_case_id)
-        if not test_case:
-            raise HTTPException(404, "Test case not found")
-        current_revision = await session.scalar(
-            select(func.coalesce(func.max(PlanRevisionRow.revision), 0)).where(
-                PlanRevisionRow.test_case_id == test_case_id
-            )
-        )
-        revision = (current_revision or 0) + 1
+async def generate_plan(
+    test_case_id: TestCaseId, payload: GeneratePlanRequest, request: Request
+) -> TestPlan:
     try:
-        plan = await app.planning_graph.generate(
-            PlanRequest(
-                test_case_id=test_case_id,
-                text=test_case.source_text,
-                device_profile=payload.device_profile,
-            )
+        return await container(request).planning.generate(
+            test_case_id=test_case_id, device_id=payload.device_id
         )
+    except LookupError as exc:
+        raise problem(404, "planning_input_not_found", str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(502, f"Planning failed: {exc}") from exc
-    row = PlanRevisionRow(
-        id=str(uuid4()),
-        test_case_id=test_case_id,
-        revision=revision,
-        source="llm",
-        plan_json=plan.model_dump(mode="json"),
-        model_info_json=app.model_registry.for_activity(
-            Activity.PLANNING
-        ).model_snapshot.model_dump(mode="json"),
-    )
-    async with app.sessions() as session:
-        session.add(row)
-        await session.commit()
-        await session.refresh(row)
-    return plan_dict(row)
+        raise problem(502, "planning_failed", str(exc)) from exc
 
 
 @router.get(
-    "/test-cases/{test_case_id}/plans",
-    response_model=PageResponse[PlanRevisionResponse],
+    "/test-cases/{test_case_id}/plans", response_model=PageResponse[TestPlan]
 )
-async def list_plans(test_case_id: str, request: Request) -> dict[str, Any]:
-    app = container(request)
-    async with app.sessions() as session:
-        exists = await session.get(TestCaseRow, test_case_id)
-        if not exists:
-            raise HTTPException(404, "Test case not found")
-        rows = list(
-            (
-                await session.scalars(
-                    select(PlanRevisionRow)
-                    .where(PlanRevisionRow.test_case_id == test_case_id)
-                    .order_by(PlanRevisionRow.revision.desc())
-                )
-            ).all()
-        )
-    return {"items": [plan_dict(row) for row in rows], "total": len(rows)}
+async def list_test_plans(
+    test_case_id: TestCaseId, request: Request
+) -> PageResponse[TestPlan]:
+    try:
+        items = await container(request).repository.list_test_plans(test_case_id)
+    except LookupError as exc:
+        raise problem(404, "test_case_not_found", str(exc)) from exc
+    return PageResponse[TestPlan](items=items, total=len(items))
 
 
 @router.post(
-    "/plan-revisions/{plan_revision_id}/revisions",
+    "/test-plans/{test_plan_id}/revisions",
     status_code=201,
-    response_model=PlanRevisionResponse,
+    response_model=TestPlan,
 )
-async def revise_plan(
-    plan_revision_id: str, payload: PlanRevisionCreate, request: Request
-) -> dict[str, Any]:
-    app = container(request)
-    # Pydantic has already applied all PlanOutput invariants.
-    plan = PlanOutput.model_validate(payload.plan)
-    async with app.sessions() as session:
-        parent = await session.get(PlanRevisionRow, plan_revision_id)
-        if not parent:
-            raise HTTPException(404, "Plan revision not found")
-        current_revision = await session.scalar(
-            select(func.max(PlanRevisionRow.revision)).where(
-                PlanRevisionRow.test_case_id == parent.test_case_id
-            )
-        )
-        next_revision = (current_revision or 0) + 1
-        row = PlanRevisionRow(
-            id=str(uuid4()),
-            test_case_id=parent.test_case_id,
-            revision=next_revision,
-            source="manual",
-            parent_revision_id=parent.id,
-            plan_json=plan.model_dump(mode="json"),
-            model_info_json=parent.model_info_json,
-        )
-        session.add(row)
-        await session.commit()
-        await session.refresh(row)
-    return plan_dict(row)
-
-
-@router.post("/runs", status_code=201, response_model=RunResponse)
-async def create_run(payload: RunCreate, request: Request) -> dict[str, Any]:
-    app = container(request)
+async def revise_test_plan(
+    test_plan_id: TestPlanId, payload: ReviseTestPlanRequest, request: Request
+) -> TestPlan:
     try:
-        row = await app.run_service.start(
-            plan_revision_id=payload.plan_revision_id,
+        return await container(request).planning.revise(
+            latest_test_plan_id=test_plan_id, content=payload.content
+        )
+    except LookupError as exc:
+        raise problem(404, "test_plan_not_found", str(exc)) from exc
+    except ValueError as exc:
+        raise problem(409, "test_plan_not_latest", str(exc)) from exc
+
+
+@router.post("/runs", status_code=201, response_model=TestRun)
+async def create_test_run(
+    payload: TestRunCreateRequest, request: Request
+) -> TestRun:
+    try:
+        return await container(request).run_service.start(
+            test_plan_id=payload.test_plan_id,
             device_id=payload.device_id,
-            confirmed_assumptions=payload.confirmed_assumptions,
+            assumptions_confirmed=payload.assumptions_confirmed,
         )
     except RunConflict as exc:
-        raise HTTPException(
-            409,
-            {"message": str(exc), "active_run_id": exc.active_run_id},
-        ) from exc
+        raise problem(409, "active_run_exists", str(exc)) from exc
     except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
+        raise problem(404, "run_input_not_found", str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    return run_dict(row)
+        raise problem(409, "test_plan_not_startable", str(exc)) from exc
 
 
-@router.get("/runs", response_model=PageResponse[RunResponse])
-async def list_runs(
+@router.get("/runs", response_model=PageResponse[TestRun])
+async def list_test_runs(
     request: Request,
-    test_case_id: str | None = None,
+    test_case_id: TestCaseId | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-) -> dict[str, Any]:
-    app = container(request)
-    statement = select(TestRunRow)
-    count_statement = select(func.count()).select_from(TestRunRow)
-    if test_case_id:
-        statement = statement.where(TestRunRow.test_case_id == test_case_id)
-        count_statement = count_statement.where(TestRunRow.test_case_id == test_case_id)
-    async with app.sessions() as session:
-        total = await session.scalar(count_statement)
-        rows = list(
-            (
-                await session.scalars(
-                    statement.order_by(TestRunRow.created_at.desc())
-                    .limit(limit)
-                    .offset(offset)
-                )
-            ).all()
-        )
-    return {"items": [run_dict(row) for row in rows], "total": total}
+) -> PageResponse[TestRun]:
+    items, total = await container(request).repository.list_test_runs(
+        test_case_id=test_case_id, limit=limit, offset=offset
+    )
+    return PageResponse[TestRun](items=items, total=total)
 
 
-@router.get("/runs/{run_id}", response_model=RunDetailResponse)
-async def get_run(run_id: str, request: Request) -> dict[str, Any]:
-    app = container(request)
-    async with app.sessions() as session:
-        row = await session.get(TestRunRow, run_id)
-        if not row:
-            raise HTTPException(404, "Run not found")
-        tasks = list(
-            (
-                await session.scalars(
-                    select(TaskRunRow)
-                    .where(TaskRunRow.test_run_id == run_id)
-                    .order_by(TaskRunRow.task_index)
-                )
-            ).all()
-        )
-    result = run_dict(row)
-    result["task_runs"] = [
-        {
-            "id": item.id,
-            "task": item.task_json,
-            "task_index": item.task_index,
-            "status": item.status,
-            "cycle_count": item.cycle_count,
-            "outcome": item.outcome_json,
-        }
-        for item in tasks
-    ]
-    return result
-
-
-@router.post("/runs/{run_id}/cancel", response_model=CancelResponse)
-async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
-    app = container(request)
+@router.get("/runs/{test_run_id}", response_model=TestRunDetail)
+async def get_test_run(test_run_id: TestRunId, request: Request) -> TestRunDetail:
     try:
-        accepted = await app.run_service.cancel(run_id)
+        return await container(request).repository.get_detail(test_run_id)
     except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    return {"run_id": run_id, "cancel_requested": accepted}
+        raise problem(404, "test_run_not_found", str(exc)) from exc
+
+
+@router.post("/runs/{test_run_id}/cancel", status_code=202)
+async def cancel_test_run(test_run_id: TestRunId, request: Request) -> Response:
+    try:
+        await container(request).run_service.cancel(test_run_id)
+    except LookupError as exc:
+        raise problem(404, "test_run_not_found", str(exc)) from exc
+    return Response(status_code=202)
 
 
 @router.get(
-    "/runs/{run_id}/events",
-    response_model=PageResponse[StepEventResponse],
+    "/runs/{test_run_id}/events",
+    response_model=PageResponse[StoredRunEvent],
 )
-async def list_events(
-    run_id: str,
+async def list_run_events(
+    test_run_id: TestRunId,
     request: Request,
     after: int = Query(default=0, ge=0),
-) -> dict[str, Any]:
-    app = container(request)
-    async with app.sessions() as session:
-        exists = await session.get(TestRunRow, run_id)
-        if not exists:
-            raise HTTPException(404, "Run not found")
-        rows = list(
-            (
-                await session.scalars(
-                    select(StepEventRow)
-                    .where(
-                        StepEventRow.test_run_id == run_id,
-                        StepEventRow.sequence > after,
-                    )
-                    .order_by(StepEventRow.sequence)
-                )
-            ).all()
+) -> PageResponse[StoredRunEvent]:
+    try:
+        items = await container(request).repository.list_events(
+            test_run_id, after=after
         )
-    return {"items": [serialize_event(row) for row in rows], "total": len(rows)}
+    except LookupError as exc:
+        raise problem(404, "test_run_not_found", str(exc)) from exc
+    return PageResponse[StoredRunEvent](items=items, total=len(items))
 
 
-@router.get("/runs/{run_id}/stream")
-async def stream_events(
-    run_id: str,
+@router.get("/runs/{test_run_id}/stream")
+async def stream_run_events(
+    test_run_id: TestRunId,
     request: Request,
     after: int = Query(default=0, ge=0),
 ) -> StreamingResponse:
     app = container(request)
-    async with app.sessions() as session:
-        if not await session.get(TestRunRow, run_id):
-            raise HTTPException(404, "Run not found")
+    try:
+        await app.repository.get_test_run(test_run_id)
+    except LookupError as exc:
+        raise problem(404, "test_run_not_found", str(exc)) from exc
 
     async def generate() -> AsyncIterator[str]:
         cursor = after
-        async with app.event_bus.subscribe(run_id) as queue:
+        async with app.event_bus.subscribe(test_run_id) as queue:
             while True:
                 if await request.is_disconnected():
-                    break
-                async with app.sessions() as session:
-                    rows = list(
-                        (
-                            await session.scalars(
-                                select(StepEventRow)
-                                .where(
-                                    StepEventRow.test_run_id == run_id,
-                                    StepEventRow.sequence > cursor,
-                                )
-                                .order_by(StepEventRow.sequence)
-                            )
-                        ).all()
+                    return
+                events = await app.repository.list_events(test_run_id, after=cursor)
+                for stored in events:
+                    cursor = stored.sequence
+                    data = json.dumps(stored.model_dump(mode="json"), ensure_ascii=False)
+                    yield f"id: {stored.sequence}\ndata: {data}\n\n"
+                run = await app.repository.get_test_run(test_run_id)
+                if run.status == TestRunStatus.FINISHED:
+                    trailing = await app.repository.list_events(
+                        test_run_id, after=cursor
                     )
-                for row in rows:
-                    cursor = row.sequence
-                    data = json.dumps(serialize_event(row), ensure_ascii=False)
-                    yield f"id: {row.sequence}\nevent: {row.type}\ndata: {data}\n\n"
+                    if trailing:
+                        continue
+                    return
                 try:
                     await asyncio.wait_for(queue.get(), timeout=15)
                 except TimeoutError:
@@ -402,83 +232,70 @@ async def stream_events(
     )
 
 
-@router.get("/runs/{run_id}/report", response_model=ReportResponse)
-async def get_report(run_id: str, request: Request) -> dict[str, Any]:
+@router.get("/runs/{test_run_id}/report", response_model=TestRunReport)
+async def get_test_run_report(
+    test_run_id: TestRunId, request: Request
+) -> TestRunReport:
     try:
-        return await container(request).reports.build(run_id)
+        return await container(request).reports.build(test_run_id)
     except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
+        raise problem(404, "test_run_not_found", str(exc)) from exc
 
 
 @router.post(
-    "/runs/{run_id}/exports",
-    status_code=201,
-    response_model=ArtifactResponse,
+    "/runs/{test_run_id}/exports", status_code=201, response_model=Artifact
 )
-async def create_export(
-    run_id: str, payload: ExportCreate, request: Request
-) -> dict[str, Any]:
+async def export_test_run_report(
+    test_run_id: TestRunId, payload: ReportExportRequest, request: Request
+) -> Artifact:
     try:
-        row = await container(request).reports.export(run_id, payload.format)
+        return await container(request).reports.export(test_run_id, payload.format)
     except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    return artifact_dict(row)
+        raise problem(404, "test_run_not_found", str(exc)) from exc
 
 
 @router.get("/artifacts/{artifact_id}")
-async def get_artifact(artifact_id: str, request: Request) -> FileResponse:
-    app = container(request)
-    async with app.sessions() as session:
-        row = await session.get(ArtifactRow, artifact_id)
-    if not row:
-        raise HTTPException(404, "Artifact not found")
+async def get_artifact(artifact_id: ArtifactId, request: Request) -> Response:
     try:
-        path = app.artifacts.resolve(row.relative_path)
-    except ValueError as exc:
-        raise HTTPException(500, "Invalid artifact path") from exc
-    if not path.is_file():
-        raise HTTPException(404, "Artifact file not found")
-    disposition = "inline" if row.type == "screenshot" else "attachment"
-    return FileResponse(
-        path,
-        media_type=row.mime_type,
-        filename=path.name if disposition == "attachment" else None,
-        content_disposition_type=disposition,
+        content, mime_type = await container(request).artifacts.load_content(artifact_id)
+    except LookupError as exc:
+        raise problem(404, "artifact_not_found", str(exc)) from exc
+    return Response(content=content, media_type=mime_type)
+
+
+async def _device_view(app: Container, device_id: DeviceId) -> DeviceView:
+    device = app.devices[device_id]
+    health_result, info_result = await asyncio.gather(
+        device.health(), device.describe(), return_exceptions=True
+    )
+    if isinstance(health_result, BaseException):
+        from app.domain.device import DeviceHealth
+
+        health = DeviceHealth(available=False, message=str(health_result))
+    else:
+        health = health_result
+    info = None if isinstance(info_result, BaseException) else info_result
+    return DeviceView(
+        device_id=device_id,
+        provider=device.provider,
+        health=health,
+        info=info,
+        tool_catalog=app.tools.snapshot_for(device_id),
     )
 
 
-@router.get("/devices", response_model=PageResponse[DeviceSummaryResponse])
-async def list_devices(request: Request) -> dict[str, Any]:
+@router.get("/devices", response_model=PageResponse[DeviceView])
+async def list_devices(request: Request) -> PageResponse[DeviceView]:
     app = container(request)
-    items = []
-    for device_id, device in app.devices.items():
-        health = await device.health()
-        items.append(
-            {
-                "id": device_id,
-                "type": type(device).__name__,
-                "health": health.model_dump(mode="json"),
-            }
-        )
-    return {"items": items, "total": len(items)}
+    items = await asyncio.gather(
+        *(_device_view(app, device_id) for device_id in app.devices)
+    )
+    return PageResponse[DeviceView](items=list(items), total=len(items))
 
 
-@router.get("/devices/{device_id}/health", response_model=DeviceHealthResponse)
-async def device_health(device_id: str, request: Request) -> dict[str, Any]:
-    device = container(request).devices.get(device_id)
-    if not device:
-        raise HTTPException(404, "Device not found")
-    health = await device.health()
-    description = None
-    capabilities = None
-    if health.available:
-        capabilities = container(request).tools.capabilities_for(device_id)
-        description = await device.describe()
-    return {
-        "id": device_id,
-        "health": health.model_dump(mode="json"),
-        "description": (
-            description.model_dump(mode="json") if description else None
-        ),
-        "capabilities": capabilities.model_dump(mode="json") if capabilities else None,
-    }
+@router.get("/devices/{device_id}", response_model=DeviceView)
+async def get_device(device_id: DeviceId, request: Request) -> DeviceView:
+    app = container(request)
+    if device_id not in app.devices:
+        raise problem(404, "device_not_found", "Device not found")
+    return await _device_view(app, device_id)

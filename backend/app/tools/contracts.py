@@ -5,23 +5,29 @@ from typing import Protocol
 
 from langchain_core.tools import BaseTool
 
-from app.domain.activity import Activity
-from app.domain.tools import DeviceCapabilitiesSnapshot
+from app.domain.activity import AgentActivity
+from app.domain.tools import ToolCatalogSnapshot
 
 
 @dataclass(frozen=True)
-class ToolSet:
-    tools: tuple[BaseTool, ...]
-    names: frozenset[str]
+class ToolBinding:
+    """Runtime-only binding between a framework tool and product policy."""
+
+    tool: BaseTool
+    scopes: frozenset[AgentActivity]
+    changes_device_state: bool
+
+
+@dataclass(frozen=True)
+class DeviceToolManifest:
+    """A device provider's native tools before shared tools are merged."""
+
+    bindings: tuple[ToolBinding, ...]
 
 
 class ToolProvider(Protocol):
-    def tools_for(self, device_id: str, activity: Activity) -> ToolSet: ...
+    def tools_for(
+        self, device_id: str, activity: AgentActivity
+    ) -> tuple[BaseTool, ...]: ...
 
-    def names_for(
-        self,
-        device_id: str,
-        *activities: Activity,
-    ) -> frozenset[str]: ...
-
-    def capabilities_for(self, device_id: str) -> DeviceCapabilitiesSnapshot: ...
+    def snapshot_for(self, device_id: str) -> ToolCatalogSnapshot: ...

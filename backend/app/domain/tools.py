@@ -1,95 +1,36 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
 
-from langchain_core.tools import BaseTool
-from langchain_core.utils.pydantic import model_json_schema
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.domain.activity import AgentActivity
 
 
-class DeviceHealth(BaseModel):
-    available: bool
-    message: str = ""
+class ToolCapability(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-
-class DeviceDescription(BaseModel):
-    model: str | None = None
-    resolution: str | None = None
-    locale: str | None = None
-
-
-@dataclass(frozen=True)
-class ToolEntry:
-    tool: BaseTool
-    scopes: frozenset[str]
-
-
-class ToolCapabilitySnapshot(BaseModel):
-    name: str
+    name: str = Field(min_length=1)
     description: str
     input_schema: dict[str, Any]
-    scopes: list[str]
+    scopes: list[AgentActivity] = Field(min_length=1)
+    changes_device_state: bool
+
+    @model_validator(mode="after")
+    def scopes_are_valid(self) -> "ToolCapability":
+        if len(self.scopes) != len(set(self.scopes)):
+            raise ValueError("tool scopes must be unique")
+        return self
 
 
-class DeviceCapabilitiesSnapshot(BaseModel):
-    device_id: str
-    provider: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    tools: list[ToolCapabilitySnapshot] = Field(default_factory=list)
+class ToolCatalogSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
+    tools: list[ToolCapability]
 
-@dataclass(frozen=True)
-class DeviceCapabilities:
-    device_id: str
-    provider: str
-    tools: tuple[ToolEntry, ...]
-    metadata: dict[str, Any]
-
-    def to_snapshot(self) -> DeviceCapabilitiesSnapshot:
-        def input_schema(tool: BaseTool) -> dict[str, Any]:
-            schema = tool.tool_call_schema
-            return schema if isinstance(schema, dict) else model_json_schema(schema)
-
-        return DeviceCapabilitiesSnapshot(
-            device_id=self.device_id,
-            provider=self.provider,
-            metadata=dict(self.metadata),
-            tools=[
-                ToolCapabilitySnapshot(
-                    name=entry.tool.name,
-                    description=entry.tool.description or "",
-                    input_schema=input_schema(entry.tool),
-                    scopes=sorted(entry.scopes),
-                )
-                for entry in self.tools
-            ],
-        )
-
-
-class ScreenshotData(BaseModel):
-    content: bytes
-    mime_type: str = "image/png"
-    activity: str | None = None
-
-
-class ToolInvocation(BaseModel):
-    call_id: str
-    name: str
-    arguments: dict[str, Any]
-    decision_summary: str = Field(min_length=1)
-
-
-class ToolExecutionStatus(StrEnum):
-    SUCCEEDED = "succeeded"
-    TIMED_OUT = "timed_out"
-    INVALID = "invalid"
-    BLOCKED = "blocked"
-    CANCELLED = "cancelled"
-
-
-class ToolExecutionResult(BaseModel):
-    status: ToolExecutionStatus
-    summary: str
-    data: dict[str, Any] = Field(default_factory=dict)
+    @model_validator(mode="after")
+    def tool_names_are_unique(self) -> "ToolCatalogSnapshot":
+        names = [tool.name for tool in self.tools]
+        if len(names) != len(set(names)):
+            raise ValueError("tool catalog names must be unique")
+        return self

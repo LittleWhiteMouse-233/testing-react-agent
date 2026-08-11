@@ -1,89 +1,53 @@
 from __future__ import annotations
 
-from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
-from types import MappingProxyType
+from collections.abc import Iterable, Sequence
 from typing import Protocol
 
 from langchain_core.tools import BaseTool
 from langchain_core.utils.pydantic import model_json_schema
 
-from app.domain.activity import Activity
-from app.domain.tools import (
-    DeviceCapabilities,
-    DeviceCapabilitiesSnapshot,
-    ToolEntry,
-)
-from app.tools.contracts import ToolSet
+from app.domain.activity import AgentActivity
+from app.domain.tools import ToolCapability, ToolCatalogSnapshot
+from app.tools.contracts import DeviceToolManifest, ToolBinding
 
 
 class _CapabilitySource(Protocol):
     device_id: str
 
-    def capabilities(self) -> DeviceCapabilities: ...
+    def tool_manifest(self) -> DeviceToolManifest: ...
 
 
-def _validate_entry(entry: ToolEntry) -> None:
-    if not isinstance(entry.tool, BaseTool):
-        raise TypeError("ToolEntry.tool must be a LangChain BaseTool")
-    if not isinstance(entry.scopes, frozenset):
-        raise TypeError("ToolEntry.scopes must be a frozenset of strings")
-    if not entry.scopes:
-        raise ValueError(f"Tool {entry.tool.name} must declare at least one scope")
-    for scope in entry.scopes:
-        if not isinstance(scope, str) or not scope.strip() or scope != scope.strip():
-            raise ValueError(
-                f"Tool {entry.tool.name} has an invalid scope: {scope!r}"
-            )
-    if not entry.tool.name.strip():
+def _validate_binding(binding: ToolBinding) -> None:
+    if not isinstance(binding.tool, BaseTool):
+        raise TypeError("ToolBinding.tool must be a LangChain BaseTool")
+    if not isinstance(binding.scopes, frozenset) or not binding.scopes:
+        raise ValueError(f"Tool {binding.tool.name} must declare scopes")
+    if any(not isinstance(scope, AgentActivity) for scope in binding.scopes):
+        raise TypeError("ToolBinding scopes must contain AgentActivity values")
+    if binding.changes_device_state and binding.scopes <= {AgentActivity.JUDGE}:
+        raise ValueError(
+            f"State-changing tool {binding.tool.name} requires a non-judge scope"
+        )
+    if not binding.tool.name.strip():
         raise ValueError("Tool names must not be blank")
-    if entry.tool.name == "finish_task":
+    if binding.tool.name == "finish_task":
         raise ValueError("Tool uses reserved name: finish_task")
-    schema = entry.tool.tool_call_schema
+    schema = binding.tool.tool_call_schema
     if not isinstance(schema, dict):
         model_json_schema(schema)
 
 
-def _index_entries(
-    entries: Iterable[ToolEntry],
-    *,
-    owner: str,
-) -> dict[str, tuple[BaseTool, ...]]:
-    indexed: dict[str, list[BaseTool]] = defaultdict(list)
+def _validate_manifest(manifest: DeviceToolManifest, *, owner: str) -> None:
     names: set[str] = set()
-    for entry in entries:
-        _validate_entry(entry)
-        if entry.tool.name in names:
-            raise ValueError(
-                f"Duplicate tool name {entry.tool.name!r} for {owner}"
-            )
-        names.add(entry.tool.name)
-        for scope in entry.scopes:
-            indexed[scope].append(entry.tool)
-    return {scope: tuple(tools) for scope, tools in indexed.items()}
-
-
-@dataclass(frozen=True)
-class _DeviceToolView:
-    device_id: str
-    tools_by_scope: Mapping[str, ToolSet]
-
-    def tools_for(self, activity: Activity) -> ToolSet:
-        return self.tools_by_scope.get(
-            activity.value,
-            ToolSet(tools=(), names=frozenset()),
-        )
-
-    def names_for(self, *activities: Activity) -> frozenset[str]:
-        names: set[str] = set()
-        for activity in activities:
-            names.update(self.tools_for(activity).names)
-        return frozenset(names)
+    for binding in manifest.bindings:
+        _validate_binding(binding)
+        if binding.tool.name in names:
+            raise ValueError(f"Duplicate tool name {binding.tool.name!r} for {owner}")
+        names.add(binding.tool.name)
 
 
 class CatalogToolProvider:
-    """Immutable catalog of pre-decorated tools grouped by owner and scope."""
+    """The one merged runtime catalog for device-native and shared tools."""
 
     def __init__(
         self,
@@ -91,87 +55,70 @@ class CatalogToolProvider:
         *,
         shared_capability_sources: Sequence[_CapabilitySource] = (),
     ) -> None:
-        capabilities_by_device: dict[str, DeviceCapabilities] = {}
+        manifests_by_device: dict[str, DeviceToolManifest] = {}
         for source in capability_sources:
-            capabilities = source.capabilities()
-            if capabilities.device_id != source.device_id:
-                raise ValueError(
-                    "Device capability id does not match its provider: "
-                    f"{capabilities.device_id} != {source.device_id}"
-                )
-            if capabilities.device_id in capabilities_by_device:
-                raise ValueError(
-                    f"Duplicate device capabilities: {capabilities.device_id}"
-                )
-            if not capabilities.provider.strip():
-                raise ValueError("Device capability provider must not be blank")
-            capabilities_by_device[capabilities.device_id] = capabilities
-        if not capabilities_by_device:
+            manifest = source.tool_manifest()
+            _validate_manifest(manifest, owner=f"device {source.device_id}")
+            if source.device_id in manifests_by_device:
+                raise ValueError(f"Duplicate device manifest: {source.device_id}")
+            manifests_by_device[source.device_id] = manifest
+        if not manifests_by_device:
             raise ValueError("At least one device capability declaration is required")
 
-        shared_entries: list[ToolEntry] = []
+        shared_bindings: list[ToolBinding] = []
         for source in shared_capability_sources:
-            shared_entries.extend(source.capabilities().tools)
-        shared = tuple(shared_entries)
-        shared_index = _index_entries(shared, owner="shared")
+            manifest = source.tool_manifest()
+            _validate_manifest(manifest, owner="shared")
+            shared_bindings.extend(manifest.bindings)
 
-        self._snapshots: dict[str, DeviceCapabilitiesSnapshot] = {}
-        self._views: dict[str, _DeviceToolView] = {}
-        for device_id, capabilities in capabilities_by_device.items():
-            device_index = _index_entries(
-                capabilities.tools,
-                owner=f"device {device_id}",
-            )
-            device_names = {entry.tool.name for entry in capabilities.tools}
-            shared_names = {entry.tool.name for entry in shared}
-            collisions = device_names & shared_names
+        self._bindings: dict[str, tuple[ToolBinding, ...]] = {}
+        for device_id, manifest in manifests_by_device.items():
+            bindings = (*manifest.bindings, *shared_bindings)
+            names = [binding.tool.name for binding in bindings]
+            collisions = {name for name in names if names.count(name) > 1}
             if collisions:
                 raise ValueError(
-                    f"Duplicate tool names in device {device_id} view: "
-                    f"{sorted(collisions)}"
+                    f"Duplicate tool names in device {device_id} view: {sorted(collisions)}"
                 )
-            scopes = device_index.keys() | shared_index.keys()
-            tools_by_scope: dict[str, ToolSet] = {}
-            for scope in scopes:
-                tools = (*device_index.get(scope, ()), *shared_index.get(scope, ()))
-                names = [tool.name for tool in tools]
-                if len(names) != len(set(names)):
-                    raise ValueError(
-                        f"Duplicate tool names in device {device_id} scope {scope!r}"
-                    )
-                tools_by_scope[scope] = ToolSet(
-                    tools=tools,
-                    names=frozenset(names),
-                )
-            self._views[device_id] = _DeviceToolView(
-                device_id=device_id,
-                tools_by_scope=MappingProxyType(tools_by_scope),
-            )
-            self._snapshots[device_id] = DeviceCapabilities(
-                device_id=capabilities.device_id,
-                provider=capabilities.provider,
-                metadata=dict(capabilities.metadata),
-                tools=(*capabilities.tools, *shared),
-            ).to_snapshot()
+            self._bindings[device_id] = tuple(bindings)
 
-    def tools_for(self, device_id: str, activity: Activity) -> ToolSet:
-        return self._view_for(device_id).tools_for(activity)
-
-    def names_for(
-        self,
-        device_id: str,
-        *activities: Activity,
-    ) -> frozenset[str]:
-        return self._view_for(device_id).names_for(*activities)
-
-    def _view_for(self, device_id: str) -> _DeviceToolView:
+    def _bindings_for(self, device_id: str) -> tuple[ToolBinding, ...]:
         try:
-            return self._views[device_id]
+            return self._bindings[device_id]
         except KeyError as exc:
             raise LookupError(f"Device tools are not registered: {device_id}") from exc
 
-    def capabilities_for(self, device_id: str) -> DeviceCapabilitiesSnapshot:
-        try:
-            return self._snapshots[device_id].model_copy(deep=True)
-        except KeyError as exc:
-            raise LookupError(f"Device tools are not registered: {device_id}") from exc
+    def tools_for(
+        self, device_id: str, activity: AgentActivity
+    ) -> tuple[BaseTool, ...]:
+        return tuple(
+            binding.tool
+            for binding in self._bindings_for(device_id)
+            if activity in self._effective_scopes(binding)
+        )
+
+    def snapshot_for(self, device_id: str) -> ToolCatalogSnapshot:
+        return ToolCatalogSnapshot(
+            tools=[self._to_capability(binding) for binding in self._bindings_for(device_id)]
+        )
+
+    @staticmethod
+    def _to_capability(binding: ToolBinding) -> ToolCapability:
+        schema = binding.tool.tool_call_schema
+        input_schema = schema if isinstance(schema, dict) else model_json_schema(schema)
+        return ToolCapability(
+            name=binding.tool.name,
+            description=binding.tool.description or "",
+            input_schema=input_schema,
+            scopes=sorted(
+                CatalogToolProvider._effective_scopes(binding),
+                key=lambda scope: scope.value,
+            ),
+            changes_device_state=binding.changes_device_state,
+        )
+
+    @staticmethod
+    def _effective_scopes(binding: ToolBinding) -> frozenset[AgentActivity]:
+        if binding.changes_device_state:
+            return binding.scopes - {AgentActivity.JUDGE}
+        return binding.scopes

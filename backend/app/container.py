@@ -18,6 +18,7 @@ from app.services.event_bus import EventBus
 from app.services.events import EventWriter
 from app.services.registry import RunRegistry
 from app.services.reporting import ReportService
+from app.services.planning_service import PlanningService
 from app.services.run_service import RunService
 from app.tools import CatalogToolProvider
 
@@ -33,7 +34,6 @@ class Container:
         self.artifacts = ArtifactStore(
             settings.artifacts_dir,
             self.sessions,
-            self.events,
         )
         self.devices: dict[str, DeviceProvider] = {"fake-tv": FakeDeviceController()}
         if settings.adb_serial:
@@ -46,20 +46,9 @@ class Container:
         self.models: dict[str, ChatModelProvider] = {}
         for profile in settings.llm_profiles:
             if profile.mode == "real":
-                provider: ChatModelProvider = RealChatModelProvider(
-                    model_id=profile.id,
-                    base_url=profile.base_url or "",
-                    api_key=profile.api_key or "",
-                    model=profile.model,
-                    temperature=profile.temperature,
-                    timeout_seconds=profile.timeout_seconds,
-                    save_raw_response=profile.save_raw_response,
-                )
+                provider: ChatModelProvider = RealChatModelProvider(profile)
             elif profile.mode == "scripted":
-                provider = ScriptedChatModelProvider(
-                    model_id=profile.id,
-                    timeout_seconds=profile.timeout_seconds,
-                )
+                provider = ScriptedChatModelProvider(profile)
             else:
                 raise ValueError(
                     f"Unsupported model profile mode: {profile.mode}"
@@ -73,9 +62,13 @@ class Container:
         )
         self.planning_graph = PlanningGraph(self.model_registry)
         self.repository = SqlAlchemyExecutionRepository(self.sessions, self.events)
-        self.agent_factory = TaskAgentFactory(
+        self.planning = PlanningService(
             repository=self.repository,
-            journal=self.events,
+            planning_graph=self.planning_graph,
+            model_registry=self.model_registry,
+            devices=self.devices,
+        )
+        self.agent_factory = TaskAgentFactory(
             artifacts=self.artifacts,
             model_registry=self.model_registry,
             tool_provider=self.tools,
@@ -83,18 +76,17 @@ class Container:
             devices=self.devices,
             history_max_tokens=settings.agent_history_max_tokens,
             action_timeout_seconds=settings.action_timeout_seconds,
-            tool_timeout_max_attempts=settings.tool_timeout_max_attempts,
-            tool_call_max_attempts=settings.tool_call_max_attempts,
+            capture_max_attempts=settings.capture_max_attempts,
+            model_call_max_attempts=settings.model_call_max_attempts,
+            model_response_max_attempts=settings.model_response_max_attempts,
         )
         self.executor = RunExecutor(
             repository=self.repository,
-            journal=self.events,
             agent_factory=self.agent_factory,
             registry=self.registry,
             checkpoint_path=str(settings.checkpoints),
         )
         self.run_service = RunService(
-            sessions=self.sessions,
             repository=self.repository,
             executor=self.executor,
             registry=self.registry,
@@ -103,4 +95,4 @@ class Container:
             devices=self.devices,
             tools=self.tools,
         )
-        self.reports = ReportService(self.sessions, self.artifacts)
+        self.reports = ReportService(self.repository, self.artifacts)

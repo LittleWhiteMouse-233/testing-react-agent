@@ -13,13 +13,10 @@ from app.domain.errors import (
     DeviceUnavailable,
     UnsupportedAction,
 )
-from app.domain.tools import (
-    DeviceCapabilities,
-    DeviceDescription,
-    DeviceHealth,
-    ScreenshotData,
-    ToolEntry,
-)
+from app.device.contracts import ScreenshotCapture
+from app.domain.activity import AgentActivity
+from app.domain.device import DeviceHealth, DeviceInfo
+from app.tools.contracts import DeviceToolManifest, ToolBinding
 
 
 class RemoteKey(StrEnum):
@@ -80,6 +77,8 @@ _KEY_CODES: dict[RemoteKey, str] = {
 
 
 class AdbDeviceController:
+    provider = "adb"
+
     def __init__(
         self,
         device_id: str,
@@ -89,9 +88,9 @@ class AdbDeviceController:
         self.device_id = device_id
         self.adb_path = adb_path
         self.timeout_seconds = timeout_seconds
-        self._capabilities = self._build_capabilities()
+        self._tool_manifest = self._build_tool_manifest()
 
-    def _build_capabilities(self) -> DeviceCapabilities:
+    def _build_tool_manifest(self) -> DeviceToolManifest:
         press_args = create_model("AdbPressKeyArgs", key=(RemoteKey, ...))
 
         @tool(args_schema=press_args)
@@ -119,14 +118,15 @@ class AdbDeviceController:
             """Wait briefly without changing the tested business state."""
             return await self.wait(duration_ms)
 
-        return DeviceCapabilities(
-            device_id=self.device_id,
-            provider=type(self).__name__,
-            metadata={"transport": "adb"},
-            tools=(
-                ToolEntry(device_press_key, frozenset({"act"})),
-                ToolEntry(device_input_text, frozenset({"act"})),
-                ToolEntry(device_wait, frozenset({"act", "judge"})),
+        return DeviceToolManifest(
+            bindings=(
+                ToolBinding(device_press_key, frozenset({AgentActivity.ACT}), True),
+                ToolBinding(device_input_text, frozenset({AgentActivity.ACT}), True),
+                ToolBinding(
+                    device_wait,
+                    frozenset({AgentActivity.ACT, AgentActivity.JUDGE}),
+                    False,
+                ),
             ),
         )
 
@@ -159,29 +159,29 @@ class AdbDeviceController:
         except (DeviceUnavailable, ActionTimeout) as exc:
             return DeviceHealth(available=False, message=str(exc))
 
-    def capabilities(self) -> DeviceCapabilities:
-        return self._capabilities
+    def tool_manifest(self) -> DeviceToolManifest:
+        return self._tool_manifest
 
-    async def describe(self) -> DeviceDescription:
+    async def describe(self) -> DeviceInfo:
         model, resolution, locale = await asyncio.gather(
             self._run("shell", "getprop", "ro.product.model"),
             self._run("shell", "wm", "size"),
             self._run("shell", "getprop", "persist.sys.locale"),
         )
-        return DeviceDescription(
+        return DeviceInfo(
             model=str(model) or None,
             resolution=str(resolution).removeprefix("Physical size: ") or None,
             locale=str(locale) or None,
         )
 
-    async def screenshot(self) -> ScreenshotData:
+    async def screenshot(self) -> ScreenshotCapture:
         try:
             content = await self._run("exec-out", "screencap", "-p", binary=True)
         except (DeviceUnavailable, ActionTimeout) as exc:
             raise CaptureFailed(str(exc)) from exc
         if not isinstance(content, bytes) or not content.startswith(b"\x89PNG"):
             raise CaptureFailed("ADB returned an invalid PNG screenshot")
-        return ScreenshotData(content=content)
+        return ScreenshotCapture(content=content)
 
     async def press(self, key: RemoteKey) -> str:
         code = _KEY_CODES.get(key)
