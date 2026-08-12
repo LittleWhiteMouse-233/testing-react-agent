@@ -1,5 +1,4 @@
 import { FileTextOutlined, StopOutlined } from "@ant-design/icons";
-import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Alert,
   Button,
@@ -17,13 +16,17 @@ import {
 } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, apiUrl } from "../api/client";
-import { parseStoredRunEvent } from "../api/runEvents";
-import type {
-  RunEventPage,
-  StoredRunEvent,
-  TestRunDetail
-} from "../api/contracts";
+import {
+  $api,
+  apiErrorMessage,
+  artifactUrl
+} from "../api/client";
+import {
+  mergeStoredRunEvent,
+  startRunEventStream,
+  type RunEventSource
+} from "../api/runEvents";
+import type { StoredRunEvent } from "../api/contracts";
 
 function eventDetails(stored: StoredRunEvent): string {
   return JSON.stringify(stored.event, null, 2);
@@ -32,72 +35,46 @@ function eventDetails(stored: StoredRunEvent): string {
 export default function RunPage() {
   const { runId = "" } = useParams();
   const [events, setEvents] = useState<StoredRunEvent[]>([]);
-  const detail = useQuery({
-    queryKey: ["run", runId],
-    queryFn: () => api<TestRunDetail>(`/runs/${runId}`),
+  const [streamContractError, setStreamContractError] = useState<string>();
+  const detail = $api.useQuery("get", "/api/runs/{test_run_id}", {
+    params: { path: { test_run_id: runId } }
+  }, {
     refetchInterval: (query) =>
       query.state.data?.run.status !== "finished" ? 1000 : false
   });
-  const cancel = useMutation({
-    mutationFn: () => api<void>(`/runs/${runId}/cancel`, { method: "POST" }),
+  const cancel = $api.useMutation("post", "/api/runs/{test_run_id}/cancel", {
     onSuccess: () => message.info("取消请求已提交，将在安全边界生效"),
-    onError: (error: Error) => message.error(error.message)
+    onError: (error) => message.error(apiErrorMessage(error, "取消请求失败"))
   });
 
   useEffect(() => {
     setEvents([]);
-    let cursor = 0;
-    let terminal = false;
-    let source: EventSource | null = null;
-    let retryTimer: number | undefined;
+    setStreamContractError(undefined);
+    let source: RunEventSource | null = null;
     let disposed = false;
-    const receive = (raw: MessageEvent<string>) => {
-      const item = parseStoredRunEvent(raw.data);
-      setEvents((current) =>
-        [...current.filter((entry) => entry.sequence !== item.sequence), item].sort(
-          (left, right) => left.sequence - right.sequence
-        )
-      );
-      cursor = Math.max(cursor, item.sequence);
-      if (item.event.type === "run.finished" || item.event.type === "run.cancelled") {
-        terminal = true;
-        source?.close();
-        void detail.refetch();
+    const restoreAndConnect = async () => {
+      const started = await startRunEventStream(runId, {
+        onEvent: (stored) => {
+          setEvents((current) => mergeStoredRunEvent(current, stored));
+        },
+        onTerminal: () => {
+          void detail.refetch();
+        },
+        onContractError: () => {
+          setStreamContractError("事件流违反 OpenAPI 契约，实时更新已停止");
+        }
+      });
+      if (disposed) {
+        started.source?.close();
+        return;
       }
+      setEvents(started.events);
+      source = started.source;
     };
-    const connect = () => {
-      if (disposed || terminal) return;
-      source = new EventSource(apiUrl(`/runs/${runId}/stream?after=${cursor}`));
-      source.onmessage = receive;
-      source.onerror = () => {
-        source?.close();
-        if (disposed || terminal) return;
-        retryTimer = window.setTimeout(connect, 1000);
-      };
-    };
-    const restore = async () => {
-      try {
-        const history = await api<RunEventPage>(`/runs/${runId}/events?after=0`);
-        if (disposed) return;
-        const restored = [...history.items].sort(
-          (left, right) => left.sequence - right.sequence
-        );
-        setEvents(restored);
-        cursor = restored.at(-1)?.sequence ?? 0;
-        terminal = restored.some(
-          (item) => item.event.type === "run.finished" || item.event.type === "run.cancelled"
-        );
-      } catch {
-        // The persisted SSE endpoint can still replay from sequence zero.
-      } finally {
-        connect();
-      }
-    };
-    void restore();
+    void restoreAndConnect();
     return () => {
       disposed = true;
       source?.close();
-      if (retryTimer) window.clearTimeout(retryTimer);
     };
   }, [runId]);
 
@@ -114,7 +91,7 @@ export default function RunPage() {
 
   if (detail.isLoading) return <Spin />;
   if (detail.error || !detail.data) {
-    return <Alert type="error" message={(detail.error as Error)?.message ?? "运行不存在"} />;
+    return <Alert type="error" message={apiErrorMessage(detail.error, "运行不存在")} />;
   }
   const data = detail.data;
   const activeTaskRun = data.task_runs.find((task) => task.status === "running");
@@ -127,6 +104,7 @@ export default function RunPage() {
 
   return (
     <Space direction="vertical" size="large" style={{ width: "100%" }}>
+      {streamContractError && <Alert type="error" showIcon message={streamContractError} />}
       <Card>
         <div className="toolbar">
           <div>
@@ -137,7 +115,7 @@ export default function RunPage() {
             </Space>
           </div>
           <Space>
-            {data.run.status !== "finished" && <Button danger icon={<StopOutlined />} onClick={() => cancel.mutate()} loading={cancel.isPending}>取消</Button>}
+            {data.run.status !== "finished" && <Button danger icon={<StopOutlined />} onClick={() => cancel.mutate({ params: { path: { test_run_id: runId } } })} loading={cancel.isPending}>取消</Button>}
             {data.run.verdict && <Link to={`/runs/${runId}/report`}><Button type="primary" icon={<FileTextOutlined />}>查看报告</Button></Link>}
           </Space>
         </div>
@@ -159,7 +137,7 @@ export default function RunPage() {
         <Col xs={24} lg={13}>
           <Card title="最新电视截图">
             {latestScreenshot ? (
-              <img className="screenshot" src={apiUrl(`/artifacts/${latestScreenshot}`)} alt="电视截图" />
+              <img className="screenshot" src={artifactUrl(latestScreenshot)} alt="电视截图" />
             ) : (
               <Alert message="等待首次截图…" type="info" />
             )}

@@ -1,5 +1,4 @@
 import { DownloadOutlined } from "@ant-design/icons";
-import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Alert,
   Button,
@@ -16,33 +15,29 @@ import {
   message
 } from "antd";
 import { useParams } from "react-router-dom";
-import { api, apiUrl } from "../api/client";
-import type { Artifact, ReportExportRequest, TestRunReport } from "../api/contracts";
+import { $api, apiErrorMessage, artifactUrl } from "../api/client";
+import type { Artifact } from "../api/contracts";
 
 const terminalStatuses = ["passed", "failed", "blocked", "skipped"] as const;
 
 export default function ReportPage() {
   const { runId = "" } = useParams();
-  const report = useQuery({
-    queryKey: ["report", runId],
-    queryFn: () => api<TestRunReport>(`/runs/${runId}/report`)
+  const report = $api.useQuery("get", "/api/runs/{test_run_id}/report", {
+    params: { path: { test_run_id: runId } }
   });
-  const exportReport = useMutation({
-    mutationFn: (format: ReportExportRequest["format"]) => {
-      const payload: ReportExportRequest = { format };
-      return api<Artifact>(`/runs/${runId}/exports`, {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
-    },
-    onSuccess: (artifact) => {
-      window.location.assign(apiUrl(`/artifacts/${artifact.id}`));
-      message.success("导出文件已创建");
-    },
-    onError: (error: Error) => message.error(error.message)
-  });
+  const exportReport = $api.useMutation(
+    "post",
+    "/api/runs/{test_run_id}/exports",
+    {
+      onSuccess: (artifact) => {
+        window.location.assign(artifactUrl(artifact.id));
+        message.success("导出文件已创建");
+      },
+      onError: (error) => message.error(apiErrorMessage(error, "报告导出失败"))
+    }
+  );
   if (report.isLoading) return <Spin />;
-  if (!report.data) return <Alert type="error" message={(report.error as Error)?.message ?? "报告不存在"} />;
+  if (!report.data) return <Alert type="error" message={apiErrorMessage(report.error, "报告不存在")} />;
 
   const data = report.data;
   const counts = Object.fromEntries(
@@ -62,8 +57,8 @@ export default function ReportPage() {
             <Typography.Title level={2} className={`result-${data.detail.run.verdict}`} style={{ margin: 0 }}>{data.detail.run.verdict}</Typography.Title>
           </div>
           <Space>
-            <Button icon={<DownloadOutlined />} loading={exportReport.isPending} onClick={() => exportReport.mutate("json")}>JSON</Button>
-            <Button type="primary" icon={<DownloadOutlined />} loading={exportReport.isPending} onClick={() => exportReport.mutate("html")}>HTML</Button>
+            <Button icon={<DownloadOutlined />} loading={exportReport.isPending} onClick={() => exportReport.mutate({ params: { path: { test_run_id: runId } }, body: { format: "json" } })}>JSON</Button>
+            <Button type="primary" icon={<DownloadOutlined />} loading={exportReport.isPending} onClick={() => exportReport.mutate({ params: { path: { test_run_id: runId } }, body: { format: "html" } })}>HTML</Button>
           </Space>
         </div>
         <Descriptions column={{ xs: 1, md: 2 }}>
@@ -90,7 +85,7 @@ export default function ReportPage() {
             <Typography.Paragraph><strong>结论：</strong>{taskRun.result?.summary ?? "无"}（{taskRun.cycle_count} cycles）</Typography.Paragraph>
             {taskRun.result && <Typography.Paragraph><strong>原因：</strong>{taskRun.result.reason_code}</Typography.Paragraph>}
             <Image.PreviewGroup>
-              <Space wrap>{evidence.map((artifact) => <Image key={artifact.id} width={240} src={apiUrl(`/artifacts/${artifact.id}`)} />)}</Space>
+              <Space wrap>{evidence.map((artifact) => <Image key={artifact.id} width={240} src={artifactUrl(artifact.id)} />)}</Space>
             </Image.PreviewGroup>
           </Card>
         );

@@ -497,7 +497,6 @@ def test_checked_in_openapi_is_current() -> None:
     generated = create_app(Settings(data_dir=repository_root / "data" / "openapi-test")).openapi()
     assert checked_in == generated
     schema_names = set(checked_in["components"]["schemas"])
-    assert len(schema_names) == 58
     assert "ApiError" in schema_names
     assert not {
         "PlanRevision",
@@ -516,3 +515,41 @@ def test_checked_in_openapi_is_current() -> None:
     assert {"test_run_id", "task_run_id"} <= set(
         schemas["Artifact"]["required"]
     )
+
+    paths = checked_in["paths"]
+    cancel_responses = paths["/api/runs/{test_run_id}/cancel"]["post"]["responses"]
+    assert cancel_responses["202"] == {
+        "description": "Cancellation request accepted"
+    }
+
+    stream_operation = paths["/api/runs/{test_run_id}/stream"]["get"]
+    assert set(stream_operation["responses"]["200"]["content"]) == {
+        "text/event-stream"
+    }
+    assert any(
+        parameter["in"] == "header" and parameter["name"] == "Last-Event-ID"
+        for parameter in stream_operation["parameters"]
+    )
+
+    artifact_content = paths["/api/artifacts/{artifact_id}"]["get"]["responses"][
+        "200"
+    ]["content"]
+    assert set(artifact_content) == {
+        "image/png",
+        "application/json",
+        "text/html",
+    }
+
+    assert "409" not in paths["/api/devices"]["get"]["responses"]
+    assert "502" not in paths["/api/runs"]["get"]["responses"]
+    assert "409" in paths["/api/runs"]["post"]["responses"]
+    assert "502" in paths["/api/test-cases/{test_case_id}/plans"]["post"][
+        "responses"
+    ]
+    for operations in paths.values():
+        for operation in operations.values():
+            for status_code, response in operation["responses"].items():
+                if status_code in {"422", "500"}:
+                    assert response["content"]["application/json"]["schema"] == {
+                        "$ref": "#/components/schemas/ApiError"
+                    }

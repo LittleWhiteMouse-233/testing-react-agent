@@ -42,14 +42,22 @@ const plan: TestPlan = {
 describe("plan UI draft mapper", () => {
   it("removes persisted task identity at the one revision boundary", () => {
     const draft = toPlanDraft(plan);
-    expect(draft.tasks[0]).not.toHaveProperty("test_task_id");
-    expect(draft.tasks[0]).toEqual(plan.content.tasks[0].definition);
+    const draftTask = draft.tasks[0];
+    const planTask = plan.content.tasks[0];
+    expect(draftTask).toBeDefined();
+    expect(planTask).toBeDefined();
+    if (!draftTask || !planTask) throw new Error("Expected one plan task");
+    expect(draftTask).not.toHaveProperty("test_task_id");
+    expect(draftTask).toEqual(planTask.definition);
     expect(isPlanDraftValid(draft)).toBe(true);
   });
 
   it("rejects blank observable criteria", () => {
     const draft = toPlanDraft(plan);
-    draft.tasks[0].success_criteria = [""];
+    const draftTask = draft.tasks[0];
+    expect(draftTask).toBeDefined();
+    if (!draftTask) throw new Error("Expected one draft task");
+    draftTask.success_criteria = [""];
     expect(isPlanDraftValid(draft)).toBe(false);
   });
 });

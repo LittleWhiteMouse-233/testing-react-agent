@@ -1,41 +1,46 @@
-import type { ApiErrorBody } from "./contracts";
+import createFetchClient, {
+  createFinalURL,
+  createQuerySerializer,
+  defaultPathSerializer
+} from "openapi-fetch";
+import createQueryClient from "openapi-react-query";
+import type { ApiError } from "./contracts";
+import type { paths } from "./schema";
 
-const API_ROOT = import.meta.env.VITE_API_ROOT ?? "/api";
+export const API_ORIGIN = (import.meta.env.VITE_API_ORIGIN ?? "").replace(
+  /\/+$/,
+  ""
+);
 
-export class ApiRequestError extends Error {
-  constructor(
-    message: string,
-    public status: number,
-    public body: ApiErrorBody
-  ) {
-    super(message);
-  }
-}
+export const apiFetch = createFetchClient<paths>({ baseUrl: API_ORIGIN });
+export const $api = createQueryClient(apiFetch);
 
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_ROOT}${path}`, {
-    ...init,
-    headers: {
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers
-    }
+const querySerializer = createQuerySerializer();
+
+export function artifactUrl(artifactId: string): string {
+  return createFinalURL("/api/artifacts/{artifact_id}", {
+    baseUrl: API_ORIGIN,
+    params: { path: { artifact_id: artifactId } },
+    querySerializer,
+    pathSerializer: defaultPathSerializer
   });
-  const text = await response.text();
-  if (!response.ok) {
-    let body: ApiErrorBody = {
-      code: "http_error",
-      message: response.statusText || `Request failed (${response.status})`
-    };
-    if (text) {
-      try {
-        body = JSON.parse(text) as ApiErrorBody;
-      } catch {
-        body = { code: "invalid_error_response", message: text };
-      }
-    }
-    throw new ApiRequestError(body.message, response.status, body);
-  }
-  return (text ? JSON.parse(text) : undefined) as T;
 }
 
-export const apiUrl = (path: string) => `${API_ROOT}${path}`;
+export function runEventStreamUrl(testRunId: string, after: number): string {
+  return createFinalURL("/api/runs/{test_run_id}/stream", {
+    baseUrl: API_ORIGIN,
+    params: {
+      path: { test_run_id: testRunId },
+      query: { after }
+    },
+    querySerializer,
+    pathSerializer: defaultPathSerializer
+  });
+}
+
+export function apiErrorMessage(
+  error: ApiError | null | undefined,
+  fallback: string
+): string {
+  return error?.message || fallback;
+}

@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
 from app.api.schemas import (
@@ -27,15 +28,20 @@ from app.services.read_models import DeviceView, TestRunDetail, TestRunReport
 from app.services.run_service import RunConflict
 
 
+API_ERROR_RESPONSE: dict[str, Any] = {"model": ApiError}
+NOT_FOUND_RESPONSE: dict[int | str, dict[str, Any]] = {
+    404: API_ERROR_RESPONSE
+}
+CONFLICT_RESPONSE: dict[int | str, dict[str, Any]] = {
+    409: API_ERROR_RESPONSE
+}
+BAD_GATEWAY_RESPONSE: dict[int | str, dict[str, Any]] = {
+    502: API_ERROR_RESPONSE
+}
+
 router = APIRouter(
     prefix="/api",
-    responses={
-        404: {"model": ApiError},
-        409: {"model": ApiError},
-        422: {"model": ApiError},
-        502: {"model": ApiError},
-        500: {"model": ApiError},
-    },
+    responses={422: API_ERROR_RESPONSE, 500: API_ERROR_RESPONSE},
 )
 
 
@@ -68,7 +74,11 @@ async def list_test_cases(
     return PageResponse[TestCase](items=items, total=total)
 
 
-@router.get("/test-cases/{test_case_id}", response_model=TestCase)
+@router.get(
+    "/test-cases/{test_case_id}",
+    response_model=TestCase,
+    responses=NOT_FOUND_RESPONSE,
+)
 async def get_test_case(test_case_id: TestCaseId, request: Request) -> TestCase:
     try:
         return await container(request).repository.get_test_case(test_case_id)
@@ -77,7 +87,10 @@ async def get_test_case(test_case_id: TestCaseId, request: Request) -> TestCase:
 
 
 @router.post(
-    "/test-cases/{test_case_id}/plans", status_code=201, response_model=TestPlan
+    "/test-cases/{test_case_id}/plans",
+    status_code=201,
+    response_model=TestPlan,
+    responses={**NOT_FOUND_RESPONSE, **BAD_GATEWAY_RESPONSE},
 )
 async def generate_plan(
     test_case_id: TestCaseId, payload: GeneratePlanRequest, request: Request
@@ -93,7 +106,9 @@ async def generate_plan(
 
 
 @router.get(
-    "/test-cases/{test_case_id}/plans", response_model=PageResponse[TestPlan]
+    "/test-cases/{test_case_id}/plans",
+    response_model=PageResponse[TestPlan],
+    responses=NOT_FOUND_RESPONSE,
 )
 async def list_test_plans(
     test_case_id: TestCaseId, request: Request
@@ -109,6 +124,7 @@ async def list_test_plans(
     "/test-plans/{test_plan_id}/revisions",
     status_code=201,
     response_model=TestPlan,
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
 async def revise_test_plan(
     test_plan_id: TestPlanId, payload: ReviseTestPlanRequest, request: Request
@@ -123,7 +139,12 @@ async def revise_test_plan(
         raise problem(409, "test_plan_not_latest", str(exc)) from exc
 
 
-@router.post("/runs", status_code=201, response_model=TestRun)
+@router.post(
+    "/runs",
+    status_code=201,
+    response_model=TestRun,
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 async def create_test_run(
     payload: TestRunCreateRequest, request: Request
 ) -> TestRun:
@@ -154,7 +175,11 @@ async def list_test_runs(
     return PageResponse[TestRun](items=items, total=total)
 
 
-@router.get("/runs/{test_run_id}", response_model=TestRunDetail)
+@router.get(
+    "/runs/{test_run_id}",
+    response_model=TestRunDetail,
+    responses=NOT_FOUND_RESPONSE,
+)
 async def get_test_run(test_run_id: TestRunId, request: Request) -> TestRunDetail:
     try:
         return await container(request).repository.get_detail(test_run_id)
@@ -162,7 +187,13 @@ async def get_test_run(test_run_id: TestRunId, request: Request) -> TestRunDetai
         raise problem(404, "test_run_not_found", str(exc)) from exc
 
 
-@router.post("/runs/{test_run_id}/cancel", status_code=202)
+@router.post(
+    "/runs/{test_run_id}/cancel",
+    status_code=202,
+    response_class=Response,
+    response_description="Cancellation request accepted",
+    responses=NOT_FOUND_RESPONSE,
+)
 async def cancel_test_run(test_run_id: TestRunId, request: Request) -> Response:
     try:
         await container(request).run_service.cancel(test_run_id)
@@ -174,6 +205,7 @@ async def cancel_test_run(test_run_id: TestRunId, request: Request) -> Response:
 @router.get(
     "/runs/{test_run_id}/events",
     response_model=PageResponse[StoredRunEvent],
+    responses=NOT_FOUND_RESPONSE,
 )
 async def list_run_events(
     test_run_id: TestRunId,
@@ -189,11 +221,26 @@ async def list_run_events(
     return PageResponse[StoredRunEvent](items=items, total=len(items))
 
 
-@router.get("/runs/{test_run_id}/stream")
+@router.get(
+    "/runs/{test_run_id}/stream",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Server-sent run events",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        },
+        **NOT_FOUND_RESPONSE,
+    },
+)
 async def stream_run_events(
     test_run_id: TestRunId,
     request: Request,
     after: int = Query(default=0, ge=0),
+    last_event_id: int | None = Header(
+        default=None,
+        alias="Last-Event-ID",
+        ge=0,
+    ),
 ) -> StreamingResponse:
     app = container(request)
     try:
@@ -202,7 +249,8 @@ async def stream_run_events(
         raise problem(404, "test_run_not_found", str(exc)) from exc
 
     async def generate() -> AsyncIterator[str]:
-        cursor = after
+        cursor = max(after, last_event_id or 0)
+        yield "retry: 1000\n\n"
         async with app.event_bus.subscribe(test_run_id) as queue:
             while True:
                 if await request.is_disconnected():
@@ -232,7 +280,11 @@ async def stream_run_events(
     )
 
 
-@router.get("/runs/{test_run_id}/report", response_model=TestRunReport)
+@router.get(
+    "/runs/{test_run_id}/report",
+    response_model=TestRunReport,
+    responses=NOT_FOUND_RESPONSE,
+)
 async def get_test_run_report(
     test_run_id: TestRunId, request: Request
 ) -> TestRunReport:
@@ -243,7 +295,10 @@ async def get_test_run_report(
 
 
 @router.post(
-    "/runs/{test_run_id}/exports", status_code=201, response_model=Artifact
+    "/runs/{test_run_id}/exports",
+    status_code=201,
+    response_model=Artifact,
+    responses=NOT_FOUND_RESPONSE,
 )
 async def export_test_run_report(
     test_run_id: TestRunId, payload: ReportExportRequest, request: Request
@@ -254,7 +309,21 @@ async def export_test_run_report(
         raise problem(404, "test_run_not_found", str(exc)) from exc
 
 
-@router.get("/artifacts/{artifact_id}")
+@router.get(
+    "/artifacts/{artifact_id}",
+    response_class=Response,
+    responses={
+        200: {
+            "description": "Stored artifact content",
+            "content": {
+                "image/png": {"schema": {"type": "string", "format": "binary"}},
+                "application/json": {"schema": {}},
+                "text/html": {"schema": {"type": "string"}},
+            },
+        },
+        **NOT_FOUND_RESPONSE,
+    },
+)
 async def get_artifact(artifact_id: ArtifactId, request: Request) -> Response:
     try:
         content, mime_type = await container(request).artifacts.load_content(artifact_id)
@@ -293,7 +362,11 @@ async def list_devices(request: Request) -> PageResponse[DeviceView]:
     return PageResponse[DeviceView](items=list(items), total=len(items))
 
 
-@router.get("/devices/{device_id}", response_model=DeviceView)
+@router.get(
+    "/devices/{device_id}",
+    response_model=DeviceView,
+    responses=NOT_FOUND_RESPONSE,
+)
 async def get_device(device_id: DeviceId, request: Request) -> DeviceView:
     app = container(request)
     if device_id not in app.devices:

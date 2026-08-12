@@ -130,7 +130,11 @@ def test_complete_message_first_run_and_exports() -> None:
                 "GET", f"/api/runs/{detail['run']['id']}/stream?after=0"
             ) as stream:
                 assert stream.status_code == 200
+                assert stream.headers["content-type"].startswith(
+                    "text/event-stream"
+                )
                 lines = list(stream.iter_lines())
+            assert lines[0] == "retry: 1000"
             sse_ids = [
                 int(line.removeprefix("id: "))
                 for line in lines
@@ -144,6 +148,41 @@ def test_complete_message_first_run_and_exports() -> None:
             assert not any(line.startswith("event:") for line in lines)
             assert sse_ids == [item["sequence"] for item in events]
             assert sse_events == events
+
+            header_cursor = events[-3]["sequence"]
+            with client.stream(
+                "GET",
+                f"/api/runs/{detail['run']['id']}/stream?after=0",
+                headers={"Last-Event-ID": str(header_cursor)},
+            ) as resumed_stream:
+                resumed_lines = list(resumed_stream.iter_lines())
+            resumed_ids = [
+                int(line.removeprefix("id: "))
+                for line in resumed_lines
+                if line.startswith("id: ")
+            ]
+            assert resumed_ids == [item["sequence"] for item in events[-2:]]
+
+            query_cursor = events[-2]["sequence"]
+            with client.stream(
+                "GET",
+                f"/api/runs/{detail['run']['id']}/stream?after={query_cursor}",
+                headers={"Last-Event-ID": "0"},
+            ) as max_cursor_stream:
+                max_cursor_lines = list(max_cursor_stream.iter_lines())
+            max_cursor_ids = [
+                int(line.removeprefix("id: "))
+                for line in max_cursor_lines
+                if line.startswith("id: ")
+            ]
+            assert max_cursor_ids == [events[-1]["sequence"]]
+
+            invalid_cursor = client.get(
+                f"/api/runs/{detail['run']['id']}/stream",
+                headers={"Last-Event-ID": "-1"},
+            )
+            assert invalid_cursor.status_code == 422
+            assert invalid_cursor.json()["code"] == "validation_error"
 
             checkpoint_messages = asyncio.run(
                 load_checkpoint_messages(
@@ -176,6 +215,12 @@ def test_complete_message_first_run_and_exports() -> None:
             assert len(report["artifacts"]) == 2
             assert "summary" not in report
 
+            screenshot_download = client.get(
+                f"/api/artifacts/{report['artifacts'][0]['id']}"
+            )
+            assert screenshot_download.status_code == 200
+            assert screenshot_download.headers["content-type"] == "image/png"
+
             for export_format in ("json", "html"):
                 export = client.post(
                     f"/api/runs/{detail['run']['id']}/exports",
@@ -187,8 +232,10 @@ def test_complete_message_first_run_and_exports() -> None:
                 download = client.get(f"/api/artifacts/{artifact['id']}")
                 assert download.status_code == 200
                 if export_format == "json":
+                    assert download.headers["content-type"] == "application/json"
                     assert download.json() == report
                 else:
+                    assert download.headers["content-type"].startswith("text/html")
                     assert "data:image/png;base64," in download.text
 
 

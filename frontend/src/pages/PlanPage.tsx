@@ -6,7 +6,7 @@ import {
   RocketOutlined,
   SaveOutlined
 } from "@ant-design/icons";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
   Button,
@@ -29,17 +29,10 @@ import {
 } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api, ApiRequestError } from "../api/client";
+import { $api, apiErrorMessage } from "../api/client";
 import type {
-  DevicePage,
-  GeneratePlanRequest,
-  ReviseTestPlanRequest,
-  TestCase,
   TestPlan,
   TestPlanDraft,
-  TestPlanPage,
-  TestRun,
-  TestRunCreateRequest,
   TestTaskDefinition
 } from "../api/contracts";
 import { emptyTask, isPlanDraftValid, toPlanDraft } from "../planDraft";
@@ -54,18 +47,13 @@ export default function PlanPage() {
   const [confirmed, setConfirmed] = useState(false);
   const [dirty, setDirty] = useState(false);
 
-  const testCase = useQuery({
-    queryKey: ["case", caseId],
-    queryFn: () => api<TestCase>(`/test-cases/${caseId}`)
+  const testCase = $api.useQuery("get", "/api/test-cases/{test_case_id}", {
+    params: { path: { test_case_id: caseId } }
   });
-  const plans = useQuery({
-    queryKey: ["plans", caseId],
-    queryFn: () => api<TestPlanPage>(`/test-cases/${caseId}/plans`)
+  const plans = $api.useQuery("get", "/api/test-cases/{test_case_id}/plans", {
+    params: { path: { test_case_id: caseId } }
   });
-  const devices = useQuery({
-    queryKey: ["devices"],
-    queryFn: () => api<DevicePage>("/devices")
-  });
+  const devices = $api.useQuery("get", "/api/devices");
 
   useEffect(() => {
     const latest = plans.data?.items[0];
@@ -84,54 +72,72 @@ export default function PlanPage() {
     setDraft(toPlanDraft(value));
     setConfirmed(false);
     setDirty(false);
-    void queryClient.invalidateQueries({ queryKey: ["plans", caseId] });
+    void queryClient.invalidateQueries({
+      queryKey: $api.queryOptions(
+        "get",
+        "/api/test-cases/{test_case_id}/plans",
+        { params: { path: { test_case_id: caseId } } }
+      ).queryKey
+    });
   };
-  const generate = useMutation({
-    mutationFn: () => {
-      const payload: GeneratePlanRequest = { device_id: deviceId! };
-      return api<TestPlan>(`/test-cases/${caseId}/plans`, {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
-    },
-    onSuccess: (value) => {
-      acceptPlan(value);
-      message.success("计划已生成");
-    },
-    onError: (error: Error) => message.error(error.message)
-  });
-  const revise = useMutation({
-    mutationFn: () => {
-      const payload: ReviseTestPlanRequest = { content: draft! };
-      return api<TestPlan>(`/test-plans/${plan!.id}/revisions`, {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
-    },
-    onSuccess: (value) => {
-      acceptPlan(value);
-      message.success(`已保存为计划版本 ${value.version_number}`);
-    },
-    onError: (error: Error) => message.error(error.message)
-  });
-  const start = useMutation({
-    mutationFn: () => {
-      const payload: TestRunCreateRequest = {
-        test_plan_id: plan!.id,
-        device_id: deviceId!,
-        assumptions_confirmed: true
-      };
-      return api<TestRun>("/runs", { method: "POST", body: JSON.stringify(payload) });
-    },
+  const generate = $api.useMutation(
+    "post",
+    "/api/test-cases/{test_case_id}/plans",
+    {
+      onSuccess: (value) => {
+        acceptPlan(value);
+        message.success("计划已生成");
+      },
+      onError: (error) => message.error(apiErrorMessage(error, "计划生成失败"))
+    }
+  );
+  const revise = $api.useMutation(
+    "post",
+    "/api/test-plans/{test_plan_id}/revisions",
+    {
+      onSuccess: (value) => {
+        acceptPlan(value);
+        message.success(`已保存为计划版本 ${value.version_number}`);
+      },
+      onError: (error) => message.error(apiErrorMessage(error, "计划保存失败"))
+    }
+  );
+  const start = $api.useMutation("post", "/api/runs", {
     onSuccess: (run) => navigate(`/runs/${run.id}`),
-    onError: (error: Error) => {
-      if (error instanceof ApiRequestError && error.status === 409) {
-        message.warning(error.message);
+    onError: (error) => {
+      const errorMessage = apiErrorMessage(error, "运行启动失败");
+      if (["active_run_exists", "test_plan_not_startable"].includes(error.code)) {
+        message.warning(errorMessage);
       } else {
-        message.error(error.message);
+        message.error(errorMessage);
       }
     }
   });
+
+  const generatePlan = () => {
+    if (!deviceId) return;
+    generate.mutate({
+      params: { path: { test_case_id: caseId } },
+      body: { device_id: deviceId }
+    });
+  };
+  const revisePlan = () => {
+    if (!draft || !plan) return;
+    revise.mutate({
+      params: { path: { test_plan_id: plan.id } },
+      body: { content: draft }
+    });
+  };
+  const startRun = () => {
+    if (!plan || !deviceId) return;
+    start.mutate({
+      body: {
+        test_plan_id: plan.id,
+        device_id: deviceId,
+        assumptions_confirmed: true
+      }
+    });
+  };
 
   const valid = useMemo(() => isPlanDraftValid(draft), [draft]);
   const latestVersion = Math.max(0, ...(plans.data?.items.map((item) => item.version_number) ?? []));
@@ -140,7 +146,9 @@ export default function PlanPage() {
   const updateTask = (index: number, patch: Partial<TestTaskDefinition>) => {
     if (!draft) return;
     const tasks = [...draft.tasks];
-    tasks[index] = { ...tasks[index], ...patch };
+    const task = tasks[index];
+    if (!task) return;
+    tasks[index] = { ...task, ...patch };
     setDraft({ ...draft, tasks });
     setDirty(true);
     setConfirmed(false);
@@ -148,7 +156,11 @@ export default function PlanPage() {
   const moveTask = (index: number, delta: number) => {
     if (!draft || index + delta < 0 || index + delta >= draft.tasks.length) return;
     const tasks = [...draft.tasks];
-    [tasks[index], tasks[index + delta]] = [tasks[index + delta], tasks[index]];
+    const task = tasks[index];
+    const destinationTask = tasks[index + delta];
+    if (!task || !destinationTask) return;
+    tasks[index] = destinationTask;
+    tasks[index + delta] = task;
     setDraft({ ...draft, tasks });
     setDirty(true);
     setConfirmed(false);
@@ -170,7 +182,7 @@ export default function PlanPage() {
             }))}
             placeholder="选择设备"
           />
-          <Button type="primary" disabled={!deviceId} loading={generate.isPending} onClick={() => generate.mutate()}>生成计划</Button>
+          <Button type="primary" disabled={!deviceId} loading={generate.isPending} onClick={generatePlan}>生成计划</Button>
         </Empty>
       </Card>
     );
@@ -185,8 +197,8 @@ export default function PlanPage() {
             <Typography.Text type="secondary">版本 {plan.version_number} · {plan.origin}</Typography.Text>
           </div>
           <Space wrap>
-            <Button disabled={!deviceId} loading={generate.isPending} onClick={() => generate.mutate()}>重新规划</Button>
-            <Button icon={<SaveOutlined />} disabled={!valid || !dirty || !isLatest} loading={revise.isPending} onClick={() => revise.mutate()}>保存新版本</Button>
+            <Button disabled={!deviceId} loading={generate.isPending} onClick={generatePlan}>重新规划</Button>
+            <Button icon={<SaveOutlined />} disabled={!valid || !dirty || !isLatest} loading={revise.isPending} onClick={revisePlan}>保存新版本</Button>
           </Space>
         </div>
         <Typography.Paragraph>{testCase.data?.content.source_text}</Typography.Paragraph>
@@ -268,7 +280,7 @@ export default function PlanPage() {
             />
           </Col>
           <Col>
-            <Button type="primary" size="large" icon={<RocketOutlined />} disabled={!valid || dirty || !confirmed || !deviceId || !isLatest} loading={start.isPending} onClick={() => start.mutate()}>
+            <Button type="primary" size="large" icon={<RocketOutlined />} disabled={!valid || dirty || !confirmed || !deviceId || !isLatest} loading={start.isPending} onClick={startRun}>
               启动运行
             </Button>
           </Col>

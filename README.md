@@ -23,7 +23,7 @@ TestCase
 - `backend/app/persistence/` 保存 SQLAlchemy Row、集中 JSON adapter、Row mapper 和查询/事务边界。
 - `backend/app/services/` 保存 planning、run、event、artifact、report 和公开 Message 投影等应用边界。
 - `backend/app/api/` 只定义 command request、分页、错误及路由；同形且安全的 domain/read model 直接作为响应。
-- `frontend/src/api/schema.d.ts` 由已提交的 OpenAPI 合同生成，页面保留 snake_case wire 字段。
+- `frontend/src/api/schema.d.ts` 由已提交的 OpenAPI 合同生成；`openapi-fetch` 与 `openapi-react-query` 约束页面的 method/path/params/body/response，页面保留 snake_case wire 字段。
 
 结构治理、信息家族、唯一转换责任和 W/O/N 审计详见 [数据结构整理.md](数据结构整理.md)。产品语义以 [PRD.md](PRD.md) 为准，运行设计以 [spec3.md](spec3.md) 为准。
 
@@ -54,6 +54,8 @@ npm.cmd run dev
 ```
 
 打开 `http://localhost:5173`。Vite 会把 `/api` 与 `/health` 代理到 `http://localhost:8000`。
+
+默认前后端同源，不需要前端环境变量。若分开部署，复制 `frontend/.env.example` 为 `frontend/.env`，并把 `VITE_API_ORIGIN` 设置为后端 Origin（例如 `http://localhost:8000`）；该值不包含 `/api` 路径。
 
 ## 配置
 
@@ -114,7 +116,7 @@ TestPlan 不可变。人工编辑生成新的 `manual_revision` TestPlan 和全�
 - 生命周期、错误、跳过和终态由少量补充事件表达，不复制 Task、Result、verdict 或设备事实。
 - 不订阅 `messages` token mode，不定义、聚合、持久化或展示 token/chunk。
 
-REST、SSE、在线报告和导出共同使用 `StoredRunEvent`。SSE 只发送 `id: sequence` 和 `data: StoredRunEvent`，断线后可用 `after` 补拉。每个 Task checkpoint thread 使用 `task-run:{task_run_id}`；执行协议基线是 `"1"`。
+REST、SSE、在线报告和导出共同使用 `StoredRunEvent`。SSE 发送 `retry: 1000`、`id: sequence` 和 `data: StoredRunEvent`；首次连接用 `after` 补拉，浏览器重连自动发送 `Last-Event-ID`，后端取两者较大值。前端用 OpenAPI 生成的 Ajv standalone 校验器验证实时事件，普通 REST JSON 只使用静态生成类型。每个 Task checkpoint thread 使用 `task-run:{task_run_id}`；执行协议基线是 `"1"`。
 
 ## 核心 API
 
@@ -146,7 +148,7 @@ GET    /api/devices/{device_id}
 
 ## OpenAPI 与验证
 
-后端合同变化后重新导出并生成前端类型：
+后端合同变化后，必须先导出 OpenAPI，再生成前端类型与 SSE 校验器：
 
 ```powershell
 cd backend
@@ -156,7 +158,9 @@ cd ../frontend
 npm.cmd run generate:api
 ```
 
-完整验收：
+`generate:api` 会更新 `schema.d.ts` 和 `src/api/generated/validateStoredRunEvent.*`。`check:api` 只检查这些生成物是否与 `openapi.json` 同步，不会改写或自动修复文件；检查失败时重新执行上述导出、生成顺序。
+
+本项目不配置 GitHub Actions 或远程合并门禁。提交前应在本地执行完整验收：
 
 ```powershell
 cd backend

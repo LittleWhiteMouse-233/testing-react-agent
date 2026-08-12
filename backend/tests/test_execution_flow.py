@@ -303,6 +303,8 @@ def test_cancellation_finishes_with_cancelled_verdict() -> None:
             run_id = start_run(client, cast(str, plan["id"]))
             response = client.post(f"/api/runs/{run_id}/cancel")
             assert response.status_code == 202, response.text
+            assert response.content == b""
+            assert "content-type" not in response.headers
             detail = wait_for_run(client, run_id)
 
             assert detail["run"]["status"] == "finished"

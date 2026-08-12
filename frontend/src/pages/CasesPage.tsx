@@ -1,5 +1,5 @@
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Button,
   Card,
@@ -14,42 +14,29 @@ import {
 } from "antd";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api } from "../api/client";
-import type {
-  TestCase,
-  TestCaseCreateRequest,
-  TestCasePage,
-  TestRunPage
-} from "../api/contracts";
+import { $api, apiErrorMessage } from "../api/client";
+import type { TestCase, TestCaseCreateRequest } from "../api/contracts";
 
 export default function CasesPage({ runsOnly = false }: { runsOnly?: boolean }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm<TestCaseCreateRequest>();
-  const cases = useQuery({
-    queryKey: ["cases"],
-    queryFn: () => api<TestCasePage>("/test-cases")
-  });
-  const runs = useQuery({
-    queryKey: ["runs"],
-    queryFn: () => api<TestRunPage>("/runs"),
+  const cases = $api.useQuery("get", "/api/test-cases");
+  const runs = $api.useQuery("get", "/api/runs", {}, {
     refetchInterval: (query) =>
       query.state.data?.items.some((run) => run.status !== "finished") ? 1500 : false
   });
-  const create = useMutation({
-    mutationFn: (payload: TestCaseCreateRequest) =>
-      api<TestCase>("/test-cases", {
-        method: "POST",
-        body: JSON.stringify(payload)
-      }),
+  const create = $api.useMutation("post", "/api/test-cases", {
     onSuccess: (testCase) => {
       setOpen(false);
       form.resetFields();
-      void queryClient.invalidateQueries({ queryKey: ["cases"] });
+      void queryClient.invalidateQueries({
+        queryKey: $api.queryOptions("get", "/api/test-cases").queryKey
+      });
       navigate(`/cases/${testCase.id}/plan`);
     },
-    onError: (error: Error) => message.error(error.message)
+    onError: (error) => message.error(apiErrorMessage(error, "请求失败"))
   });
 
   if (runsOnly) {
@@ -118,7 +105,11 @@ export default function CasesPage({ runsOnly = false }: { runsOnly?: boolean }) 
         onOk={() => form.submit()}
         confirmLoading={create.isPending}
       >
-        <Form form={form} layout="vertical" onFinish={(value) => create.mutate(value)}>
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={(value) => create.mutate({ body: value })}
+        >
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="source_text" label="自然语言用例" rules={[{ required: true }]}>
             <Input.TextArea rows={7} placeholder="包含前置条件、目标和预期结果" />
