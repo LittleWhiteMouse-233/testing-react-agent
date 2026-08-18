@@ -7,11 +7,13 @@ from langchain_core.tools import BaseTool
 from langchain_core.utils.pydantic import model_json_schema
 
 from app.domain.activity import AgentActivity
-from app.domain.tools import ToolCapability, ToolCatalogSnapshot
+from app.domain.resources.tools import ToolCapability, ToolCatalogSnapshot
 from app.tools.contracts import DeviceToolManifest, ToolBinding
 
 
-class _CapabilitySource(Protocol):
+class _ToolManifestSource(Protocol):
+    """只声明一份设备工具 manifest 的运行时来源。"""
+
     device_id: str
 
     def tool_manifest(self) -> DeviceToolManifest: ...
@@ -24,10 +26,6 @@ def _validate_binding(binding: ToolBinding) -> None:
         raise ValueError(f"Tool {binding.tool.name} must declare scopes")
     if any(not isinstance(scope, AgentActivity) for scope in binding.scopes):
         raise TypeError("ToolBinding scopes must contain AgentActivity values")
-    if binding.changes_device_state and binding.scopes <= {AgentActivity.JUDGE}:
-        raise ValueError(
-            f"State-changing tool {binding.tool.name} requires a non-judge scope"
-        )
     if not binding.tool.name.strip():
         raise ValueError("Tool names must not be blank")
     if binding.tool.name == "finish_task":
@@ -51,22 +49,22 @@ class CatalogToolProvider:
 
     def __init__(
         self,
-        capability_sources: Sequence[_CapabilitySource],
+        device_tool_sources: Sequence[_ToolManifestSource],
         *,
-        shared_capability_sources: Sequence[_CapabilitySource] = (),
+        shared_tool_sources: Sequence[_ToolManifestSource] = (),
     ) -> None:
         manifests_by_device: dict[str, DeviceToolManifest] = {}
-        for source in capability_sources:
+        for source in device_tool_sources:
             manifest = source.tool_manifest()
             _validate_manifest(manifest, owner=f"device {source.device_id}")
             if source.device_id in manifests_by_device:
                 raise ValueError(f"Duplicate device manifest: {source.device_id}")
             manifests_by_device[source.device_id] = manifest
         if not manifests_by_device:
-            raise ValueError("At least one device capability declaration is required")
+            raise ValueError("At least one device tool manifest is required")
 
         shared_bindings: list[ToolBinding] = []
-        for source in shared_capability_sources:
+        for source in shared_tool_sources:
             manifest = source.tool_manifest()
             _validate_manifest(manifest, owner="shared")
             shared_bindings.extend(manifest.bindings)
@@ -94,7 +92,7 @@ class CatalogToolProvider:
         return tuple(
             binding.tool
             for binding in self._bindings_for(device_id)
-            if activity in self._effective_scopes(binding)
+            if activity in binding.scopes
         )
 
     def snapshot_for(self, device_id: str) -> ToolCatalogSnapshot:
@@ -111,14 +109,8 @@ class CatalogToolProvider:
             description=binding.tool.description or "",
             input_schema=input_schema,
             scopes=sorted(
-                CatalogToolProvider._effective_scopes(binding),
+                binding.scopes,
                 key=lambda scope: scope.value,
             ),
             changes_device_state=binding.changes_device_state,
         )
-
-    @staticmethod
-    def _effective_scopes(binding: ToolBinding) -> frozenset[AgentActivity]:
-        if binding.changes_device_state:
-            return binding.scopes - {AgentActivity.JUDGE}
-        return binding.scopes

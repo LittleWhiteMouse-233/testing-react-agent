@@ -18,7 +18,8 @@ frontend/vite.config.d.ts
 # Environment files
 .vscode/
 .env
-backend/.env
+.env.*
+!.env.example
 
 # dev
 .agents/
@@ -27,5 +28,3 @@ CLAUDE.md
 .workbuddy/
 .dev/
 .VSCodeCounter/
-spec*
-review*

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from app.domain.device import DeviceHealth, DeviceInfo
+from app.domain.resources.device import DeviceHealth, DeviceInfo
 from app.tools.contracts import DeviceToolManifest
 
 

@@ -6,12 +6,12 @@ from typing import Protocol
 from langchain_core.tools import BaseTool
 
 from app.domain.activity import AgentActivity
-from app.domain.tools import ToolCatalogSnapshot
+from app.domain.resources.tools import ToolCatalogSnapshot
 
 
 @dataclass(frozen=True)
 class ToolBinding:
-    """Runtime-only binding between a framework tool and product policy."""
+    """框架工具与显式 activity 权限及副作用审计分类的运行时绑定。"""
 
     tool: BaseTool
     scopes: frozenset[AgentActivity]
@@ -20,7 +20,7 @@ class ToolBinding:
 
 @dataclass(frozen=True)
 class DeviceToolManifest:
-    """A device provider's native tools before shared tools are merged."""
+    """设备或 shared source 在目录合并前声明的工具绑定序列。"""
 
     bindings: tuple[ToolBinding, ...]
 

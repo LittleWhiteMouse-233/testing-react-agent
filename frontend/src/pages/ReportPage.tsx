@@ -18,7 +18,7 @@ import { useParams } from "react-router-dom";
 import { $api, apiErrorMessage, artifactUrl } from "../api/client";
 import type { Artifact } from "../api/contracts";
 
-const terminalStatuses = ["passed", "failed", "blocked", "skipped"] as const;
+const terminalStatuses = ["passed", "failed", "blocked", "skipped", "cancelled"] as const;
 
 export default function ReportPage() {
   const { runId = "" } = useParams();
@@ -70,7 +70,7 @@ export default function ReportPage() {
           <Descriptions.Item label="判定模型">{data.detail.snapshot.judge_model.profile_id}</Descriptions.Item>
         </Descriptions>
         <Row gutter={16}>
-          {terminalStatuses.map((status) => <Col key={status} xs={12} md={6}><Statistic title={status} value={counts[status]} /></Col>)}
+          {terminalStatuses.map((status) => <Col key={status} xs={12} md={4}><Statistic title={status} value={counts[status]} /></Col>)}
         </Row>
       </Card>
       {data.detail.task_runs.map((taskRun, index) => {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 
 from langchain_core.messages import BaseMessage
@@ -13,13 +14,16 @@ from app.domain.errors import (
     ActionTimeout,
     CaptureFailed,
     DeviceUnavailable,
+    ModelContextBudgetExceeded,
+    ModelProfileMismatch,
     ModelCallTimeout,
-    ReasonCode,
+    PromptVersionMismatch,
 )
-from app.domain.events import (
+from app.domain.execution import (
     ExecutionErrorEvent,
     MessageAppendedEvent,
     MessageValidationFailedEvent,
+    ReasonCode,
     RunEvent,
     ToolStartedEvent,
 )
@@ -32,35 +36,38 @@ from app.domain.execution import (
     aggregate_test_run_verdict,
 )
 from app.domain.planning import TestTask
-from app.graph.signals import (
+from app.domain.resources.llm import LLMProfileSnapshot
+from app.execution.signals import (
     GRAPH_SIGNAL_ADAPTER,
     MessageValidationSignal,
     ToolStartedSignal,
 )
-from app.graph.task_agent import TaskAgentFactory
-from app.persistence.execution_repository import SqlAlchemyExecutionRepository
-from app.services.message_projector import project_run_message
-from app.services.registry import RunRegistry
+from app.execution.task_agent import TaskAgentFactory
+from app.persistence.test_repository import SqlAlchemyTestRepository
+from app.event_stream.projector import project_run_message
 
 
 class RunExecutor:
     def __init__(
         self,
         *,
-        repository: SqlAlchemyExecutionRepository,
+        repository: SqlAlchemyTestRepository,
         agent_factory: TaskAgentFactory,
-        registry: RunRegistry,
         checkpoint_path: str,
     ) -> None:
         self.repository = repository
         self.agent_factory = agent_factory
-        self.registry = registry
         self.checkpoint_path = checkpoint_path
 
-    async def run(self, test_run_id: str) -> None:
+    async def run(
+        self,
+        test_run_id: str,
+        run_cancellation_event: asyncio.Event,
+    ) -> None:
         active_task: TaskRun | None = None
+        remaining_after_active_task: list[TestTask] = []
         try:
-            detail = await self.repository.get_detail(test_run_id)
+            detail = await self.repository.get_test_run_detail(test_run_id)
             await self.repository.start_run(test_run_id)
             if not detail.snapshot.device_environment.health.available:
                 await self._block_run(
@@ -76,7 +83,7 @@ class RunExecutor:
             ) as checkpointer:
                 with tracing_context(enabled=False):
                     for index, test_task in enumerate(detail.test_plan.content.tasks):
-                        if self.registry.cancellation(test_run_id).is_set():
+                        if run_cancellation_event.is_set():
                             await self.repository.finish_run(
                                 test_run_id, TestRunVerdict.CANCELLED
                             )
@@ -84,12 +91,26 @@ class RunExecutor:
                         active_task = await self.repository.start_task(
                             test_run_id, test_task
                         )
+                        remaining_after_active_task = list(
+                            detail.test_plan.content.tasks[index + 1 :]
+                        )
                         completion = await self._execute_task(
                             test_run_id=test_run_id,
                             task_run=active_task,
                             test_task=test_task,
                             device_id=detail.run.device_id,
                             previous_task_runs=completed,
+                            expected_model_profile=(
+                                detail.snapshot.act_model
+                                if test_task.definition.type.value == "act"
+                                else detail.snapshot.judge_model
+                            ),
+                            expected_prompt_version=(
+                                detail.snapshot.act_prompt_version
+                                if test_task.definition.type.value == "act"
+                                else detail.snapshot.judge_prompt_version
+                            ),
+                            run_cancellation_event=run_cancellation_event,
                             checkpointer=checkpointer,
                         )
                         await self.repository.finish_task(
@@ -111,11 +132,10 @@ class RunExecutor:
                             TaskRunStatus.FAILED,
                             TaskRunStatus.BLOCKED,
                         }:
-                            remaining = detail.test_plan.content.tasks[index + 1 :]
-                            if remaining:
+                            if remaining_after_active_task:
                                 await self.repository.skip_remaining(
                                     test_run_id,
-                                    remaining,
+                                    remaining_after_active_task,
                                 )
                             break
                         active_task = None
@@ -141,9 +161,12 @@ class RunExecutor:
                         ),
                         cycle_count=current.cycle_count,
                     )
+                    if remaining_after_active_task:
+                        await self.repository.skip_remaining(
+                            test_run_id,
+                            remaining_after_active_task,
+                        )
             await self._block_run(test_run_id, reason, str(exc))
-        finally:
-            self.registry.unregister(test_run_id)
 
     async def _execute_task(
         self,
@@ -153,14 +176,19 @@ class RunExecutor:
         test_task: TestTask,
         device_id: str,
         previous_task_runs: list[TaskRun],
+        expected_model_profile: LLMProfileSnapshot,
+        expected_prompt_version: str,
+        run_cancellation_event: asyncio.Event,
         checkpointer: BaseCheckpointSaver[Any],
     ) -> TaskAgentCompletion:
         graph, initial = await self.agent_factory.build(
-            test_run_id=test_run_id,
             task_run_id=task_run.id,
             device_id=device_id,
             task=test_task,
             previous_task_runs=previous_task_runs,
+            expected_model_profile=expected_model_profile,
+            expected_prompt_version=expected_prompt_version,
+            run_cancellation_event=run_cancellation_event,
             checkpointer=checkpointer,
         )
         completion: TaskAgentCompletion | None = None
@@ -278,6 +306,12 @@ class RunExecutor:
             return ReasonCode.CAPTURE_FAILED
         if isinstance(exc, ModelCallTimeout):
             return ReasonCode.MODEL_UNAVAILABLE
+        if isinstance(exc, PromptVersionMismatch):
+            return ReasonCode.PROMPT_VERSION_MISMATCH
+        if isinstance(exc, ModelProfileMismatch):
+            return ReasonCode.MODEL_PROFILE_MISMATCH
+        if isinstance(exc, ModelContextBudgetExceeded):
+            return ReasonCode.MODEL_CONTEXT_EXCEEDED
         if isinstance(exc, NodeTimeoutError) and exc.node == "tools":
             return ReasonCode.TOOL_FAILED
         if isinstance(exc, TimeoutError):

@@ -5,8 +5,9 @@ from collections.abc import Callable
 from typing import cast
 
 import pytest
+from pydantic import ValidationError
 
-from app.config import PROJECT_ROOT, Settings
+from app.config import LLMProfileSettings, PROJECT_ROOT, Settings
 
 
 def test_settings_use_device_neutral_environment_names(
@@ -19,15 +20,24 @@ def test_settings_use_device_neutral_environment_names(
         "LLM_PROFILES",
         json.dumps(
             [
-                {"id": "planner", "model": "planning-model"},
-                {"id": "vision", "model": "vision-model"},
+                {
+                    "id": "planner",
+                    "model": "planning-model",
+                    "context_window_tokens": 16_384,
+                    "max_output_tokens": 1_024,
+                },
+                {
+                    "id": "vision",
+                    "model": "vision-model",
+                    "context_window_tokens": 32_768,
+                    "tokens_per_image": 1_500,
+                },
             ]
         ),
     )
     monkeypatch.setenv("TEST_AGENT_PLANNING_MODEL_ID", "planner")
     monkeypatch.setenv("TEST_AGENT_ACT_MODEL_ID", "vision")
     monkeypatch.setenv("TEST_AGENT_JUDGE_MODEL_ID", "vision")
-    monkeypatch.setenv("TEST_AGENT_HISTORY_MAX_TOKENS", "12000")
     monkeypatch.setenv("ADB_PATH", "custom-adb")
     monkeypatch.setenv("ADB_SERIAL", "device-1")
 
@@ -40,6 +50,22 @@ def test_settings_use_device_neutral_environment_names(
     assert settings.planning_model_id == "planner"
     assert settings.act_model_id == "vision"
     assert settings.judge_model_id == "vision"
-    assert settings.agent_history_max_tokens == 12_000
+    assert settings.llm_profiles[0].context_window_tokens == 16_384
+    assert settings.llm_profiles[0].max_output_tokens == 1_024
+    assert settings.llm_profiles[1].tokens_per_image == 1_500
     assert settings.adb_path == "custom-adb"
     assert settings.adb_serial == "device-1"
+
+
+def test_llm_profile_rejects_unknown_activity_markers_and_invalid_budget() -> None:
+    with pytest.raises(ValidationError, match="activities"):
+        LLMProfileSettings.model_validate(
+            {"id": "vision", "activities": ["act", "judge"]}
+        )
+    with pytest.raises(ValidationError, match="smaller than"):
+        LLMProfileSettings(
+            id="invalid",
+            context_window_tokens=2_048,
+            max_output_tokens=1_024,
+            context_safety_margin_tokens=1_024,
+        )

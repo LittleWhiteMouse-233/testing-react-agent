@@ -1,44 +1,44 @@
+"""可跨应用边界传播的异常类型；持久化结果原因属于 execution domain。"""
+
 from __future__ import annotations
-
-from enum import StrEnum
-
-
-class ReasonCode(StrEnum):
-    COMPLETED = "completed"
-    ASSERTION_FAILED = "assertion_failed"
-    GOAL_UNREACHABLE = "goal_unreachable"
-    CYCLE_LIMIT = "cycle_limit"
-    DEVICE_UNAVAILABLE = "device_unavailable"
-    CAPTURE_FAILED = "capture_failed"
-    MODEL_UNAVAILABLE = "model_unavailable"
-    INVALID_MODEL_RESPONSE = "invalid_model_response"
-    AGENT_BLOCKED = "agent_blocked"
-    TOOL_FAILED = "tool_failed"
-    PROCESS_RESTARTED = "process_restarted"
-    GLOBAL_FAIL_FAST = "global_fail_fast"
-    USER_CANCELLED = "user_cancelled"
-    UNEXPECTED_ERROR = "unexpected_error"
 
 
 class DeviceUnavailable(RuntimeError):
-    pass
+    """由设备集成产生、由 planning/execution/API 边界转换的不可用错误。"""
 
 
 class CaptureFailed(RuntimeError):
-    pass
+    """由设备截图边界产生、由 TaskAgent 重试或执行器阻塞的错误。"""
 
 
 class ActionTimeout(RuntimeError):
-    pass
+    """由设备动作边界产生、由 TaskAgent/执行器按安全规则消费的超时。"""
 
 
 class ModelCallTimeout(TimeoutError):
-    pass
+    """由 LLM 调用边界产生、由 Graph 重试并最终由执行器归因的超时。"""
 
 
 class UnsupportedAction(ValueError):
-    pass
+    """由设备适配器产生、表示请求动作不在其公开能力内。"""
 
 
 class PlanningFailure(RuntimeError):
-    pass
+    """由 PlanningGraph 在有限重试耗尽后产生，供应用/API 边界消费。"""
+
+
+class PromptVersionMismatch(RuntimeError):
+    """由执行 factory 在可用 prompt 与 TestRun snapshot 不一致时产生。"""
+
+    def __init__(self, *, prompt_name: str, expected: str, actual: str) -> None:
+        super().__init__(
+            f"Prompt {prompt_name} version mismatch: expected {expected}, got {actual}"
+        )
+
+
+class ModelProfileMismatch(RuntimeError):
+    """由执行 factory 在 profile ID 对应配置与 TestRun snapshot 漂移时产生。"""
+
+
+class ModelContextBudgetExceeded(RuntimeError):
+    """由 TaskAgent 在固定工具/最新观察无法装入模型窗口时产生。"""

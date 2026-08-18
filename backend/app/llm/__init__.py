@@ -1,15 +1,19 @@
-from app.llm.base_provider import RealChatModelProvider
-from app.llm.contracts import ChatModelProvider
-from app.llm.registry import ModelRegistry
+from app.llm.client import (
+    ChatModelClient,
+    RealChatModelClient,
+    profile_snapshot_from_settings,
+)
+from app.llm.provider import ModelProvider
 from app.llm.test_fake import (
     ScriptedChatModel,
-    ScriptedChatModelProvider,
+    ScriptedChatModelClient,
 )
 
 __all__ = [
-    "ChatModelProvider",
-    "ModelRegistry",
-    "RealChatModelProvider",
+    "ChatModelClient",
+    "ModelProvider",
+    "RealChatModelClient",
     "ScriptedChatModel",
-    "ScriptedChatModelProvider",
+    "ScriptedChatModelClient",
+    "profile_snapshot_from_settings",
 ]

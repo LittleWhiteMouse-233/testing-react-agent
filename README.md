@@ -17,15 +17,16 @@ TestCase
   -> TestRunDetail -> TestRunReport -> JSON/HTML Artifact
 ```
 
-- `backend/app/domain/` 保存与框架无关的 canonical models、ID aliases、状态、结果、公开 Message/Event 和 Artifact。
-- `backend/app/graph/` 使用 LangGraph 的公开 `MessagesState`、`add_messages`、`ToolNode`、retry/timeout 与 stream API。
+- `backend/app/domain/planning/` 与 `domain/execution/` 保存两条 Agent 过程的信息家族；`domain/resources/` 保存 Device/LLM/Tool 的框架无关领域表示，根级保留 shared-kernel ID/activity 与异常。
+- `backend/app/planning/` 与 `execution/` 分别拥有应用入口和 LangGraph 实现；execution 同时拥有后台编排与活跃运行取消生命周期。
 - `backend/app/device/`、`llm/`、`tools/` 保存 provider、`BaseTool` 和瞬时截图 bytes 等集成对象。
+- `backend/app/event_stream/` 保存 Message 投影、持久事件 writer 与进程内提交通知 bus。
 - `backend/app/persistence/` 保存 SQLAlchemy Row、集中 JSON adapter、Row mapper 和查询/事务边界。
-- `backend/app/services/` 保存 planning、run、event、artifact、report 和公开 Message 投影等应用边界。
+- `backend/app/artifacts.py` 与 `reporting.py` 分别拥有文件存储和报告组合/导出边界。
 - `backend/app/api/` 只定义 command request、分页、错误及路由；同形且安全的 domain/read model 直接作为响应。
 - `frontend/src/api/schema.d.ts` 由已提交的 OpenAPI 合同生成；`openapi-fetch` 与 `openapi-react-query` 约束页面的 method/path/params/body/response，页面保留 snake_case wire 字段。
 
-结构治理、信息家族、唯一转换责任和 W/O/N 审计详见 [数据结构整理.md](数据结构整理.md)。产品语义以 [PRD.md](PRD.md) 为准，运行设计以 [spec3.md](spec3.md) 为准。
+结构治理、信息家族与整改证据详见 [review.DataStructureRefactoring.md](review.DataStructureRefactoring.md)。产品语义以 [PRD.md](PRD.md) 为准，运行设计以 [spec3.md](spec3.md) 为准。
 
 ## 环境与启动
 
@@ -43,7 +44,7 @@ conda run -n llm-dev python -m alembic upgrade head
 conda run -n llm-dev python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-后端必须使用单个 Uvicorn worker；RunRegistry 与 SSE EventBus 是进程内组件。
+后端必须使用单个 Uvicorn worker；ActiveRunRegistry 与 SSE EventBus 是进程内组件。
 
 前端单独启动：
 
@@ -64,13 +65,13 @@ npm.cmd run dev
 真实 OpenAI-compatible 模型配置示例：
 
 ```dotenv
-LLM_PROFILES=[{"id":"planner","mode":"real","base_url":"https://example.com/v1","api_key":"...","model":"planner-model","timeout_seconds":60},{"id":"vision","mode":"real","base_url":"https://example.com/v1","api_key":"...","model":"vision-model","timeout_seconds":60}]
+LLM_PROFILES=[{"id":"planner","mode":"real","base_url":"https://example.com/v1","api_key":"...","model":"planner-model","timeout_seconds":60,"context_window_tokens":32768,"max_output_tokens":2048,"characters_per_token":1.5,"tokens_per_image":1024,"context_safety_margin_tokens":1024},{"id":"vision","mode":"real","base_url":"https://example.com/v1","api_key":"...","model":"vision-model","timeout_seconds":60,"context_window_tokens":131072,"max_output_tokens":4096,"characters_per_token":1.5,"tokens_per_image":1024,"context_safety_margin_tokens":2048}]
 TEST_AGENT_PLANNING_MODEL_ID=planner
 TEST_AGENT_ACT_MODEL_ID=vision
 TEST_AGENT_JUDGE_MODEL_ID=vision
 ```
 
-模型端点需要支持多模态输入、structured output 和标准 tool calling。Task Agent 每次有效响应必须恰好包含一个 tool call；任务通过正常的 `finish_task` 调用结束。
+模型端点需要支持多模态输入、structured output 和标准 tool calling。每个 profile 必须按实际模型校准 context window、输出预留、中文字符/token 比例、单张图片预算和安全余量；Task Agent 使用 LangChain 公共近似计数并把工具 schema 纳入窗口裁剪。Task Agent 每次有效响应必须恰好包含一个 tool call；任务通过正常的 `finish_task` 调用结束。
 
 注册真实电视：
 

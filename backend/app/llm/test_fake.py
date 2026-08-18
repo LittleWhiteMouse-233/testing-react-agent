@@ -18,8 +18,8 @@ from app.domain.planning import (
     TestTaskDefinition,
     TestTaskType,
 )
-from app.domain.test_cases import TestCaseContent
-from app.llm.snapshots import profile_snapshot_from_settings
+from app.domain.planning import TestCaseContent
+from app.llm.client import profile_snapshot_from_settings
 
 
 PlanDraft = TestPlanContent[TestTaskDefinition]
@@ -137,6 +137,7 @@ class ScriptedChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> Runnable[Any, Any]:
         async def invoke(messages: Any) -> PlanDraft:
+            self._invocations.append(list(messages))
             if self._plans:
                 value = self._plans.popleft()
                 if isinstance(value, Exception):
@@ -165,7 +166,9 @@ def _request_from_messages(messages: Any) -> PlanGenerationInput:
     )
 
 
-class ScriptedChatModelProvider:
+class ScriptedChatModelClient:
+    """可注入计划与回合的确定性 profile 客户端，仅供测试和本地模式。"""
+
     def __init__(
         self,
         settings: LLMProfileSettings | None = None,

@@ -1,5 +1,4 @@
-"""Framework-independent product contracts.
+"""框架无关的产品合同，按 Agent 过程、外接资源与 shared kernel 组织。
 
-Import concrete modules explicitly.  Keeping this package entry point empty
-prevents accidental dependency cycles and makes ownership visible at call sites.
+调用方显式导入具体所有者模块，避免 package 根成为隐藏依赖或重复导出层。
 """

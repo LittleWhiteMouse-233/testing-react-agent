@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -9,14 +11,23 @@ from typing import Any, cast
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
-from app.config import Settings
+from app.config import LLMProfileSettings, Settings
 from app.container import Container
 from app.device.test_fake import FakeDeviceController
-from app.llm.test_fake import ScriptedChatModelProvider
+from app.domain.activity import AgentActivity
+from app.domain.planning import TestTaskType as TaskType
+from app.llm import ScriptedChatModelClient
+from app.prompts import PromptDefinition
 from app.main import create_app
 
 
-def build_client(root: Path, *, action_timeout_seconds: float = 15) -> TestClient:
+def build_client(
+    root: Path,
+    *,
+    action_timeout_seconds: float = 15,
+    settings_overrides: dict[str, Any] | None = None,
+) -> TestClient:
+    overrides = settings_overrides or {}
     return TestClient(
         create_app(
             Settings(
@@ -24,6 +35,7 @@ def build_client(root: Path, *, action_timeout_seconds: float = 15) -> TestClien
                 database_url=f"sqlite+aiosqlite:///{(root / 'app.db').as_posix()}",
                 checkpoint_path=root / "checkpoints.db",
                 action_timeout_seconds=action_timeout_seconds,
+                **overrides,
             )
         )
     )
@@ -63,9 +75,9 @@ def revise_to_one_task(
 
 
 def install_turns(client: TestClient, turns: list[AIMessage | dict[str, Any] | Exception]) -> None:
-    provider = ScriptedChatModelProvider(turns=turns)
+    model_client = ScriptedChatModelClient(turns=turns)
     container = _container(client)
-    container.models["default"] = provider
+    container.model_provider.replace_client_for_testing("default", model_client)
 
 
 def _container(client: TestClient) -> Container:
@@ -293,23 +305,261 @@ def test_cancellation_finishes_with_cancelled_verdict() -> None:
         with build_client(Path(directory)) as client:
             plan = create_plan(client)
             device = cast(FakeDeviceController, _container(client).devices["fake-tv"])
-            screenshot = device.screenshot
+            original_screenshot = device.screenshot
+            capture_started = threading.Event()
+            release_capture = threading.Event()
 
             async def slow_screenshot():  # type: ignore[no-untyped-def]
-                await asyncio.sleep(0.1)
-                return await screenshot()
+                capture_started.set()
+                await asyncio.to_thread(release_capture.wait, 2)
+                return await original_screenshot()
 
             device.screenshot = slow_screenshot  # type: ignore[method-assign]
             run_id = start_run(client, cast(str, plan["id"]))
+            assert capture_started.wait(timeout=2)
             response = client.post(f"/api/runs/{run_id}/cancel")
             assert response.status_code == 202, response.text
             assert response.content == b""
             assert "content-type" not in response.headers
+            release_capture.set()
             detail = wait_for_run(client, run_id)
 
             assert detail["run"]["status"] == "finished"
             assert detail["run"]["verdict"] == "CANCELLED"
+            assert len(detail["task_runs"]) == 1
+            assert detail["task_runs"][0]["status"] == "cancelled"
+            assert (
+                detail["task_runs"][0]["result"]["reason_code"]
+                == "user_cancelled"
+            )
             assert run_events(client, run_id)[-1]["event"]["type"] == "run.cancelled"
+
+
+def test_created_run_uses_snapshot_model_after_activity_routes_change() -> None:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        profiles = [
+            LLMProfileSettings(id="snapshot"),
+            LLMProfileSettings(id="new-route"),
+        ]
+        with build_client(
+            Path(directory),
+            settings_overrides={
+                "llm_profiles": profiles,
+                "planning_model_id": "snapshot",
+                "act_model_id": "snapshot",
+                "judge_model_id": "snapshot",
+            },
+        ) as client:
+            app = _container(client)
+            snapshot_client = ScriptedChatModelClient(
+                model_id="snapshot",
+                turns=[
+                    {"status": "passed", "summary": "snapshot act"},
+                    {"status": "passed", "summary": "snapshot judge"},
+                ],
+            )
+            new_route_client = ScriptedChatModelClient(
+                model_id="new-route",
+                turns=[{"status": "failed", "summary": "wrong route"}],
+            )
+            app.model_provider.replace_client_for_testing(
+                "snapshot", snapshot_client
+            )
+            app.model_provider.replace_client_for_testing(
+                "new-route", new_route_client
+            )
+            plan = create_plan(client)
+            original_start_run = app.repository.start_run
+            release_execution = threading.Event()
+
+            async def gated_start_run(test_run_id: str) -> None:
+                await asyncio.to_thread(release_execution.wait, 2)
+                await original_start_run(test_run_id)
+
+            app.repository.start_run = gated_start_run  # type: ignore[method-assign]
+            run_id = start_run(client, cast(str, plan["id"]))
+            app.model_provider.replace_activity_route_for_testing(
+                AgentActivity.ACT, "new-route"
+            )
+            app.model_provider.replace_activity_route_for_testing(
+                AgentActivity.JUDGE, "new-route"
+            )
+            release_execution.set()
+            detail = wait_for_run(client, run_id)
+
+            assert detail["run"]["verdict"] == "PASS"
+            assert detail["snapshot"]["act_model"]["profile_id"] == "snapshot"
+            assert detail["snapshot"]["judge_model"]["profile_id"] == "snapshot"
+            execution_invocations = [
+                invocation
+                for invocation in snapshot_client.invocations
+                if any(
+                    getattr(message, "content", "")
+                    in {
+                        app.agent_factory.prompts_by_task_type[TaskType.ACT].text,
+                        app.agent_factory.prompts_by_task_type[TaskType.JUDGE].text,
+                    }
+                    for message in invocation
+                )
+            ]
+            assert len(execution_invocations) == 2
+            assert new_route_client.invocations == []
+
+
+def test_explicit_multi_profile_routes_drive_planning_act_and_judge() -> None:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        profiles = [
+            LLMProfileSettings(id="planner"),
+            LLMProfileSettings(id="actor"),
+            LLMProfileSettings(id="judge"),
+        ]
+        with build_client(
+            Path(directory),
+            settings_overrides={
+                "llm_profiles": profiles,
+                "planning_model_id": "planner",
+                "act_model_id": "actor",
+                "judge_model_id": "judge",
+            },
+        ) as client:
+            app = _container(client)
+            planner_client = ScriptedChatModelClient(model_id="planner")
+            act_client = ScriptedChatModelClient(
+                model_id="actor",
+                turns=[{"status": "passed", "summary": "acted"}],
+            )
+            judge_client = ScriptedChatModelClient(
+                model_id="judge",
+                turns=[{"status": "passed", "summary": "judged"}],
+            )
+            app.model_provider.replace_client_for_testing(
+                "planner", planner_client
+            )
+            app.model_provider.replace_client_for_testing("actor", act_client)
+            app.model_provider.replace_client_for_testing("judge", judge_client)
+
+            plan = create_plan(client)
+            assert plan["planning_context"]["planning_model"]["profile_id"] == "planner"
+            assert len(planner_client.invocations) == 1
+            assert act_client.invocations == []
+            assert judge_client.invocations == []
+
+            run_id = start_run(client, cast(str, plan["id"]))
+            detail = wait_for_run(client, run_id)
+            assert detail["run"]["verdict"] == "PASS"
+            assert detail["snapshot"]["act_model"]["profile_id"] == "actor"
+            assert detail["snapshot"]["judge_model"]["profile_id"] == "judge"
+            assert len(act_client.invocations) == 1
+            assert len(judge_client.invocations) == 1
+
+
+def test_prompt_text_and_persisted_versions_have_one_content_source() -> None:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with build_client(Path(directory)) as client:
+            app = _container(client)
+            model_client = ScriptedChatModelClient(
+                turns=[
+                    {"status": "passed", "summary": "act"},
+                    {"status": "passed", "summary": "judge"},
+                ]
+            )
+            app.model_provider.replace_client_for_testing("default", model_client)
+            plan = create_plan(client)
+            planner_system_text = cast(str, model_client.invocations[0][0].content)
+            assert (
+                hashlib.sha256(planner_system_text.encode("utf-8")).hexdigest()[:12]
+                == plan["planning_context"]["planning_prompt_version"]
+            )
+
+            run_id = start_run(client, cast(str, plan["id"]))
+            detail = wait_for_run(client, run_id)
+            execution_system_texts = [
+                cast(str, invocation[0].content)
+                for invocation in model_client.invocations[1:]
+            ]
+            expected_versions = [
+                detail["snapshot"]["act_prompt_version"],
+                detail["snapshot"]["judge_prompt_version"],
+            ]
+            assert [
+                hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+                for text in execution_system_texts
+            ] == expected_versions
+
+
+def test_prompt_drift_after_run_creation_blocks_before_model_call() -> None:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with build_client(Path(directory)) as client:
+            app = _container(client)
+            model_client = ScriptedChatModelClient()
+            app.model_provider.replace_client_for_testing("default", model_client)
+            plan = create_plan(client)
+            original_start_run = app.repository.start_run
+            release_execution = threading.Event()
+
+            async def gated_start_run(test_run_id: str) -> None:
+                await asyncio.to_thread(release_execution.wait, 2)
+                await original_start_run(test_run_id)
+
+            app.repository.start_run = gated_start_run  # type: ignore[method-assign]
+            run_id = start_run(client, cast(str, plan["id"]))
+            original_prompt = app.agent_factory.prompts_by_task_type[TaskType.ACT]
+            app.agent_factory.prompts_by_task_type[TaskType.ACT] = PromptDefinition(
+                name=original_prompt.name,
+                text=original_prompt.text + "\nchanged",
+                version="changed-version",
+            )
+            release_execution.set()
+            detail = wait_for_run(client, run_id)
+
+            assert detail["run"]["verdict"] == "BLOCKED"
+            assert detail["task_runs"][0]["status"] == "blocked"
+            assert detail["task_runs"][1]["status"] == "skipped"
+            assert (
+                detail["task_runs"][0]["result"]["reason_code"]
+                == "prompt_version_mismatch"
+            )
+            assert len(model_client.invocations) == 1
+
+
+def test_model_client_mapping_drift_after_run_creation_blocks() -> None:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with build_client(Path(directory)) as client:
+            app = _container(client)
+            snapshot_client = ScriptedChatModelClient(model_id="default")
+            app.model_provider.replace_client_for_testing(
+                "default", snapshot_client
+            )
+            plan = create_plan(client)
+            original_start_run = app.repository.start_run
+            release_execution = threading.Event()
+
+            async def gated_start_run(test_run_id: str) -> None:
+                await asyncio.to_thread(release_execution.wait, 2)
+                await original_start_run(test_run_id)
+
+            app.repository.start_run = gated_start_run  # type: ignore[method-assign]
+            run_id = start_run(client, cast(str, plan["id"]))
+            drifted_client = ScriptedChatModelClient(
+                LLMProfileSettings(
+                    id="default",
+                    model="changed-after-snapshot",
+                )
+            )
+            app.model_provider.replace_client_for_testing(
+                "default", drifted_client
+            )
+            release_execution.set()
+            detail = wait_for_run(client, run_id)
+
+            assert detail["run"]["verdict"] == "BLOCKED"
+            assert detail["task_runs"][0]["status"] == "blocked"
+            assert detail["task_runs"][1]["status"] == "skipped"
+            assert (
+                detail["task_runs"][0]["result"]["reason_code"]
+                == "model_profile_mismatch"
+            )
+            assert drifted_client.invocations == []
 
 
 def test_unavailable_device_blocks_without_starting_tasks() -> None:

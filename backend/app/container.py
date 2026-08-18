@@ -1,25 +1,24 @@
 from __future__ import annotations
 
+from app.artifacts import ArtifactStore
 from app.llm import (
-    ChatModelProvider,
-    ModelRegistry,
-    RealChatModelProvider,
-    ScriptedChatModelProvider,
+    ChatModelClient,
+    ModelProvider,
+    RealChatModelClient,
+    ScriptedChatModelClient,
 )
 from app.device import DeviceProvider, FakeDeviceController, AdbDeviceController
 from app.config import Settings
+from app.event_stream import EventBus, EventWriter
+from app.execution.active_runs import ActiveRunRegistry
 from app.execution.executor import RunExecutor
-from app.graph.planning import PlanningGraph
-from app.graph.task_agent import TaskAgentFactory
+from app.execution.run_service import RunService
+from app.execution.task_agent import TaskAgentFactory
 from app.persistence.db import build_engine, build_session_factory
-from app.persistence.execution_repository import SqlAlchemyExecutionRepository
-from app.services.artifacts import ArtifactStore
-from app.services.event_bus import EventBus
-from app.services.events import EventWriter
-from app.services.registry import RunRegistry
-from app.services.reporting import ReportService
-from app.services.planning_service import PlanningService
-from app.services.run_service import RunService
+from app.persistence.test_repository import SqlAlchemyTestRepository
+from app.planning import PlanningGraph, PlanningService
+from app.prompts import load_prompt_catalog
+from app.reporting import ReportService
 from app.tools import CatalogToolProvider
 
 
@@ -30,7 +29,7 @@ class Container:
         self.sessions = build_session_factory(self.engine)
         self.event_bus = EventBus()
         self.events = EventWriter(self.sessions, self.event_bus)
-        self.registry = RunRegistry()
+        self.active_run_registry = ActiveRunRegistry()
         self.artifacts = ArtifactStore(
             settings.artifacts_dir,
             self.sessions,
@@ -43,38 +42,39 @@ class Container:
                 settings.action_timeout_seconds,
             )
         self.tools = CatalogToolProvider(list(self.devices.values()))
-        self.models: dict[str, ChatModelProvider] = {}
+        prompt_catalog = load_prompt_catalog()
+        model_clients_by_id: dict[str, ChatModelClient] = {}
         for profile in settings.llm_profiles:
             if profile.mode == "real":
-                provider: ChatModelProvider = RealChatModelProvider(profile)
+                model_client: ChatModelClient = RealChatModelClient(profile)
             elif profile.mode == "scripted":
-                provider = ScriptedChatModelProvider(profile)
+                model_client = ScriptedChatModelClient(profile)
             else:
                 raise ValueError(
                     f"Unsupported model profile mode: {profile.mode}"
                 )
-            self.models[profile.id] = provider
-        self.model_registry = ModelRegistry(
-            self.models,
+            model_clients_by_id[profile.id] = model_client
+        self.model_provider = ModelProvider(
+            model_clients_by_id,
             planning_model_id=settings.planning_model_id,
             act_model_id=settings.act_model_id,
             judge_model_id=settings.judge_model_id,
         )
-        self.planning_graph = PlanningGraph(self.model_registry)
-        self.repository = SqlAlchemyExecutionRepository(self.sessions, self.events)
+        self.planning_graph = PlanningGraph(prompt_catalog.planner)
+        self.repository = SqlAlchemyTestRepository(self.sessions, self.events)
         self.planning = PlanningService(
             repository=self.repository,
             planning_graph=self.planning_graph,
-            model_registry=self.model_registry,
+            model_provider=self.model_provider,
             devices=self.devices,
         )
         self.agent_factory = TaskAgentFactory(
             artifacts=self.artifacts,
-            model_registry=self.model_registry,
+            model_provider=self.model_provider,
             tool_provider=self.tools,
-            registry=self.registry,
             devices=self.devices,
-            history_max_tokens=settings.agent_history_max_tokens,
+            act_prompt=prompt_catalog.act,
+            judge_prompt=prompt_catalog.judge,
             action_timeout_seconds=settings.action_timeout_seconds,
             capture_max_attempts=settings.capture_max_attempts,
             model_call_max_attempts=settings.model_call_max_attempts,
@@ -83,15 +83,16 @@ class Container:
         self.executor = RunExecutor(
             repository=self.repository,
             agent_factory=self.agent_factory,
-            registry=self.registry,
             checkpoint_path=str(settings.checkpoints),
         )
         self.run_service = RunService(
             repository=self.repository,
             executor=self.executor,
-            registry=self.registry,
-            model_registry=self.model_registry,
-            settings=settings,
+            active_run_registry=self.active_run_registry,
+            model_provider=self.model_provider,
+            app_version=settings.app_version,
+            act_prompt=prompt_catalog.act,
+            judge_prompt=prompt_catalog.judge,
             devices=self.devices,
             tools=self.tools,
         )

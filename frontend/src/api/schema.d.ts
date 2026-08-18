@@ -268,6 +268,7 @@ export interface components {
     schemas: {
         /**
          * AgentActivity
+         * @description Agent 正在执行的稳定活动，用于模型路由和工具授权。
          * @enum {string}
          */
         AgentActivity: "planning" | "act" | "judge";
@@ -278,7 +279,10 @@ export interface components {
             /** Message */
             message: string;
         };
-        /** Artifact */
+        /**
+         * Artifact
+         * @description 已持久化文件的公开元数据；原始路径和文件 bytes 不进入领域合同。
+         */
         Artifact: {
             /**
              * Created At
@@ -301,10 +305,14 @@ export interface components {
         };
         /**
          * ArtifactType
+         * @description Artifact 的业务用途，决定其直接所有者和内容消费方式。
          * @enum {string}
          */
         ArtifactType: "screenshot" | "json_export" | "html_export";
-        /** CycleStartedEvent */
+        /**
+         * CycleStartedEvent
+         * @description TaskAgent 开始一个新观察 cycle 的计数事实。
+         */
         CycleStartedEvent: {
             /** Cycle Count */
             cycle_count: number;
@@ -318,21 +326,30 @@ export interface components {
              */
             type: "cycle.started";
         };
-        /** DeviceEnvironmentSnapshot */
+        /**
+         * DeviceEnvironmentSnapshot
+         * @description TestRun 创建时冻结的设备提供方、描述与健康状态。
+         */
         DeviceEnvironmentSnapshot: {
             health: components["schemas"]["DeviceHealth"];
             info: components["schemas"]["DeviceInfo"] | null;
             /** Provider */
             provider: string;
         };
-        /** DeviceHealth */
+        /**
+         * DeviceHealth
+         * @description 一次实时健康检查结果，由 DeviceProvider 产生并供 API/运行创建消费。
+         */
         DeviceHealth: {
             /** Available */
             available: boolean;
             /** Message */
             message: string;
         };
-        /** DeviceInfo */
+        /**
+         * DeviceInfo
+         * @description 可复用的设备客观描述，不包含连接凭据或运行生命周期状态。
+         */
         DeviceInfo: {
             /** Locale */
             locale: string | null;
@@ -341,8 +358,11 @@ export interface components {
             /** Resolution */
             resolution: string | null;
         };
-        /** DeviceView */
-        DeviceView: {
+        /**
+         * DeviceResponse
+         * @description HTTP 设备查询响应；由 route 从实时设备和工具 provider 投影。
+         */
+        DeviceResponse: {
             /** Device Id */
             device_id: string;
             health: components["schemas"]["DeviceHealth"];
@@ -351,7 +371,10 @@ export interface components {
             provider: string;
             tool_catalog: components["schemas"]["ToolCatalogSnapshot"] | null;
         };
-        /** ExecutionErrorEvent */
+        /**
+         * ExecutionErrorEvent
+         * @description 阻塞执行的基础设施或协议错误。
+         */
         ExecutionErrorEvent: {
             /** Message */
             message: string;
@@ -371,10 +394,21 @@ export interface components {
             /** Device Id */
             device_id: string;
         };
-        /** LLMProfileSnapshot */
+        /**
+         * LLMProfileSnapshot
+         * @description 一次模型客户端配置的脱敏投影；TestPlan/TestRun 用它冻结实际选择。
+         */
         LLMProfileSnapshot: {
             /** Base Url */
             base_url: string | null;
+            /** Characters Per Token */
+            characters_per_token: number;
+            /** Context Safety Margin Tokens */
+            context_safety_margin_tokens: number;
+            /** Context Window Tokens */
+            context_window_tokens: number;
+            /** Max Output Tokens */
+            max_output_tokens: number;
             /** Model */
             model: string;
             /** Profile Id */
@@ -385,8 +419,13 @@ export interface components {
             temperature: number;
             /** Timeout Seconds */
             timeout_seconds: number;
+            /** Tokens Per Image */
+            tokens_per_image: number;
         };
-        /** MessageAppendedEvent */
+        /**
+         * MessageAppendedEvent
+         * @description Graph Message 首次成为公开、持久事实。
+         */
         MessageAppendedEvent: {
             /** Message */
             message: components["schemas"]["RunSystemMessage"] | components["schemas"]["RunHumanMessage"] | components["schemas"]["RunAIMessage"] | components["schemas"]["RunToolMessage"];
@@ -400,7 +439,10 @@ export interface components {
              */
             type: "message.appended";
         };
-        /** MessageValidationFailedEvent */
+        /**
+         * MessageValidationFailedEvent
+         * @description 模型消息未通过单工具调用协议校验。
+         */
         MessageValidationFailedEvent: {
             /** Attempt */
             attempt: number;
@@ -418,10 +460,10 @@ export interface components {
              */
             type: "message.validation_failed";
         };
-        /** PageResponse[DeviceView] */
-        PageResponse_DeviceView_: {
+        /** PageResponse[DeviceResponse] */
+        PageResponse_DeviceResponse_: {
             /** Items */
-            items: components["schemas"]["DeviceView"][];
+            items: components["schemas"]["DeviceResponse"][];
             /** Total */
             total: number;
         };
@@ -455,9 +497,10 @@ export interface components {
         };
         /**
          * ReasonCode
+         * @description TaskRun/执行错误的稳定结果原因；它是持久化事实而非异常类型。
          * @enum {string}
          */
-        ReasonCode: "completed" | "assertion_failed" | "goal_unreachable" | "cycle_limit" | "device_unavailable" | "capture_failed" | "model_unavailable" | "invalid_model_response" | "agent_blocked" | "tool_failed" | "process_restarted" | "global_fail_fast" | "user_cancelled" | "unexpected_error";
+        ReasonCode: "completed" | "assertion_failed" | "goal_unreachable" | "cycle_limit" | "device_unavailable" | "capture_failed" | "model_unavailable" | "invalid_model_response" | "agent_blocked" | "tool_failed" | "process_restarted" | "global_fail_fast" | "user_cancelled" | "prompt_version_mismatch" | "model_profile_mismatch" | "model_context_exceeded" | "unexpected_error";
         /** ReportExportRequest */
         ReportExportRequest: {
             /**
@@ -470,7 +513,10 @@ export interface components {
         ReviseTestPlanRequest: {
             content: components["schemas"]["TestPlanContent_TestTaskDefinition_"];
         };
-        /** RunAIMessage */
+        /**
+         * RunAIMessage
+         * @description 模型回复及其工具调用事实的公开投影。
+         */
         RunAIMessage: {
             /** Content */
             content: (components["schemas"]["RunTextBlock"] | components["schemas"]["RunImageArtifactBlock"])[];
@@ -486,7 +532,10 @@ export interface components {
             /** Tool Calls */
             tool_calls: components["schemas"]["RunToolCall"][];
         };
-        /** RunHumanMessage */
+        /**
+         * RunHumanMessage
+         * @description 用户/运行时上下文和截图观察的公开投影。
+         */
         RunHumanMessage: {
             /** Content */
             content: (components["schemas"]["RunTextBlock"] | components["schemas"]["RunImageArtifactBlock"])[];
@@ -498,7 +547,10 @@ export interface components {
              */
             role: "human";
         };
-        /** RunImageArtifactBlock */
+        /**
+         * RunImageArtifactBlock
+         * @description 公开消息中的截图证据引用；不会复制图片 base64。
+         */
         RunImageArtifactBlock: {
             /** Artifact Id */
             artifact_id: string;
@@ -510,7 +562,7 @@ export interface components {
         };
         /**
          * RunInvalidToolCall
-         * @description Stable public fields from LangChain's finalized InvalidToolCall.
+         * @description LangChain 已定型 InvalidToolCall 的稳定公开字段。
          */
         RunInvalidToolCall: {
             /** Arguments */
@@ -522,7 +574,10 @@ export interface components {
             /** Name */
             name: string | null;
         };
-        /** RunLifecycleEvent */
+        /**
+         * RunLifecycleEvent
+         * @description TestRun 生命周期改变的通知事实，不复制实体字段。
+         */
         RunLifecycleEvent: {
             /** Task Run Id */
             task_run_id: string | null;
@@ -534,7 +589,10 @@ export interface components {
              */
             type: "run.cancelled" | "run.finished" | "run.started";
         };
-        /** RunSystemMessage */
+        /**
+         * RunSystemMessage
+         * @description TaskAgent 实际使用的系统指令公开投影。
+         */
         RunSystemMessage: {
             /** Content */
             content: (components["schemas"]["RunTextBlock"] | components["schemas"]["RunImageArtifactBlock"])[];
@@ -546,7 +604,10 @@ export interface components {
              */
             role: "system";
         };
-        /** RunTextBlock */
+        /**
+         * RunTextBlock
+         * @description 公开消息中的纯文本内容块。
+         */
         RunTextBlock: {
             /** Text */
             text: string;
@@ -556,7 +617,10 @@ export interface components {
              */
             type: "text";
         };
-        /** RunToolCall */
+        /**
+         * RunToolCall
+         * @description 模型发出的一个已解析工具调用。
+         */
         RunToolCall: {
             /** Arguments */
             arguments: {
@@ -567,7 +631,10 @@ export interface components {
             /** Name */
             name: string;
         };
-        /** RunToolMessage */
+        /**
+         * RunToolMessage
+         * @description 框架工具执行结果的公开投影。
+         */
         RunToolMessage: {
             /** Content */
             content: (components["schemas"]["RunTextBlock"] | components["schemas"]["RunImageArtifactBlock"])[];
@@ -588,7 +655,10 @@ export interface components {
             /** Tool Call Id */
             tool_call_id: string;
         };
-        /** StoredRunEvent */
+        /**
+         * StoredRunEvent
+         * @description 事件存储分配的 ID、顺序和时间与 canonical 事件的统一 envelope。
+         */
         StoredRunEvent: {
             /** Event */
             event: components["schemas"]["MessageAppendedEvent"] | components["schemas"]["MessageValidationFailedEvent"] | components["schemas"]["RunLifecycleEvent"] | components["schemas"]["TaskLifecycleEvent"] | components["schemas"]["CycleStartedEvent"] | components["schemas"]["ToolStartedEvent"] | components["schemas"]["ExecutionErrorEvent"] | components["schemas"]["TasksSkippedEvent"];
@@ -602,7 +672,10 @@ export interface components {
             /** Sequence */
             sequence: number;
         };
-        /** TaskLifecycleEvent */
+        /**
+         * TaskLifecycleEvent
+         * @description TaskRun 启动或结束的通知事实。
+         */
         TaskLifecycleEvent: {
             /** Task Run Id */
             task_run_id: string | null;
@@ -614,7 +687,10 @@ export interface components {
              */
             type: "task.finished" | "task.started";
         };
-        /** TaskRun */
+        /**
+         * TaskRun
+         * @description 真正启动或由 fail-fast 跳过的单个计划任务执行实体。
+         */
         TaskRun: {
             /** Cycle Count */
             cycle_count: number;
@@ -631,7 +707,10 @@ export interface components {
             /** Test Task Id */
             test_task_id: string;
         };
-        /** TaskRunResult */
+        /**
+         * TaskRunResult
+         * @description TaskRun 的终态原因、摘要与证据引用；状态和 cycle 不在此重复。
+         */
         TaskRunResult: {
             /** Evidence Artifact Ids */
             evidence_artifact_ids: string[];
@@ -641,10 +720,14 @@ export interface components {
         };
         /**
          * TaskRunStatus
+         * @description 已创建 TaskRun 的生命周期或终态；cancelled 表示启动后被用户终止。
          * @enum {string}
          */
-        TaskRunStatus: "running" | "passed" | "failed" | "blocked" | "skipped";
-        /** TasksSkippedEvent */
+        TaskRunStatus: "running" | "passed" | "failed" | "blocked" | "skipped" | "cancelled";
+        /**
+         * TasksSkippedEvent
+         * @description 全局 fail-fast 批量创建未执行 TaskRun 的事实。
+         */
         TasksSkippedEvent: {
             /** Task Run Id */
             task_run_id: string | null;
@@ -658,7 +741,10 @@ export interface components {
              */
             type: "tasks.skipped";
         };
-        /** TestCase */
+        /**
+         * TestCase
+         * @description 测试意图的持久化实体；后续 TestPlan 版本通过 ID 归属于它。
+         */
         TestCase: {
             content: components["schemas"]["TestCaseContent"];
             /**
@@ -669,7 +755,10 @@ export interface components {
             /** Id */
             id: string;
         };
-        /** TestCaseContent */
+        /**
+         * TestCaseContent
+         * @description 用户提交的测试意图；由 TestCase 和规划上下文共同复用。
+         */
         TestCaseContent: {
             /** Name */
             name: string;
@@ -686,7 +775,10 @@ export interface components {
             /** Source Text */
             source_text: string;
         };
-        /** TestPlan */
+        /**
+         * TestPlan
+         * @description 一次不可变、可追溯的测试计划版本；执行仅允许使用最新版本。
+         */
         TestPlan: {
             content: components["schemas"]["TestPlanContent_TestTask_"];
             /**
@@ -729,10 +821,14 @@ export interface components {
         };
         /**
          * TestPlanOrigin
+         * @description 计划版本的产生方式，用于区分模型规划与人工修订历史。
          * @enum {string}
          */
         TestPlanOrigin: "planning" | "replanning" | "manual_revision";
-        /** TestPlanPlanningContext */
+        /**
+         * TestPlanPlanningContext
+         * @description 计划创建时冻结的输入与模型审计事实，不参与后续版本覆盖。
+         */
         TestPlanPlanningContext: {
             device_info: components["schemas"]["DeviceInfo"] | null;
             planning_model: components["schemas"]["LLMProfileSnapshot"];
@@ -740,7 +836,10 @@ export interface components {
             planning_prompt_version: string;
             test_case_content: components["schemas"]["TestCaseContent"];
         };
-        /** TestRun */
+        /**
+         * TestRun
+         * @description 一次已确认计划在单台设备上的执行聚合根。
+         */
         TestRun: {
             /**
              * Created At
@@ -772,7 +871,10 @@ export interface components {
             /** Test Plan Id */
             test_plan_id: string;
         };
-        /** TestRunDetail */
+        /**
+         * TestRunDetail
+         * @description 执行信息家族的完整查询组合，由 repository 装配并供执行/API 消费。
+         */
         TestRunDetail: {
             run: components["schemas"]["TestRun"];
             snapshot: components["schemas"]["TestRunSnapshot"];
@@ -780,7 +882,10 @@ export interface components {
             task_runs: components["schemas"]["TaskRun"][];
             test_plan: components["schemas"]["TestPlan"];
         };
-        /** TestRunReport */
+        /**
+         * TestRunReport
+         * @description 导出边界的完整报告组合；canonical detail 中的事实不会在顶层复制。
+         */
         TestRunReport: {
             /** Artifacts */
             artifacts: components["schemas"]["Artifact"][];
@@ -788,7 +893,10 @@ export interface components {
             /** Events */
             events: components["schemas"]["StoredRunEvent"][];
         };
-        /** TestRunSnapshot */
+        /**
+         * TestRunSnapshot
+         * @description RunService 在 TestRun 创建时冻结且执行器必须遵守的环境事实。
+         */
         TestRunSnapshot: {
             act_model: components["schemas"]["LLMProfileSnapshot"];
             /** Act Prompt Version */
@@ -808,21 +916,29 @@ export interface components {
         };
         /**
          * TestRunStatus
+         * @description TestRun 的持久化生命周期阶段；取消由终态 verdict 表达。
          * @enum {string}
          */
         TestRunStatus: "pending" | "running" | "finished";
         /**
          * TestRunVerdict
+         * @description 整个 TestRun 的确定性结论，而非模型生成的自然语言判断。
          * @enum {string}
          */
         TestRunVerdict: "PASS" | "FAIL" | "BLOCKED" | "CANCELLED";
-        /** TestTask */
+        /**
+         * TestTask
+         * @description 已获得不可变身份的计划任务；只存在于持久化 TestPlan 版本内。
+         */
         TestTask: {
             definition: components["schemas"]["TestTaskDefinition"];
             /** Test Task Id */
             test_task_id: string;
         };
-        /** TestTaskDefinition */
+        /**
+         * TestTaskDefinition
+         * @description 没有身份的语义任务定义；模型或人工编辑先产生该结构。
+         */
         TestTaskDefinition: {
             /** Goal */
             goal: string;
@@ -836,10 +952,14 @@ export interface components {
         };
         /**
          * TestTaskType
+         * @description 计划任务的业务类型；执行过程据此选择 Agent activity。
          * @enum {string}
          */
         TestTaskType: "act" | "judge";
-        /** ToolCapability */
+        /**
+         * ToolCapability
+         * @description 一个最终可用工具的声明事实，由合并后的 Catalog 投影产生。
+         */
         ToolCapability: {
             /** Changes Device State */
             changes_device_state: boolean;
@@ -854,12 +974,18 @@ export interface components {
             /** Scopes */
             scopes: components["schemas"]["AgentActivity"][];
         };
-        /** ToolCatalogSnapshot */
+        /**
+         * ToolCatalogSnapshot
+         * @description 某台设备在 TestRun 创建时冻结的最终工具目录审计事实。
+         */
         ToolCatalogSnapshot: {
             /** Tools */
             tools: components["schemas"]["ToolCapability"][];
         };
-        /** ToolStartedEvent */
+        /**
+         * ToolStartedEvent
+         * @description 工具通过取消安全边界并即将执行的事实。
+         */
         ToolStartedEvent: {
             /** Call Id */
             call_id: string;
@@ -948,7 +1074,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PageResponse_DeviceView_"];
+                    "application/json": components["schemas"]["PageResponse_DeviceResponse_"];
                 };
             };
             /** @description Unprocessable Entity */
@@ -988,7 +1114,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DeviceView"];
+                    "application/json": components["schemas"]["DeviceResponse"];
                 };
             };
             /** @description Not Found */

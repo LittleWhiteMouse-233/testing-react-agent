@@ -17,7 +17,12 @@ const plan: TestPlan = {
       model: "deterministic",
       base_url: null,
       temperature: 0,
-      timeout_seconds: 60
+      timeout_seconds: 60,
+      context_window_tokens: 32768,
+      max_output_tokens: 2048,
+      characters_per_token: 1.5,
+      tokens_per_image: 1024,
+      context_safety_margin_tokens: 1024
     },
     planning_prompt_version: "v1"
   },

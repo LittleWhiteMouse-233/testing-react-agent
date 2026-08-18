@@ -1,3 +1,5 @@
+"""跨领域信息家族共享的强约束业务 ID 别名。"""
+
 from __future__ import annotations
 
 from typing import Annotated

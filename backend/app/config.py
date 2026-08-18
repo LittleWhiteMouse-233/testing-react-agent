@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,6 +12,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class LLMProfileSettings(BaseModel):
+    """一个可选模型客户端的部署配置；activity 路由由 Settings 单独声明。"""
+
+    model_config = ConfigDict(extra="forbid")
+
     id: str = Field(min_length=1, max_length=100)
     mode: Literal["scripted", "real"] = "scripted"
     base_url: str | None = None
@@ -19,6 +23,21 @@ class LLMProfileSettings(BaseModel):
     model: str = "deterministic"
     temperature: float = 0
     timeout_seconds: float = Field(default=60, gt=0)
+    context_window_tokens: int = Field(default=32_768, ge=2_048)
+    max_output_tokens: int = Field(default=2_048, ge=1)
+    characters_per_token: float = Field(default=1.5, gt=0)
+    tokens_per_image: int = Field(default=1_024, ge=1)
+    context_safety_margin_tokens: int = Field(default=1_024, ge=0)
+
+    @model_validator(mode="after")
+    def context_reservations_fit(self) -> "LLMProfileSettings":
+        reserved = self.max_output_tokens + self.context_safety_margin_tokens
+        if reserved >= self.context_window_tokens:
+            raise ValueError(
+                "max_output_tokens plus context_safety_margin_tokens must be "
+                "smaller than context_window_tokens"
+            )
+        return self
 
 
 class Settings(BaseSettings):
@@ -53,12 +72,6 @@ class Settings(BaseSettings):
     capture_max_attempts: int = Field(default=3, ge=1, le=10)
     model_call_max_attempts: int = Field(default=3, ge=1, le=10)
     model_response_max_attempts: int = Field(default=3, ge=1, le=10)
-    agent_history_max_tokens: int = Field(
-        default=8_000,
-        ge=1_000,
-        le=100_000,
-        validation_alias="TEST_AGENT_HISTORY_MAX_TOKENS",
-    )
 
     @model_validator(mode="after")
     def model_routes_are_valid(self) -> "Settings":

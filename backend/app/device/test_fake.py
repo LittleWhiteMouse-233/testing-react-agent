@@ -10,7 +10,7 @@ from pydantic import Field, create_model
 from app.device.base_atv import RemoteKey
 from app.device.contracts import ScreenshotCapture
 from app.domain.activity import AgentActivity
-from app.domain.device import DeviceHealth, DeviceInfo
+from app.domain.resources.device import DeviceHealth, DeviceInfo
 from app.domain.errors import CaptureFailed, UnsupportedAction
 from app.tools.contracts import DeviceToolManifest, ToolBinding
 

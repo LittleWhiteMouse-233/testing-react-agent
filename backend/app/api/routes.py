@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 
 from app.api.schemas import (
     ApiError,
+    DeviceResponse,
     GeneratePlanRequest,
     PageResponse,
     ReportExportRequest,
@@ -18,14 +19,11 @@ from app.api.schemas import (
     TestRunCreateRequest,
 )
 from app.container import Container
-from app.domain.artifacts import Artifact
-from app.domain.events import StoredRunEvent
-from app.domain.execution import TestRun, TestRunStatus
+from app.domain.execution import Artifact, StoredRunEvent, TestRun, TestRunDetail, TestRunStatus
 from app.domain.ids import ArtifactId, DeviceId, TestCaseId, TestPlanId, TestRunId
-from app.domain.planning import TestPlan
-from app.domain.test_cases import TestCase
-from app.services.read_models import DeviceView, TestRunDetail, TestRunReport
-from app.services.run_service import RunConflict
+from app.domain.planning import TestCase, TestPlan
+from app.reporting import TestRunReport
+from app.execution.run_service import RunConflict
 
 
 API_ERROR_RESPONSE: dict[str, Any] = {"model": ApiError}
@@ -182,7 +180,7 @@ async def list_test_runs(
 )
 async def get_test_run(test_run_id: TestRunId, request: Request) -> TestRunDetail:
     try:
-        return await container(request).repository.get_detail(test_run_id)
+        return await container(request).repository.get_test_run_detail(test_run_id)
     except LookupError as exc:
         raise problem(404, "test_run_not_found", str(exc)) from exc
 
@@ -332,19 +330,19 @@ async def get_artifact(artifact_id: ArtifactId, request: Request) -> Response:
     return Response(content=content, media_type=mime_type)
 
 
-async def _device_view(app: Container, device_id: DeviceId) -> DeviceView:
+async def _device_response(app: Container, device_id: DeviceId) -> DeviceResponse:
     device = app.devices[device_id]
     health_result, info_result = await asyncio.gather(
         device.health(), device.describe(), return_exceptions=True
     )
     if isinstance(health_result, BaseException):
-        from app.domain.device import DeviceHealth
+        from app.domain.resources.device import DeviceHealth
 
         health = DeviceHealth(available=False, message=str(health_result))
     else:
         health = health_result
     info = None if isinstance(info_result, BaseException) else info_result
-    return DeviceView(
+    return DeviceResponse(
         device_id=device_id,
         provider=device.provider,
         health=health,
@@ -353,22 +351,22 @@ async def _device_view(app: Container, device_id: DeviceId) -> DeviceView:
     )
 
 
-@router.get("/devices", response_model=PageResponse[DeviceView])
-async def list_devices(request: Request) -> PageResponse[DeviceView]:
+@router.get("/devices", response_model=PageResponse[DeviceResponse])
+async def list_devices(request: Request) -> PageResponse[DeviceResponse]:
     app = container(request)
     items = await asyncio.gather(
-        *(_device_view(app, device_id) for device_id in app.devices)
+        *(_device_response(app, device_id) for device_id in app.devices)
     )
-    return PageResponse[DeviceView](items=list(items), total=len(items))
+    return PageResponse[DeviceResponse](items=list(items), total=len(items))
 
 
 @router.get(
     "/devices/{device_id}",
-    response_model=DeviceView,
+    response_model=DeviceResponse,
     responses=NOT_FOUND_RESPONSE,
 )
-async def get_device(device_id: DeviceId, request: Request) -> DeviceView:
+async def get_device(device_id: DeviceId, request: Request) -> DeviceResponse:
     app = container(request)
     if device_id not in app.devices:
         raise problem(404, "device_not_found", "Device not found")
-    return await _device_view(app, device_id)
+    return await _device_response(app, device_id)

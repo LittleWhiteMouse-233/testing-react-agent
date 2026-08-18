@@ -2,6 +2,7 @@
   "components": {
     "schemas": {
       "AgentActivity": {
+        "description": "Agent 正在执行的稳定活动，用于模型路由和工具授权。",
         "enum": [
           "planning",
           "act",
@@ -31,6 +32,7 @@
       },
       "Artifact": {
         "additionalProperties": false,
+        "description": "已持久化文件的公开元数据；原始路径和文件 bytes 不进入领域合同。",
         "properties": {
           "created_at": {
             "format": "date-time",
@@ -100,6 +102,7 @@
         "type": "object"
       },
       "ArtifactType": {
+        "description": "Artifact 的业务用途，决定其直接所有者和内容消费方式。",
         "enum": [
           "screenshot",
           "json_export",
@@ -110,6 +113,7 @@
       },
       "CycleStartedEvent": {
         "additionalProperties": false,
+        "description": "TaskAgent 开始一个新观察 cycle 的计数事实。",
         "properties": {
           "cycle_count": {
             "minimum": 1.0,
@@ -150,6 +154,7 @@
       },
       "DeviceEnvironmentSnapshot": {
         "additionalProperties": false,
+        "description": "TestRun 创建时冻结的设备提供方、描述与健康状态。",
         "properties": {
           "health": {
             "$ref": "#/components/schemas/DeviceHealth"
@@ -179,6 +184,7 @@
       },
       "DeviceHealth": {
         "additionalProperties": false,
+        "description": "一次实时健康检查结果，由 DeviceProvider 产生并供 API/运行创建消费。",
         "properties": {
           "available": {
             "title": "Available",
@@ -198,6 +204,7 @@
       },
       "DeviceInfo": {
         "additionalProperties": false,
+        "description": "可复用的设备客观描述，不包含连接凭据或运行生命周期状态。",
         "properties": {
           "locale": {
             "anyOf": [
@@ -241,8 +248,9 @@
         "title": "DeviceInfo",
         "type": "object"
       },
-      "DeviceView": {
+      "DeviceResponse": {
         "additionalProperties": false,
+        "description": "HTTP 设备查询响应；由 route 从实时设备和工具 provider 投影。",
         "properties": {
           "device_id": {
             "maxLength": 200,
@@ -285,11 +293,12 @@
           "info",
           "tool_catalog"
         ],
-        "title": "DeviceView",
+        "title": "DeviceResponse",
         "type": "object"
       },
       "ExecutionErrorEvent": {
         "additionalProperties": false,
+        "description": "阻塞执行的基础设施或协议错误。",
         "properties": {
           "message": {
             "minLength": 1,
@@ -350,6 +359,7 @@
       },
       "LLMProfileSnapshot": {
         "additionalProperties": false,
+        "description": "一次模型客户端配置的脱敏投影；TestPlan/TestRun 用它冻结实际选择。",
         "properties": {
           "base_url": {
             "anyOf": [
@@ -361,6 +371,26 @@
               }
             ],
             "title": "Base Url"
+          },
+          "characters_per_token": {
+            "exclusiveMinimum": 0.0,
+            "title": "Characters Per Token",
+            "type": "number"
+          },
+          "context_safety_margin_tokens": {
+            "minimum": 0.0,
+            "title": "Context Safety Margin Tokens",
+            "type": "integer"
+          },
+          "context_window_tokens": {
+            "exclusiveMinimum": 0.0,
+            "title": "Context Window Tokens",
+            "type": "integer"
+          },
+          "max_output_tokens": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Output Tokens",
+            "type": "integer"
           },
           "model": {
             "minLength": 1,
@@ -386,6 +416,11 @@
             "exclusiveMinimum": 0.0,
             "title": "Timeout Seconds",
             "type": "number"
+          },
+          "tokens_per_image": {
+            "exclusiveMinimum": 0.0,
+            "title": "Tokens Per Image",
+            "type": "integer"
           }
         },
         "required": [
@@ -394,13 +429,19 @@
           "model",
           "base_url",
           "temperature",
-          "timeout_seconds"
+          "timeout_seconds",
+          "context_window_tokens",
+          "max_output_tokens",
+          "characters_per_token",
+          "tokens_per_image",
+          "context_safety_margin_tokens"
         ],
         "title": "LLMProfileSnapshot",
         "type": "object"
       },
       "MessageAppendedEvent": {
         "additionalProperties": false,
+        "description": "Graph Message 首次成为公开、持久事实。",
         "properties": {
           "message": {
             "discriminator": {
@@ -462,6 +503,7 @@
       },
       "MessageValidationFailedEvent": {
         "additionalProperties": false,
+        "description": "模型消息未通过单工具调用协议校验。",
         "properties": {
           "attempt": {
             "minimum": 1.0,
@@ -513,12 +555,12 @@
         "title": "MessageValidationFailedEvent",
         "type": "object"
       },
-      "PageResponse_DeviceView_": {
+      "PageResponse_DeviceResponse_": {
         "additionalProperties": false,
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/DeviceView"
+              "$ref": "#/components/schemas/DeviceResponse"
             },
             "title": "Items",
             "type": "array"
@@ -533,7 +575,7 @@
           "items",
           "total"
         ],
-        "title": "PageResponse[DeviceView]",
+        "title": "PageResponse[DeviceResponse]",
         "type": "object"
       },
       "PageResponse_StoredRunEvent_": {
@@ -629,6 +671,7 @@
         "type": "object"
       },
       "ReasonCode": {
+        "description": "TaskRun/执行错误的稳定结果原因；它是持久化事实而非异常类型。",
         "enum": [
           "completed",
           "assertion_failed",
@@ -643,6 +686,9 @@
           "process_restarted",
           "global_fail_fast",
           "user_cancelled",
+          "prompt_version_mismatch",
+          "model_profile_mismatch",
+          "model_context_exceeded",
           "unexpected_error"
         ],
         "title": "ReasonCode",
@@ -681,6 +727,7 @@
       },
       "RunAIMessage": {
         "additionalProperties": false,
+        "description": "模型回复及其工具调用事实的公开投影。",
         "properties": {
           "content": {
             "items": {
@@ -741,6 +788,7 @@
       },
       "RunHumanMessage": {
         "additionalProperties": false,
+        "description": "用户/运行时上下文和截图观察的公开投影。",
         "properties": {
           "content": {
             "items": {
@@ -785,6 +833,7 @@
       },
       "RunImageArtifactBlock": {
         "additionalProperties": false,
+        "description": "公开消息中的截图证据引用；不会复制图片 base64。",
         "properties": {
           "artifact_id": {
             "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
@@ -806,7 +855,7 @@
       },
       "RunInvalidToolCall": {
         "additionalProperties": false,
-        "description": "Stable public fields from LangChain's finalized InvalidToolCall.",
+        "description": "LangChain 已定型 InvalidToolCall 的稳定公开字段。",
         "properties": {
           "arguments": {
             "anyOf": [
@@ -866,6 +915,7 @@
       },
       "RunLifecycleEvent": {
         "additionalProperties": false,
+        "description": "TestRun 生命周期改变的通知事实，不复制实体字段。",
         "properties": {
           "task_run_id": {
             "anyOf": [
@@ -904,6 +954,7 @@
       },
       "RunSystemMessage": {
         "additionalProperties": false,
+        "description": "TaskAgent 实际使用的系统指令公开投影。",
         "properties": {
           "content": {
             "items": {
@@ -948,6 +999,7 @@
       },
       "RunTextBlock": {
         "additionalProperties": false,
+        "description": "公开消息中的纯文本内容块。",
         "properties": {
           "text": {
             "title": "Text",
@@ -968,6 +1020,7 @@
       },
       "RunToolCall": {
         "additionalProperties": false,
+        "description": "模型发出的一个已解析工具调用。",
         "properties": {
           "arguments": {
             "additionalProperties": true,
@@ -996,6 +1049,7 @@
       },
       "RunToolMessage": {
         "additionalProperties": false,
+        "description": "框架工具执行结果的公开投影。",
         "properties": {
           "content": {
             "items": {
@@ -1068,6 +1122,7 @@
       },
       "StoredRunEvent": {
         "additionalProperties": false,
+        "description": "事件存储分配的 ID、顺序和时间与 canonical 事件的统一 envelope。",
         "properties": {
           "event": {
             "discriminator": {
@@ -1141,6 +1196,7 @@
       },
       "TaskLifecycleEvent": {
         "additionalProperties": false,
+        "description": "TaskRun 启动或结束的通知事实。",
         "properties": {
           "task_run_id": {
             "anyOf": [
@@ -1178,6 +1234,7 @@
       },
       "TaskRun": {
         "additionalProperties": false,
+        "description": "真正启动或由 fail-fast 跳过的单个计划任务执行实体。",
         "properties": {
           "cycle_count": {
             "minimum": 0.0,
@@ -1252,6 +1309,7 @@
       },
       "TaskRunResult": {
         "additionalProperties": false,
+        "description": "TaskRun 的终态原因、摘要与证据引用；状态和 cycle 不在此重复。",
         "properties": {
           "evidence_artifact_ids": {
             "items": {
@@ -1279,18 +1337,21 @@
         "type": "object"
       },
       "TaskRunStatus": {
+        "description": "已创建 TaskRun 的生命周期或终态；cancelled 表示启动后被用户终止。",
         "enum": [
           "running",
           "passed",
           "failed",
           "blocked",
-          "skipped"
+          "skipped",
+          "cancelled"
         ],
         "title": "TaskRunStatus",
         "type": "string"
       },
       "TasksSkippedEvent": {
         "additionalProperties": false,
+        "description": "全局 fail-fast 批量创建未执行 TaskRun 的事实。",
         "properties": {
           "task_run_id": {
             "anyOf": [
@@ -1334,6 +1395,7 @@
       },
       "TestCase": {
         "additionalProperties": false,
+        "description": "测试意图的持久化实体；后续 TestPlan 版本通过 ID 归属于它。",
         "properties": {
           "content": {
             "$ref": "#/components/schemas/TestCaseContent"
@@ -1359,6 +1421,7 @@
       },
       "TestCaseContent": {
         "additionalProperties": false,
+        "description": "用户提交的测试意图；由 TestCase 和规划上下文共同复用。",
         "properties": {
           "name": {
             "maxLength": 200,
@@ -1404,6 +1467,7 @@
       },
       "TestPlan": {
         "additionalProperties": false,
+        "description": "一次不可变、可追溯的测试计划版本；执行仅允许使用最新版本。",
         "properties": {
           "content": {
             "$ref": "#/components/schemas/TestPlanContent_TestTask_"
@@ -1543,6 +1607,7 @@
         "type": "object"
       },
       "TestPlanOrigin": {
+        "description": "计划版本的产生方式，用于区分模型规划与人工修订历史。",
         "enum": [
           "planning",
           "replanning",
@@ -1553,6 +1618,7 @@
       },
       "TestPlanPlanningContext": {
         "additionalProperties": false,
+        "description": "计划创建时冻结的输入与模型审计事实，不参与后续版本覆盖。",
         "properties": {
           "device_info": {
             "anyOf": [
@@ -1587,6 +1653,7 @@
       },
       "TestRun": {
         "additionalProperties": false,
+        "description": "一次已确认计划在单台设备上的执行聚合根。",
         "properties": {
           "created_at": {
             "format": "date-time",
@@ -1690,6 +1757,7 @@
       },
       "TestRunDetail": {
         "additionalProperties": false,
+        "description": "执行信息家族的完整查询组合，由 repository 装配并供执行/API 消费。",
         "properties": {
           "run": {
             "$ref": "#/components/schemas/TestRun"
@@ -1719,6 +1787,7 @@
       },
       "TestRunReport": {
         "additionalProperties": false,
+        "description": "导出边界的完整报告组合；canonical detail 中的事实不会在顶层复制。",
         "properties": {
           "artifacts": {
             "items": {
@@ -1748,6 +1817,7 @@
       },
       "TestRunSnapshot": {
         "additionalProperties": false,
+        "description": "RunService 在 TestRun 创建时冻结且执行器必须遵守的环境事实。",
         "properties": {
           "act_model": {
             "$ref": "#/components/schemas/LLMProfileSnapshot"
@@ -1796,6 +1866,7 @@
         "type": "object"
       },
       "TestRunStatus": {
+        "description": "TestRun 的持久化生命周期阶段；取消由终态 verdict 表达。",
         "enum": [
           "pending",
           "running",
@@ -1805,6 +1876,7 @@
         "type": "string"
       },
       "TestRunVerdict": {
+        "description": "整个 TestRun 的确定性结论，而非模型生成的自然语言判断。",
         "enum": [
           "PASS",
           "FAIL",
@@ -1816,6 +1888,7 @@
       },
       "TestTask": {
         "additionalProperties": false,
+        "description": "已获得不可变身份的计划任务；只存在于持久化 TestPlan 版本内。",
         "properties": {
           "definition": {
             "$ref": "#/components/schemas/TestTaskDefinition"
@@ -1835,6 +1908,7 @@
       },
       "TestTaskDefinition": {
         "additionalProperties": false,
+        "description": "没有身份的语义任务定义；模型或人工编辑先产生该结构。",
         "properties": {
           "goal": {
             "minLength": 1,
@@ -1876,6 +1950,7 @@
         "type": "object"
       },
       "TestTaskType": {
+        "description": "计划任务的业务类型；执行过程据此选择 Agent activity。",
         "enum": [
           "act",
           "judge"
@@ -1885,6 +1960,7 @@
       },
       "ToolCapability": {
         "additionalProperties": false,
+        "description": "一个最终可用工具的声明事实，由合并后的 Catalog 投影产生。",
         "properties": {
           "changes_device_state": {
             "title": "Changes Device State",
@@ -1925,6 +2001,7 @@
       },
       "ToolCatalogSnapshot": {
         "additionalProperties": false,
+        "description": "某台设备在 TestRun 创建时冻结的最终工具目录审计事实。",
         "properties": {
           "tools": {
             "items": {
@@ -1942,6 +2019,7 @@
       },
       "ToolStartedEvent": {
         "additionalProperties": false,
+        "description": "工具通过取消安全边界并即将执行的事实。",
         "properties": {
           "call_id": {
             "maxLength": 200,
@@ -2066,7 +2144,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PageResponse_DeviceView_"
+                  "$ref": "#/components/schemas/PageResponse_DeviceResponse_"
                 }
               }
             },
@@ -2117,7 +2195,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DeviceView"
+                  "$ref": "#/components/schemas/DeviceResponse"
                 }
               }
             },

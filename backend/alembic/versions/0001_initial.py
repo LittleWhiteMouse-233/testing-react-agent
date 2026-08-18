@@ -145,6 +145,7 @@ def upgrade() -> None:
                 "failed",
                 "blocked",
                 "skipped",
+                "cancelled",
             ),
             nullable=False,
         ),

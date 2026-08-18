@@ -5,6 +5,7 @@ import asyncio
 import json
 import tempfile
 from pathlib import Path
+from inspect import signature
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
@@ -12,19 +13,19 @@ from pydantic import ValidationError
 from sqlalchemy import inspect
 
 from app.config import PROJECT_ROOT, Settings
-from app.domain.artifacts import ArtifactType
-from app.domain.device import DeviceEnvironmentSnapshot, DeviceHealth
-from app.domain.errors import ReasonCode
-from app.domain.events import MessageAppendedEvent
 from app.domain.execution import (
+    ArtifactType,
+    MessageAppendedEvent,
+    ReasonCode,
+    RunHumanMessage,
+    RunTextBlock,
     TaskRunResult,
     TaskRunStatus,
     TestRun as DomainTestRun,
     TestRunSnapshot as RunSnapshot,
 )
-from app.domain.llm import LLMProfileSnapshot
-from app.domain.messages import RunHumanMessage, RunTextBlock
 from app.domain.planning import (
+    TestCaseContent as CaseContent,
     TestPlan as DomainTestPlan,
     TestPlanContent as PlanContent,
     TestPlanOrigin as PlanOrigin,
@@ -32,10 +33,14 @@ from app.domain.planning import (
     TestTaskDefinition as TaskDefinition,
     TestTaskType as TaskType,
 )
-from app.domain.test_cases import TestCaseContent as CaseContent
-from app.domain.tools import ToolCatalogSnapshot
+from app.domain.resources.device import DeviceEnvironmentSnapshot, DeviceHealth
+from app.domain.resources.llm import LLMProfileSnapshot
+from app.domain.resources.tools import ToolCatalogSnapshot
+from app.event_stream import EventBus, EventWriter, project_run_message
+from app.execution.task_agent import TaskAgentGraphState
+from app.execution import ActiveRunRegistry, RunExecutor, RunService, TaskAgentFactory
+from app.planning import PlanningGraph
 from app.main import create_app
-from app.graph.task_agent import TaskAgentGraphState
 from app.persistence.adapters import (
     dump_planning_context,
     dump_string_list,
@@ -53,14 +58,11 @@ from app.persistence.db import (
     build_session_factory,
     init_database,
 )
-from app.persistence.execution_repository import (
+from app.persistence.test_repository import (
     ActiveRunExists,
-    SqlAlchemyExecutionRepository,
+    SqlAlchemyTestRepository,
 )
 from app.persistence.models import ArtifactRow
-from app.services.event_bus import EventBus
-from app.services.events import EventWriter
-from app.services.message_projector import project_run_message
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
@@ -76,6 +78,11 @@ def model_snapshot() -> LLMProfileSnapshot:
         base_url=None,
         temperature=0,
         timeout_seconds=60,
+        context_window_tokens=32_768,
+        max_output_tokens=2_048,
+        characters_per_token=1.5,
+        tokens_per_image=1_024,
+        context_safety_margin_tokens=1_024,
     )
 
 
@@ -278,7 +285,7 @@ async def test_latest_plan_and_single_active_run_are_serialized() -> None:
         engine = build_engine(f"sqlite+aiosqlite:///{database.as_posix()}")
         await init_database(engine)
         sessions = build_session_factory(engine)
-        repository = SqlAlchemyExecutionRepository(
+        repository = SqlAlchemyTestRepository(
             sessions, EventWriter(sessions, EventBus())
         )
         generated_case = await repository.create_test_case(
@@ -364,7 +371,7 @@ async def test_task_result_evidence_must_belong_to_the_task_run() -> None:
         engine = build_engine(f"sqlite+aiosqlite:///{database.as_posix()}")
         await init_database(engine)
         sessions = build_session_factory(engine)
-        repository = SqlAlchemyExecutionRepository(
+        repository = SqlAlchemyTestRepository(
             sessions, EventWriter(sessions, EventBus())
         )
         test_case = await repository.create_test_case(planning_context().test_case_content)
@@ -440,7 +447,7 @@ def test_domain_has_no_framework_or_integration_dependencies() -> None:
     domain_root = Path(__file__).resolve().parents[1] / "app" / "domain"
     banned = ("fastapi", "sqlalchemy", "langchain", "langgraph", "app.device", "app.llm")
     violations: list[str] = []
-    for path in domain_root.glob("*.py"):
+    for path in domain_root.rglob("*.py"):
         tree = ast.parse(path.read_text("utf-8"))
         for node in ast.walk(tree):
             names: list[str] = []
@@ -452,6 +459,44 @@ def test_domain_has_no_framework_or_integration_dependencies() -> None:
                 if name.startswith(banned):
                     violations.append(f"{path.name}: {name}")
     assert violations == []
+
+
+def test_domain_modules_and_public_structures_have_semantic_docstrings() -> None:
+    domain_root = Path(__file__).resolve().parents[1] / "app" / "domain"
+    missing: list[str] = []
+    for path in domain_root.rglob("*.py"):
+        tree = ast.parse(path.read_text("utf-8"))
+        if ast.get_docstring(tree) is None:
+            missing.append(f"{path.relative_to(domain_root)}: module")
+        for node in tree.body:
+            if (
+                isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                and not node.name.startswith("_")
+                and ast.get_docstring(node) is None
+            ):
+                missing.append(
+                    f"{path.relative_to(domain_root)}:{node.lineno} {node.name}"
+                )
+    assert missing == []
+
+
+def test_process_boundaries_do_not_restore_obsolete_dependency_ownership() -> None:
+    app_root = Path(__file__).resolve().parents[1] / "app"
+    assert not list((app_root / "services").glob("*.py"))
+    assert not list((app_root / "graph").glob("*.py"))
+    assert not (app_root / "execution" / "ports.py").exists()
+    assert not (app_root / "domain" / "test_cases.py").exists()
+    assert not (app_root / "llm" / "snapshots.py").exists()
+
+    run_service_parameters = signature(RunService).parameters
+    assert "app_version" in run_service_parameters
+    assert "settings" not in run_service_parameters
+    assert "active_run_registry" in run_service_parameters
+    assert "registry" not in signature(RunExecutor).parameters
+    assert "registry" not in signature(TaskAgentFactory).parameters
+    assert set(signature(PlanningGraph).parameters) == {"prompt_definition"}
+    assert not hasattr(SqlAlchemyTestRepository, "load_snapshot")
+    assert not hasattr(SqlAlchemyTestRepository, "get_report")
 
 
 def test_graph_state_and_event_vocabulary_have_no_parallel_protocol() -> None:

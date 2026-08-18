@@ -2,22 +2,23 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from app.domain.artifacts import Artifact
-from app.domain.execution import TaskRun, TestRun
+from app.domain.execution import Artifact, StoredRunEvent, TaskRun, TestRun
 from app.domain.planning import (
     TestPlan,
     TestPlanContent,
     TestTask,
     TestTaskDefinition,
 )
-from app.domain.test_cases import TestCase, TestCaseContent
+from app.domain.planning import TestCase, TestCaseContent
 from app.persistence.adapters import (
+    load_run_event,
     load_planning_context,
     load_string_list,
     load_task_run_result,
 )
 from app.persistence.models import (
     ArtifactRow,
+    RunEventRow,
     TaskRunRow,
     TestCaseRow,
     TestPlanRow,
@@ -119,4 +120,20 @@ def artifact_from_row(row: ArtifactRow) -> Artifact:
         size_bytes=row.size_bytes,
         sha256=row.sha256,
         created_at=_utc_required(row.created_at),
+    )
+
+
+def stored_event_from_row(row: RunEventRow) -> StoredRunEvent:
+    """把持久化 Row 与 JSON payload 恢复为唯一公开事件 envelope。"""
+
+    return StoredRunEvent(
+        event_id=row.id,
+        sequence=row.sequence,
+        occurred_at=_utc_required(row.occurred_at),
+        event=load_run_event(
+            event_type=row.type,
+            test_run_id=row.test_run_id,
+            task_run_id=row.task_run_id,
+            payload=row.payload_json,
+        ),
     )
