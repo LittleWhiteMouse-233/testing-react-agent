@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  latestScreenshotArtifactId,
   mergeStoredRunEvent,
   openRunEventStream,
   parseStoredRunEvent,
@@ -10,6 +11,27 @@ import {
 const EVENT_ID = "11111111-1111-4111-8111-111111111111";
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
 const TASK_RUN_ID = "33333333-3333-4333-8333-333333333333";
+
+it("selects the last image in the latest image-bearing message after history restoration", () => {
+  const restored = [1, 2, 3].map((sequence) => parseStoredRunEvent(JSON.stringify({
+    ...storedRunEvent({
+      type: "message.appended",
+      test_run_id: RUN_ID,
+      task_run_id: TASK_RUN_ID,
+      message: {
+        role: "tool", message_id: `message-${sequence}`,
+        tool_call_id: `call-${sequence}`, name: "archive_render", status: "success",
+        content: sequence === 3 ? [{ type: "text", text: "finished" }] : [
+          { type: "image_artifact", artifact_id: EVENT_ID },
+          { type: "text", text: "second observation" },
+          { type: "image_artifact", artifact_id: sequence === 2 ? TASK_RUN_ID : RUN_ID }
+        ]
+      }
+    }), sequence
+  })));
+  expect(latestScreenshotArtifactId(restored)).toBe(TASK_RUN_ID);
+  expect(latestScreenshotArtifactId([])).toBeUndefined();
+});
 
 function storedRunEvent(event: Record<string, unknown>) {
   return {

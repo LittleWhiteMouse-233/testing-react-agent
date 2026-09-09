@@ -7,7 +7,6 @@ from app.llm import (
     RealChatModelClient,
     ScriptedChatModelClient,
 )
-from app.device import DeviceProvider, FakeDeviceController, AdbDeviceController
 from app.config import Settings
 from app.event_stream import EventBus, EventWriter
 from app.execution.active_runs import ActiveRunRegistry
@@ -19,7 +18,7 @@ from app.persistence.test_repository import SqlAlchemyTestRepository
 from app.planning import PlanningGraph, PlanningService
 from app.prompts import load_prompt_catalog
 from app.reporting import ReportService
-from app.tools import CatalogToolProvider
+from app.tools import MCPToolProvider
 
 
 class Container:
@@ -34,14 +33,7 @@ class Container:
             settings.artifacts_dir,
             self.sessions,
         )
-        self.devices: dict[str, DeviceProvider] = {"fake-tv": FakeDeviceController()}
-        if settings.adb_serial:
-            self.devices[settings.adb_serial] = AdbDeviceController(
-                settings.adb_serial,
-                settings.adb_path,
-                settings.action_timeout_seconds,
-            )
-        self.tools = CatalogToolProvider(list(self.devices.values()))
+        self.tools = MCPToolProvider(settings.mcp_config_path, settings.tool_call_timeout_seconds)
         prompt_catalog = load_prompt_catalog()
         model_clients_by_id: dict[str, ChatModelClient] = {}
         for profile in settings.llm_profiles:
@@ -57,8 +49,7 @@ class Container:
         self.model_provider = ModelProvider(
             model_clients_by_id,
             planning_model_id=settings.planning_model_id,
-            act_model_id=settings.act_model_id,
-            judge_model_id=settings.judge_model_id,
+            execution_model_id=settings.execution_model_id,
         )
         self.planning_graph = PlanningGraph(prompt_catalog.planner)
         self.repository = SqlAlchemyTestRepository(self.sessions, self.events)
@@ -66,17 +57,13 @@ class Container:
             repository=self.repository,
             planning_graph=self.planning_graph,
             model_provider=self.model_provider,
-            devices=self.devices,
         )
         self.agent_factory = TaskAgentFactory(
             artifacts=self.artifacts,
             model_provider=self.model_provider,
-            tool_provider=self.tools,
-            devices=self.devices,
             act_prompt=prompt_catalog.act,
             judge_prompt=prompt_catalog.judge,
-            action_timeout_seconds=settings.action_timeout_seconds,
-            capture_max_attempts=settings.capture_max_attempts,
+            tool_call_timeout_seconds=settings.tool_call_timeout_seconds,
             model_call_max_attempts=settings.model_call_max_attempts,
             model_response_max_attempts=settings.model_response_max_attempts,
         )
@@ -93,7 +80,7 @@ class Container:
             app_version=settings.app_version,
             act_prompt=prompt_catalog.act,
             judge_prompt=prompt_catalog.judge,
-            devices=self.devices,
             tools=self.tools,
+            screenshot_history_rounds=settings.screenshot_history_rounds,
         )
         self.reports = ReportService(self.repository, self.artifacts)

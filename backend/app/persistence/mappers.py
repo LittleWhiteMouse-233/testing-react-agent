@@ -84,7 +84,6 @@ def test_run_from_row(row: TestRunRow) -> TestRun:
     return TestRun(
         id=row.id,
         test_plan_id=row.test_plan_id,
-        device_id=row.device_id,
         status=row.status,
         verdict=row.verdict,
         started_at=_utc(row.started_at),

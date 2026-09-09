@@ -11,7 +11,7 @@ from langsmith import tracing_context
 
 from app.domain.errors import PlanningFailure
 from app.domain.planning import (
-    PlanGenerationInput,
+    TestCaseContent,
     TestPlanContent,
     TestTaskDefinition,
 )
@@ -85,7 +85,7 @@ class PlanningGraph:
 
     async def generate(
         self,
-        request: PlanGenerationInput,
+        request: TestCaseContent,
         *,
         model_client: ChatModelClient,
     ) -> PlanDraft:

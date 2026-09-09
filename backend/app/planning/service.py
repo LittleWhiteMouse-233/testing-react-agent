@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from app.device.contracts import DeviceProvider
 from app.domain.activity import AgentActivity
 from app.domain.planning import (
-    PlanGenerationInput,
     TestPlan,
     TestPlanContent,
     TestPlanOrigin,
@@ -26,33 +24,22 @@ class PlanningService:
         repository: SqlAlchemyTestRepository,
         planning_graph: PlanningGraph,
         model_provider: ModelProvider,
-        devices: dict[str, DeviceProvider],
     ) -> None:
         self.repository = repository
         self.planning_graph = planning_graph
         self.model_provider = model_provider
-        self.devices = devices
 
-    async def generate(self, *, test_case_id: str, device_id: str) -> TestPlan:
+    async def generate(self, *, test_case_id: str) -> TestPlan:
         test_case = await self.repository.get_test_case(test_case_id)
-        device = self.devices.get(device_id)
-        if device is None:
-            raise LookupError("Device not found")
-        device_info = await device.describe()
-        generation_input = PlanGenerationInput(
-            test_case_content=test_case.content,
-            device_info=device_info,
-        )
         model_client = self.model_provider.client_for_activity(
             AgentActivity.PLANNING
         )
         draft = await self.planning_graph.generate(
-            generation_input,
+            test_case.content,
             model_client=model_client,
         )
         context = TestPlanPlanningContext(
             test_case_content=test_case.content,
-            device_info=device_info,
             planning_model=model_client.profile_snapshot,
             planning_prompt_version=self.planning_graph.prompt_definition.version,
         )

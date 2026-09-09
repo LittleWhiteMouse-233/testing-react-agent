@@ -10,8 +10,6 @@ from fastapi.responses import StreamingResponse
 
 from app.api.schemas import (
     ApiError,
-    DeviceResponse,
-    GeneratePlanRequest,
     PageResponse,
     ReportExportRequest,
     ReviseTestPlanRequest,
@@ -20,10 +18,11 @@ from app.api.schemas import (
 )
 from app.container import Container
 from app.domain.execution import Artifact, StoredRunEvent, TestRun, TestRunDetail, TestRunStatus
-from app.domain.ids import ArtifactId, DeviceId, TestCaseId, TestPlanId, TestRunId
+from app.domain.ids import ArtifactId, TestCaseId, TestPlanId, TestRunId
 from app.domain.planning import TestCase, TestPlan
 from app.reporting import TestRunReport
 from app.execution.run_service import RunConflict
+from app.tools import MCPConnectionError
 
 
 API_ERROR_RESPONSE: dict[str, Any] = {"model": ApiError}
@@ -91,11 +90,11 @@ async def get_test_case(test_case_id: TestCaseId, request: Request) -> TestCase:
     responses={**NOT_FOUND_RESPONSE, **BAD_GATEWAY_RESPONSE},
 )
 async def generate_plan(
-    test_case_id: TestCaseId, payload: GeneratePlanRequest, request: Request
+    test_case_id: TestCaseId, request: Request
 ) -> TestPlan:
     try:
         return await container(request).planning.generate(
-            test_case_id=test_case_id, device_id=payload.device_id
+            test_case_id=test_case_id
         )
     except LookupError as exc:
         raise problem(404, "planning_input_not_found", str(exc)) from exc
@@ -141,7 +140,7 @@ async def revise_test_plan(
     "/runs",
     status_code=201,
     response_model=TestRun,
-    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE, **BAD_GATEWAY_RESPONSE},
 )
 async def create_test_run(
     payload: TestRunCreateRequest, request: Request
@@ -149,9 +148,10 @@ async def create_test_run(
     try:
         return await container(request).run_service.start(
             test_plan_id=payload.test_plan_id,
-            device_id=payload.device_id,
             assumptions_confirmed=payload.assumptions_confirmed,
         )
+    except MCPConnectionError as exc:
+        raise problem(502, "mcp_unavailable", str(exc)) from exc
     except RunConflict as exc:
         raise problem(409, "active_run_exists", str(exc)) from exc
     except LookupError as exc:
@@ -328,45 +328,3 @@ async def get_artifact(artifact_id: ArtifactId, request: Request) -> Response:
     except LookupError as exc:
         raise problem(404, "artifact_not_found", str(exc)) from exc
     return Response(content=content, media_type=mime_type)
-
-
-async def _device_response(app: Container, device_id: DeviceId) -> DeviceResponse:
-    device = app.devices[device_id]
-    health_result, info_result = await asyncio.gather(
-        device.health(), device.describe(), return_exceptions=True
-    )
-    if isinstance(health_result, BaseException):
-        from app.domain.resources.device import DeviceHealth
-
-        health = DeviceHealth(available=False, message=str(health_result))
-    else:
-        health = health_result
-    info = None if isinstance(info_result, BaseException) else info_result
-    return DeviceResponse(
-        device_id=device_id,
-        provider=device.provider,
-        health=health,
-        info=info,
-        tool_catalog=app.tools.snapshot_for(device_id),
-    )
-
-
-@router.get("/devices", response_model=PageResponse[DeviceResponse])
-async def list_devices(request: Request) -> PageResponse[DeviceResponse]:
-    app = container(request)
-    items = await asyncio.gather(
-        *(_device_response(app, device_id) for device_id in app.devices)
-    )
-    return PageResponse[DeviceResponse](items=list(items), total=len(items))
-
-
-@router.get(
-    "/devices/{device_id}",
-    response_model=DeviceResponse,
-    responses=NOT_FOUND_RESPONSE,
-)
-async def get_device(device_id: DeviceId, request: Request) -> DeviceResponse:
-    app = container(request)
-    if device_id not in app.devices:
-        raise problem(404, "device_not_found", "Device not found")
-    return await _device_response(app, device_id)

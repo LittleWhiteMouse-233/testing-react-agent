@@ -8,9 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.domain.ids import ArtifactId, DeviceId, TaskRunId, TestPlanId, TestRunId, TestTaskId
+from app.domain.ids import ArtifactId, TaskRunId, TestPlanId, TestRunId, TestTaskId
 from app.domain.planning import TestPlan
-from app.domain.resources.device import DeviceEnvironmentSnapshot
 from app.domain.resources.llm import LLMProfileSnapshot
 from app.domain.resources.tools import ToolCatalogSnapshot
 
@@ -50,8 +49,7 @@ class ReasonCode(StrEnum):
     ASSERTION_FAILED = "assertion_failed"
     GOAL_UNREACHABLE = "goal_unreachable"
     CYCLE_LIMIT = "cycle_limit"
-    DEVICE_UNAVAILABLE = "device_unavailable"
-    CAPTURE_FAILED = "capture_failed"
+    EVIDENCE_MISSING = "evidence_missing"
     MODEL_UNAVAILABLE = "model_unavailable"
     INVALID_MODEL_RESPONSE = "invalid_model_response"
     AGENT_BLOCKED = "agent_blocked"
@@ -86,24 +84,22 @@ class TestRunSnapshot(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    device_environment: DeviceEnvironmentSnapshot
     tool_catalog: ToolCatalogSnapshot
-    act_model: LLMProfileSnapshot
-    judge_model: LLMProfileSnapshot
+    execution_model: LLMProfileSnapshot
+    screenshot_history_rounds: int = Field(default=3, ge=1)
     act_prompt_version: str = Field(min_length=1)
     judge_prompt_version: str = Field(min_length=1)
     app_version: str = Field(min_length=1)
-    execution_protocol_version: Literal["1"]
+    execution_protocol_version: Literal["2"]
 
 
 class TestRun(BaseModel):
-    """一次已确认计划在单台设备上的执行聚合根。"""
+    """一次已确认计划通过 MCP 工具执行的聚合根。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True, from_attributes=True)
 
     id: TestRunId
     test_plan_id: TestPlanId
-    device_id: DeviceId
     status: TestRunStatus
     verdict: TestRunVerdict | None
     started_at: datetime | None

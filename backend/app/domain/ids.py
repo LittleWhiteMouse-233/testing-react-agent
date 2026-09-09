@@ -20,7 +20,6 @@ TaskRunId = Annotated[str, StringConstraints(pattern=UUID_PATTERN)]
 RunEventId = Annotated[str, StringConstraints(pattern=UUID_PATTERN)]
 ArtifactId = Annotated[str, StringConstraints(pattern=UUID_PATTERN)]
 
-DeviceId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 ModelProfileId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 ToolCallId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 MessageId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]

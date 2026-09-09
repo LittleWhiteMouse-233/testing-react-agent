@@ -3,24 +3,8 @@
 from __future__ import annotations
 
 
-class DeviceUnavailable(RuntimeError):
-    """由设备集成产生、由 planning/execution/API 边界转换的不可用错误。"""
-
-
-class CaptureFailed(RuntimeError):
-    """由设备截图边界产生、由 TaskAgent 重试或执行器阻塞的错误。"""
-
-
-class ActionTimeout(RuntimeError):
-    """由设备动作边界产生、由 TaskAgent/执行器按安全规则消费的超时。"""
-
-
 class ModelCallTimeout(TimeoutError):
     """由 LLM 调用边界产生、由 Graph 重试并最终由执行器归因的超时。"""
-
-
-class UnsupportedAction(ValueError):
-    """由设备适配器产生、表示请求动作不在其公开能力内。"""
 
 
 class PlanningFailure(RuntimeError):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import mimetypes
 import os
 import tempfile
 from pathlib import Path
@@ -35,13 +36,15 @@ class ArtifactStore:
         content: bytes,
         mime_type: str,
     ) -> Artifact:
+        if not mime_type.startswith("image/") or not content:
+            raise ValueError("Screenshot evidence requires non-empty image content")
         return await self.save(
             test_run_id=None,
             task_run_id=task_run_id,
             artifact_type=ArtifactType.SCREENSHOT,
             content=content,
             mime_type=mime_type,
-            extension="png",
+            extension=mimetypes.guess_extension(mime_type) or ".image",
         )
 
     async def save_export(

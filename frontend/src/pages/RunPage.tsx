@@ -22,6 +22,7 @@ import {
   artifactUrl
 } from "../api/client";
 import {
+  latestScreenshotArtifactId,
   mergeStoredRunEvent,
   startRunEventStream,
   type RunEventSource
@@ -78,16 +79,7 @@ export default function RunPage() {
     };
   }, [runId]);
 
-  const latestScreenshot = useMemo(() => {
-    for (const stored of [...events].reverse()) {
-      if (stored.event.type !== "message.appended") continue;
-      const image = stored.event.message.content.find(
-        (block) => block.type === "image_artifact"
-      );
-      if (image?.type === "image_artifact") return image.artifact_id;
-    }
-    return undefined;
-  }, [events]);
+  const latestScreenshot = useMemo(() => latestScreenshotArtifactId(events), [events]);
 
   if (detail.isLoading) return <Spin />;
   if (detail.error || !detail.data) {
@@ -120,11 +112,9 @@ export default function RunPage() {
           </Space>
         </div>
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }}>
-          <Descriptions.Item label="设备">{data.run.device_id}</Descriptions.Item>
           <Descriptions.Item label="计划版本">{data.test_plan.version_number}</Descriptions.Item>
           <Descriptions.Item label="执行协议">{data.snapshot.execution_protocol_version}</Descriptions.Item>
-          <Descriptions.Item label="执行模型">{data.snapshot.act_model.profile_id}</Descriptions.Item>
-          <Descriptions.Item label="判定模型">{data.snapshot.judge_model.profile_id}</Descriptions.Item>
+          <Descriptions.Item label="执行模型">{data.snapshot.execution_model.profile_id}</Descriptions.Item>
         </Descriptions>
         {activeTaskRun && activeTask && (
           <>

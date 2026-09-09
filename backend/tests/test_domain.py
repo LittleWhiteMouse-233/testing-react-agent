@@ -22,7 +22,6 @@ from app.domain.planning import (
     TestTask as PlanTask,
     TestTaskDefinition as TaskDefinition,
     TestTaskType as TaskType,
-    activity_for_task,
     identify_plan_content,
 )
 from app.llm import ModelProvider, ScriptedChatModelClient, profile_snapshot_from_settings
@@ -168,24 +167,21 @@ def test_settings_to_snapshot_is_a_single_secret_free_projection() -> None:
     with pytest.raises(ValidationError, match="unknown model"):
         Settings(
             llm_profiles=[LLMProfileSettings(id="first")],
-            act_model_id="missing",
+            execution_model_id="missing",
         )
 
 
 def test_activity_conversion_and_model_provider_routes_are_explicit() -> None:
-    assert activity_for_task(TaskType.ACT) == AgentActivity.ACT
-    assert activity_for_task(TaskType.JUDGE) == AgentActivity.JUDGE
     first = ScriptedChatModelClient(model_id="first")
     second = ScriptedChatModelClient(model_id="second")
     provider = ModelProvider(
         {"first": first, "second": second},
         planning_model_id="second",
-        act_model_id="first",
-        judge_model_id="first",
+        execution_model_id="first",
     )
     assert provider.client_for_activity(AgentActivity.PLANNING) is second
-    assert provider.client_for_activity(AgentActivity.ACT) is first
-    assert provider.client_for_activity(AgentActivity.JUDGE) is first
+    assert provider.client_for_activity(AgentActivity.EXECUTION) is first
+    assert provider.client_for_activity(AgentActivity.EXECUTION) is first
     assert provider.client_by_id("second") is second
 
 
@@ -194,9 +190,8 @@ def test_model_provider_uses_ordered_default_and_one_profile_for_two_routes() ->
     second = ScriptedChatModelClient(model_id="second")
     provider = ModelProvider(
         {"first": first, "second": second},
-        act_model_id="second",
-        judge_model_id="second",
+        execution_model_id="second",
     )
     assert provider.client_for_activity(AgentActivity.PLANNING) is first
-    assert provider.client_for_activity(AgentActivity.ACT) is second
-    assert provider.client_for_activity(AgentActivity.JUDGE) is second
+    assert provider.client_for_activity(AgentActivity.EXECUTION) is second
+    assert provider.client_for_activity(AgentActivity.EXECUTION) is second

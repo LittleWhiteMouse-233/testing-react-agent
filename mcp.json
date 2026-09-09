@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "atv": {
+      "command": "python",
+      "args": ["-m", "atv_mcp", "--config", "config.yaml"],
+      "cwd": "device/atv_mcp",
+      "env": {"PYTHONUTF8": "1"}
+    }
+  }
+}

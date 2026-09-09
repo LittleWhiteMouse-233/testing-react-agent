@@ -34,6 +34,17 @@ export function mergeStoredRunEvent(
     .sort((left, right) => left.sequence - right.sequence);
 }
 
+export function latestScreenshotArtifactId(events: StoredRunEvent[]): string | undefined {
+  for (const stored of [...events].reverse()) {
+    if (stored.event.type !== "message.appended") continue;
+    const image = [...stored.event.message.content].reverse().find(
+      (block) => block.type === "image_artifact"
+    );
+    if (image?.type === "image_artifact") return image.artifact_id;
+  }
+  return undefined;
+}
+
 export function isTerminalRunEvent(stored: StoredRunEvent): boolean {
   return stored.event.type === "run.finished" || stored.event.type === "run.cancelled";
 }

@@ -1,211 +1,55 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
+import json
+from pathlib import Path
 
 import pytest
-from langchain_core.tools import tool
-from pydantic import ValidationError
+from langchain_core.messages import ToolMessage
 
-from app.domain.activity import AgentActivity
-from app.domain.resources.tools import ToolCatalogSnapshot
-from app.tools import CatalogToolProvider, DeviceToolManifest, ToolBinding
+from app.tools import MCPConnectionError, MCPToolProvider, snapshot_tools
+from mcp_support import read_records, replay_call, write_mcp_config
 
 
-@dataclass
-class ManifestSource:
-    device_id: str
-    manifest: DeviceToolManifest
-
-    def tool_manifest(self) -> DeviceToolManifest:
-        return self.manifest
-
-
-def test_catalog_uses_declared_scopes_and_derives_audit_snapshot() -> None:
-    @tool
-    async def mutate(value: str) -> str:
-        """Mutate device state."""
-        return value
-
-    @tool
-    async def observe(value: str) -> str:
-        """Observe device state."""
-        return value
-
-    source = ManifestSource(
-        "device-a",
-        DeviceToolManifest(
-            bindings=(
-                ToolBinding(
-                    mutate,
-                    frozenset({AgentActivity.ACT, AgentActivity.JUDGE}),
-                    True,
-                ),
-                ToolBinding(
-                    observe,
-                    frozenset({AgentActivity.ACT, AgentActivity.JUDGE}),
-                    False,
-                ),
-            ),
-        ),
-    )
-    catalog = CatalogToolProvider([source])
-
-    assert [item.name for item in catalog.tools_for("device-a", AgentActivity.ACT)] == [
-        "mutate",
-        "observe",
-    ]
-    assert [item.name for item in catalog.tools_for("device-a", AgentActivity.JUDGE)] == [
-        "mutate",
-        "observe",
-    ]
-    snapshot = catalog.snapshot_for("device-a")
-    assert {item.name for item in snapshot.tools} == {"mutate", "observe"}
-    mutate_capability = next(item for item in snapshot.tools if item.name == "mutate")
-    assert mutate_capability.changes_device_state
-    assert mutate_capability.scopes == [AgentActivity.ACT, AgentActivity.JUDGE]
-    assert not hasattr(snapshot, "device_id")
-    with pytest.raises(ValidationError, match="names must be unique"):
-        ToolCatalogSnapshot(tools=[snapshot.tools[0], snapshot.tools[0]])
+@pytest.mark.asyncio
+async def test_stdio_discovery_prefixes_and_reuses_sessions(tmp_path: Path) -> None:
+    config = write_mcp_config(tmp_path, [replay_call(), replay_call()], servers=("first", "second"))
+    async with MCPToolProvider(config).connect() as tools:
+        assert [tool.name for tool in tools] == ["first_inspect", "second_inspect"]
+        snapshot = snapshot_tools(tools)
+        assert [tool.source for tool in snapshot.tools] == ["first", "second"]
+        assert snapshot.tools[0].annotations.readOnlyHint is True
+        assert "env" not in snapshot.model_dump_json()
+        for index in range(2):
+            result = await tools[0].ainvoke({"name": tools[0].name, "args": {}, "id": str(index), "type": "tool_call"})
+            assert isinstance(result, ToolMessage)
+            assert result.content_blocks[0]["type"] == "image"
+    records = read_records(tmp_path, "first")
+    assert len({entry["pid"] for entry in records}) == 1
+    assert len([entry for entry in records if entry["phase"] == "completed"]) == 2
 
 
-def test_catalog_rejects_reserved_and_duplicate_tool_names() -> None:
-    @tool("finish_task")
-    def reserved() -> str:
-        """Reserved tool."""
-        return "reserved"
-
-    with pytest.raises(ValueError, match="reserved"):
-        CatalogToolProvider(
-            [
-                ManifestSource(
-                    "device-a",
-                    DeviceToolManifest(
-                        bindings=(
-                            ToolBinding(
-                                reserved, frozenset({AgentActivity.ACT}), False
-                            ),
-                        ),
-                    ),
-                )
-            ]
-        )
+@pytest.mark.asyncio
+async def test_configuration_errors_do_not_require_a_device(tmp_path: Path) -> None:
+    config = tmp_path / "missing.json"
+    with pytest.raises(MCPConnectionError, match="configuration"):
+        async with MCPToolProvider(config).connect():
+            pass
+    config.write_text('{"mcpServers":{"unsupported":{"command":"unused","transport":"http"}}}', encoding="utf-8")
+    with pytest.raises(MCPConnectionError, match="configuration"):
+        async with MCPToolProvider(config).connect():
+            pass
 
 
-def test_catalog_keeps_device_tools_isolated_and_injects_shared_tools_in_order() -> None:
-    @tool("native")
-    def native_a() -> str:
-        """Native tool for device A."""
-        return "a"
-
-    @tool("native")
-    def native_b() -> str:
-        """Native tool for device B."""
-        return "b"
-
-    @tool("shared_observe")
-    def shared_observe() -> str:
-        """Shared observation helper."""
-        return "shared"
-
-    device_a_source = ManifestSource(
-        "device-a",
-        DeviceToolManifest(
-            bindings=(
-                ToolBinding(native_a, frozenset({AgentActivity.ACT}), True),
-            )
-        ),
-    )
-    device_b_source = ManifestSource(
-        "device-b",
-        DeviceToolManifest(
-            bindings=(
-                ToolBinding(native_b, frozenset({AgentActivity.ACT}), True),
-            )
-        ),
-    )
-    shared_source = ManifestSource(
-        "shared-source",
-        DeviceToolManifest(
-            bindings=(
-                ToolBinding(
-                    shared_observe,
-                    frozenset({AgentActivity.ACT, AgentActivity.JUDGE}),
-                    False,
-                ),
-            )
-        ),
-    )
-
-    catalog = CatalogToolProvider(
-        [device_a_source, device_b_source],
-        shared_tool_sources=[shared_source],
-    )
-
-    device_a_tools = catalog.tools_for("device-a", AgentActivity.ACT)
-    device_b_tools = catalog.tools_for("device-b", AgentActivity.ACT)
-    assert [tool.name for tool in device_a_tools] == ["native", "shared_observe"]
-    assert [tool.name for tool in device_b_tools] == ["native", "shared_observe"]
-    assert device_a_tools[0] is native_a
-    assert device_b_tools[0] is native_b
-    assert catalog.tools_for("device-a", AgentActivity.JUDGE) == (shared_observe,)
-    assert catalog.tools_for("device-b", AgentActivity.JUDGE) == (shared_observe,)
+@pytest.mark.asyncio
+async def test_connection_failure_is_a_public_mcp_error(tmp_path: Path) -> None:
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"mcpServers": {"missing": {"command": "nonexistent-mcp-executable"}}}), encoding="utf-8")
+    with pytest.raises(MCPConnectionError, match="connection or discovery"):
+        async with MCPToolProvider(config).connect():
+            pass
 
 
-def test_catalog_rejects_device_and_shared_tool_name_collisions() -> None:
-    @tool("same")
-    def device_tool() -> str:
-        """Device-native tool."""
-        return "device"
-
-    @tool("same")
-    def shared_tool() -> str:
-        """Shared tool."""
-        return "shared"
-
-    device_source = ManifestSource(
-        "device-a",
-        DeviceToolManifest(
-            bindings=(
-                ToolBinding(device_tool, frozenset({AgentActivity.ACT}), True),
-            )
-        ),
-    )
-    shared_source = ManifestSource(
-        "shared-source",
-        DeviceToolManifest(
-            bindings=(
-                ToolBinding(shared_tool, frozenset({AgentActivity.ACT}), False),
-            )
-        ),
-    )
-
-    with pytest.raises(ValueError, match="device-a.*same"):
-        CatalogToolProvider(
-            [device_source],
-            shared_tool_sources=[shared_source],
-        )
-
-    @tool("same")
-    def first() -> str:
-        """First."""
-        return "first"
-
-    @tool("same")
-    def second() -> str:
-        """Second."""
-        return "second"
-
-    with pytest.raises(ValueError, match="Duplicate"):
-        CatalogToolProvider(
-            [
-                ManifestSource(
-                    "device-a",
-                    DeviceToolManifest(
-                        bindings=(
-                            ToolBinding(first, frozenset({AgentActivity.ACT}), False),
-                            ToolBinding(second, frozenset({AgentActivity.ACT}), False),
-                        ),
-                    ),
-                )
-            ]
-        )
+@pytest.mark.asyncio
+async def test_discovery_timeout_is_a_public_mcp_error(tmp_path: Path) -> None:
+    config = write_mcp_config(tmp_path, [])
+    with pytest.raises(MCPConnectionError):
+        async with MCPToolProvider(config, timeout_seconds=0.001).connect():
+            pass

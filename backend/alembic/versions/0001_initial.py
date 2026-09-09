@@ -95,7 +95,6 @@ def upgrade() -> None:
             sa.ForeignKey("test_plans.id", ondelete="RESTRICT"),
             nullable=False,
         ),
-        sa.Column("device_id", sa.String(200), nullable=False),
         sa.Column(
             "status",
             _enum("test_run_status", "pending", "running", "finished"),

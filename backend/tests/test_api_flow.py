@@ -16,16 +16,7 @@ from app.config import Settings
 from app.main import create_app
 
 
-def build_client(root: Path) -> TestClient:
-    return TestClient(
-        create_app(
-            Settings(
-                data_dir=root,
-                database_url=f"sqlite+aiosqlite:///{(root / 'app.db').as_posix()}",
-                checkpoint_path=root / "checkpoints.db",
-            )
-        )
-    )
+from mcp_support import build_client
 
 
 def wait_for_run(client: TestClient, test_run_id: str) -> dict:
@@ -70,7 +61,6 @@ def test_complete_message_first_run_and_exports() -> None:
 
             plan_response = client.post(
                 f"/api/test-cases/{test_case['id']}/plans",
-                json={"device_id": "fake-tv"},
             )
             assert plan_response.status_code == 201, plan_response.text
             plan = plan_response.json()
@@ -83,7 +73,6 @@ def test_complete_message_first_run_and_exports() -> None:
                 "/api/runs",
                 json={
                     "test_plan_id": plan["id"],
-                    "device_id": "fake-tv",
                     "assumptions_confirmed": True,
                 },
             )
@@ -101,7 +90,7 @@ def test_complete_message_first_run_and_exports() -> None:
                 "passed",
                 "passed",
             ]
-            assert detail["snapshot"]["execution_protocol_version"] == "1"
+            assert detail["snapshot"]["execution_protocol_version"] == "2"
             assert "planning_model" not in detail["snapshot"]
 
             events_response = client.get(
@@ -247,11 +236,9 @@ def test_only_latest_plan_can_start() -> None:
             ).json()
             first = client.post(
                 f"/api/test-cases/{case['id']}/plans",
-                json={"device_id": "fake-tv"},
             ).json()
             second = client.post(
                 f"/api/test-cases/{case['id']}/plans",
-                json={"device_id": "fake-tv"},
             ).json()
             assert second["origin"] == "replanning"
             stale_revision = client.post(
@@ -273,7 +260,6 @@ def test_only_latest_plan_can_start() -> None:
                 "/api/runs",
                 json={
                     "test_plan_id": first["id"],
-                    "device_id": "fake-tv",
                     "assumptions_confirmed": True,
                 },
             )

@@ -27,7 +27,7 @@ def create_app(settings_override=None) -> FastAPI:
         await init_database(container.engine)
         await container.run_service.reconcile_orphaned_runs()
         yield
-        await container.active_run_registry.shutdown()
+        await container.run_service.shutdown()
         await container.engine.dispose()
 
     instance = FastAPI(

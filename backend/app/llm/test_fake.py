@@ -13,22 +13,21 @@ from pydantic import PrivateAttr
 
 from app.config import LLMProfileSettings
 from app.domain.planning import (
-    PlanGenerationInput,
+    TestCaseContent,
     TestPlanContent,
     TestTaskDefinition,
     TestTaskType,
 )
-from app.domain.planning import TestCaseContent
 from app.llm.client import profile_snapshot_from_settings
 
 
 PlanDraft = TestPlanContent[TestTaskDefinition]
 
 
-def _default_plan(request: PlanGenerationInput) -> PlanDraft:
-    goal = request.test_case_content.source_text
+def _default_plan(request: TestCaseContent) -> PlanDraft:
+    goal = request.source_text
     return TestPlanContent[TestTaskDefinition](
-        title=f"执行：{request.test_case_content.name}",
+        title=f"执行：{request.name}",
         setup_steps=["确认电视已开机并可被控制"],
         assumptions=[],
         tasks=[
@@ -88,14 +87,14 @@ class ScriptedChatModel(BaseChatModel):
             self._turns.popleft()
             if self._turns
             else {
-                "status": "passed",
-                "summary": "脚本模型确认当前截图满足任务成功标准",
+                "status": "blocked",
+                "summary": "No execution turns were configured for the scripted model",
             }
         )
         if isinstance(value, Exception):
             raise value
         if isinstance(value, AIMessage):
-            return value
+            return value.model_copy(deep=True)
         if isinstance(value, dict) and "tool_calls" in value:
             return AIMessage(
                 content=value.get("content", ""), tool_calls=value["tool_calls"]
@@ -152,18 +151,15 @@ class ScriptedChatModel(BaseChatModel):
         return RunnableLambda(invoke)
 
 
-def _request_from_messages(messages: Any) -> PlanGenerationInput:
+def _request_from_messages(messages: Any) -> TestCaseContent:
     for message in reversed(list(messages)):
         content = getattr(message, "content", "")
         if isinstance(content, str):
             try:
-                return PlanGenerationInput.model_validate(json.loads(content))
+                return TestCaseContent.model_validate(json.loads(content))
             except (ValueError, TypeError):
                 continue
-    return PlanGenerationInput(
-        test_case_content=TestCaseContent(name="脚本测试", source_text="脚本测试"),
-        device_info=None,
-    )
+    return TestCaseContent(name="脚本测试", source_text="脚本测试")
 
 
 class ScriptedChatModelClient:

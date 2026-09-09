@@ -13,9 +13,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.domain.activity import AgentActivity
 from app.domain.ids import TestCaseId, TestPlanId, TestTaskId
-from app.domain.resources.device import DeviceInfo
 from app.domain.resources.llm import LLMProfileSnapshot
 
 
@@ -122,7 +120,6 @@ class TestPlanPlanningContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     test_case_content: TestCaseContent
-    device_info: DeviceInfo | None
     planning_model: LLMProfileSnapshot
     planning_prompt_version: str = Field(min_length=1)
 
@@ -151,15 +148,6 @@ class TestPlan(BaseModel):
         return self
 
 
-class PlanGenerationInput(BaseModel):
-    """PlanningGraph 的领域输入边界，由 PlanningService 从当前资源投影。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    test_case_content: TestCaseContent
-    device_info: DeviceInfo | None
-
-
 def identify_plan_content(
     content: TestPlanContent[TestTaskDefinition],
 ) -> TestPlanContent[TestTask]:
@@ -174,9 +162,3 @@ def identify_plan_content(
             for definition in content.tasks
         ],
     )
-
-
-def activity_for_task(task_type: TestTaskType) -> AgentActivity:
-    """把规划过程的任务类型显式转换为 shared-kernel Agent activity。"""
-
-    return AgentActivity(task_type.value)

@@ -36,10 +36,7 @@ def test_settings_use_device_neutral_environment_names(
         ),
     )
     monkeypatch.setenv("TEST_AGENT_PLANNING_MODEL_ID", "planner")
-    monkeypatch.setenv("TEST_AGENT_ACT_MODEL_ID", "vision")
-    monkeypatch.setenv("TEST_AGENT_JUDGE_MODEL_ID", "vision")
-    monkeypatch.setenv("ADB_PATH", "custom-adb")
-    monkeypatch.setenv("ADB_SERIAL", "device-1")
+    monkeypatch.setenv("TEST_AGENT_EXECUTION_MODEL_ID", "vision")
 
     settings_factory = cast(Callable[..., Settings], Settings)
     settings = settings_factory(_env_file=None)
@@ -48,13 +45,10 @@ def test_settings_use_device_neutral_environment_names(
     assert settings.data_dir == PROJECT_ROOT / "config-test-data"
     assert [profile.id for profile in settings.llm_profiles] == ["planner", "vision"]
     assert settings.planning_model_id == "planner"
-    assert settings.act_model_id == "vision"
-    assert settings.judge_model_id == "vision"
+    assert settings.execution_model_id == "vision"
     assert settings.llm_profiles[0].context_window_tokens == 16_384
     assert settings.llm_profiles[0].max_output_tokens == 1_024
     assert settings.llm_profiles[1].tokens_per_image == 1_500
-    assert settings.adb_path == "custom-adb"
-    assert settings.adb_serial == "device-1"
 
 
 def test_llm_profile_rejects_unknown_activity_markers_and_invalid_budget() -> None:

@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, cast
 
 from langchain_core.messages import BaseMessage
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import NodeTimeoutError
@@ -11,9 +12,6 @@ from langgraph.graph import add_messages
 from langsmith import tracing_context
 
 from app.domain.errors import (
-    ActionTimeout,
-    CaptureFailed,
-    DeviceUnavailable,
     ModelContextBudgetExceeded,
     ModelProfileMismatch,
     ModelCallTimeout,
@@ -63,20 +61,13 @@ class RunExecutor:
         self,
         test_run_id: str,
         run_cancellation_event: asyncio.Event,
+        tools: tuple[BaseTool, ...],
     ) -> None:
         active_task: TaskRun | None = None
         remaining_after_active_task: list[TestTask] = []
         try:
             detail = await self.repository.get_test_run_detail(test_run_id)
             await self.repository.start_run(test_run_id)
-            if not detail.snapshot.device_environment.health.available:
-                await self._block_run(
-                    test_run_id,
-                    ReasonCode.DEVICE_UNAVAILABLE,
-                    detail.snapshot.device_environment.health.message
-                    or "Device is unavailable",
-                )
-                return
             completed: list[TaskRun] = []
             async with AsyncSqliteSaver.from_conn_string(
                 self.checkpoint_path
@@ -98,12 +89,11 @@ class RunExecutor:
                             test_run_id=test_run_id,
                             task_run=active_task,
                             test_task=test_task,
-                            device_id=detail.run.device_id,
+                            tools=tools,
+                            screenshot_history_rounds=detail.snapshot.screenshot_history_rounds,
                             previous_task_runs=completed,
                             expected_model_profile=(
-                                detail.snapshot.act_model
-                                if test_task.definition.type.value == "act"
-                                else detail.snapshot.judge_model
+                                detail.snapshot.execution_model
                             ),
                             expected_prompt_version=(
                                 detail.snapshot.act_prompt_version
@@ -174,7 +164,8 @@ class RunExecutor:
         test_run_id: str,
         task_run: TaskRun,
         test_task: TestTask,
-        device_id: str,
+        tools: tuple[BaseTool, ...],
+        screenshot_history_rounds: int,
         previous_task_runs: list[TaskRun],
         expected_model_profile: LLMProfileSnapshot,
         expected_prompt_version: str,
@@ -183,7 +174,8 @@ class RunExecutor:
     ) -> TaskAgentCompletion:
         graph, initial = await self.agent_factory.build(
             task_run_id=task_run.id,
-            device_id=device_id,
+            tools=tools,
+            screenshot_history_rounds=screenshot_history_rounds,
             task=test_task,
             previous_task_runs=previous_task_runs,
             expected_model_profile=expected_model_profile,
@@ -194,7 +186,8 @@ class RunExecutor:
         completion: TaskAgentCompletion | None = None
         async for part in graph.astream(
             initial,
-            config={"configurable": {"thread_id": f"task-run:{task_run.id}"}},
+            config={"configurable": {"thread_id": f"task-run:{task_run.id}"},
+                    "recursion_limit": test_task.definition.max_cycles * 8 + 20},
             stream_mode=["updates", "custom"],
             version="v2",
             durability="exit",
@@ -300,10 +293,6 @@ class RunExecutor:
 
     @staticmethod
     def _reason_for_exception(exc: Exception) -> ReasonCode:
-        if isinstance(exc, DeviceUnavailable):
-            return ReasonCode.DEVICE_UNAVAILABLE
-        if isinstance(exc, (CaptureFailed, ActionTimeout)):
-            return ReasonCode.CAPTURE_FAILED
         if isinstance(exc, ModelCallTimeout):
             return ReasonCode.MODEL_UNAVAILABLE
         if isinstance(exc, PromptVersionMismatch):

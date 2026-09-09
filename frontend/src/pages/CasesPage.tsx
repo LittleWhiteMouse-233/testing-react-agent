@@ -57,7 +57,6 @@ export default function CasesPage({ runsOnly = false }: { runsOnly?: boolean }) 
               dataIndex: "id",
               render: (id: string) => <Link to={`/runs/${id}`}>{id.slice(0, 8)}</Link>
             },
-            { title: "设备", dataIndex: "device_id" },
             { title: "状态", dataIndex: "status", render: (value: string) => <Tag>{value}</Tag> },
             {
               title: "结果",

@@ -114,7 +114,6 @@ class TestRunRow(Base):
     test_plan_id: Mapped[str] = mapped_column(
         ForeignKey("test_plans.id", ondelete="RESTRICT"), index=True
     )
-    device_id: Mapped[str] = mapped_column(String(200))
     status: Mapped[TestRunStatus] = mapped_column(
         enum_column(TestRunStatus, "test_run_status"), index=True
     )

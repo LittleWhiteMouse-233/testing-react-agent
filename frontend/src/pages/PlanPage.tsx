@@ -21,7 +21,6 @@ import {
   Popconfirm,
   Radio,
   Row,
-  Select,
   Space,
   Spin,
   Typography,
@@ -43,7 +42,6 @@ export default function PlanPage() {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<TestPlanDraft | null>(null);
   const [plan, setPlan] = useState<TestPlan | null>(null);
-  const [deviceId, setDeviceId] = useState<string>();
   const [confirmed, setConfirmed] = useState(false);
   const [dirty, setDirty] = useState(false);
 
@@ -53,7 +51,6 @@ export default function PlanPage() {
   const plans = $api.useQuery("get", "/api/test-cases/{test_case_id}/plans", {
     params: { path: { test_case_id: caseId } }
   });
-  const devices = $api.useQuery("get", "/api/devices");
 
   useEffect(() => {
     const latest = plans.data?.items[0];
@@ -62,10 +59,6 @@ export default function PlanPage() {
       setDraft(toPlanDraft(latest));
     }
   }, [plans.data, plan]);
-  useEffect(() => {
-    const first = devices.data?.items.find((item) => item.health.available);
-    if (first && !deviceId) setDeviceId(first.device_id);
-  }, [devices.data, deviceId]);
 
   const acceptPlan = (value: TestPlan) => {
     setPlan(value);
@@ -115,10 +108,8 @@ export default function PlanPage() {
   });
 
   const generatePlan = () => {
-    if (!deviceId) return;
     generate.mutate({
       params: { path: { test_case_id: caseId } },
-      body: { device_id: deviceId }
     });
   };
   const revisePlan = () => {
@@ -129,11 +120,10 @@ export default function PlanPage() {
     });
   };
   const startRun = () => {
-    if (!plan || !deviceId) return;
+    if (!plan) return;
     start.mutate({
       body: {
         test_plan_id: plan.id,
-        device_id: deviceId,
         assumptions_confirmed: true
       }
     });
@@ -166,23 +156,12 @@ export default function PlanPage() {
     setConfirmed(false);
   };
 
-  if (testCase.isLoading || plans.isLoading || devices.isLoading) return <Spin />;
+  if (testCase.isLoading || plans.isLoading) return <Spin />;
   if (!draft || !plan) {
     return (
       <Card>
         <Empty description="尚未生成计划">
-          <Select
-            style={{ width: 300, marginRight: 12 }}
-            value={deviceId}
-            onChange={setDeviceId}
-            options={devices.data?.items.map((device) => ({
-              value: device.device_id,
-              label: `${device.device_id} · ${device.provider}`,
-              disabled: !device.health.available
-            }))}
-            placeholder="选择设备"
-          />
-          <Button type="primary" disabled={!deviceId} loading={generate.isPending} onClick={generatePlan}>生成计划</Button>
+          <Button type="primary" loading={generate.isPending} onClick={generatePlan}>生成计划</Button>
         </Empty>
       </Card>
     );
@@ -197,7 +176,7 @@ export default function PlanPage() {
             <Typography.Text type="secondary">版本 {plan.version_number} · {plan.origin}</Typography.Text>
           </div>
           <Space wrap>
-            <Button disabled={!deviceId} loading={generate.isPending} onClick={generatePlan}>重新规划</Button>
+            <Button loading={generate.isPending} onClick={generatePlan}>重新规划</Button>
             <Button icon={<SaveOutlined />} disabled={!valid || !dirty || !isLatest} loading={revise.isPending} onClick={revisePlan}>保存新版本</Button>
           </Space>
         </div>
@@ -266,21 +245,8 @@ export default function PlanPage() {
           我已确认计划 assumptions、任务目标和成功标准
         </Checkbox>
         <Row gutter={16} align="middle" style={{ marginTop: 16 }}>
-          <Col flex="auto">
-            <Select
-              style={{ width: "100%" }}
-              value={deviceId}
-              onChange={setDeviceId}
-              options={devices.data?.items.map((device) => ({
-                value: device.device_id,
-                label: `${device.device_id} · ${device.provider}`,
-                disabled: !device.health.available
-              }))}
-              placeholder="选择设备"
-            />
-          </Col>
           <Col>
-            <Button type="primary" size="large" icon={<RocketOutlined />} disabled={!valid || dirty || !confirmed || !deviceId || !isLatest} loading={start.isPending} onClick={startRun}>
+            <Button type="primary" size="large" icon={<RocketOutlined />} disabled={!valid || dirty || !confirmed || !isLatest} loading={start.isPending} onClick={startRun}>
               启动运行
             </Button>
           </Col>

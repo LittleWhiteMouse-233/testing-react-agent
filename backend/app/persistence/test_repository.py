@@ -210,7 +210,6 @@ class SqlAlchemyTestRepository:
         self,
         *,
         test_plan_id: str,
-        device_id: str,
         snapshot: TestRunSnapshot,
     ) -> TestRun:
         async with self.sessions() as session:
@@ -241,7 +240,6 @@ class SqlAlchemyTestRepository:
             row = TestRunRow(
                 id=str(uuid4()),
                 test_plan_id=test_plan_id,
-                device_id=device_id,
                 status=TestRunStatus.PENDING,
                 snapshot_json=dump_test_run_snapshot(snapshot),
             )

@@ -16,16 +16,14 @@ class ModelProvider:
         model_clients_by_id: Mapping[str, ChatModelClient],
         *,
         planning_model_id: str | None = None,
-        act_model_id: str | None = None,
-        judge_model_id: str | None = None,
+        execution_model_id: str | None = None,
     ) -> None:
         if not model_clients_by_id:
             raise ValueError("At least one model client is required")
         self._model_clients_by_id = dict(model_clients_by_id)
         self._routes = {
             AgentActivity.PLANNING: planning_model_id,
-            AgentActivity.ACT: act_model_id,
-            AgentActivity.JUDGE: judge_model_id,
+            AgentActivity.EXECUTION: execution_model_id,
         }
         for activity, model_id in self._routes.items():
             if model_id is not None and model_id not in self._model_clients_by_id:

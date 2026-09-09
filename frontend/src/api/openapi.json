@@ -1,16 +1,6 @@
 {
   "components": {
     "schemas": {
-      "AgentActivity": {
-        "description": "Agent 正在执行的稳定活动，用于模型路由和工具授权。",
-        "enum": [
-          "planning",
-          "act",
-          "judge"
-        ],
-        "title": "AgentActivity",
-        "type": "string"
-      },
       "ApiError": {
         "additionalProperties": false,
         "properties": {
@@ -152,150 +142,6 @@
         "title": "CycleStartedEvent",
         "type": "object"
       },
-      "DeviceEnvironmentSnapshot": {
-        "additionalProperties": false,
-        "description": "TestRun 创建时冻结的设备提供方、描述与健康状态。",
-        "properties": {
-          "health": {
-            "$ref": "#/components/schemas/DeviceHealth"
-          },
-          "info": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/DeviceInfo"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "provider": {
-            "title": "Provider",
-            "type": "string"
-          }
-        },
-        "required": [
-          "provider",
-          "info",
-          "health"
-        ],
-        "title": "DeviceEnvironmentSnapshot",
-        "type": "object"
-      },
-      "DeviceHealth": {
-        "additionalProperties": false,
-        "description": "一次实时健康检查结果，由 DeviceProvider 产生并供 API/运行创建消费。",
-        "properties": {
-          "available": {
-            "title": "Available",
-            "type": "boolean"
-          },
-          "message": {
-            "title": "Message",
-            "type": "string"
-          }
-        },
-        "required": [
-          "available",
-          "message"
-        ],
-        "title": "DeviceHealth",
-        "type": "object"
-      },
-      "DeviceInfo": {
-        "additionalProperties": false,
-        "description": "可复用的设备客观描述，不包含连接凭据或运行生命周期状态。",
-        "properties": {
-          "locale": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Locale"
-          },
-          "model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model"
-          },
-          "resolution": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Resolution"
-          }
-        },
-        "required": [
-          "model",
-          "resolution",
-          "locale"
-        ],
-        "title": "DeviceInfo",
-        "type": "object"
-      },
-      "DeviceResponse": {
-        "additionalProperties": false,
-        "description": "HTTP 设备查询响应；由 route 从实时设备和工具 provider 投影。",
-        "properties": {
-          "device_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Device Id",
-            "type": "string"
-          },
-          "health": {
-            "$ref": "#/components/schemas/DeviceHealth"
-          },
-          "info": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/DeviceInfo"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "provider": {
-            "title": "Provider",
-            "type": "string"
-          },
-          "tool_catalog": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ToolCatalogSnapshot"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "device_id",
-          "provider",
-          "health",
-          "info",
-          "tool_catalog"
-        ],
-        "title": "DeviceResponse",
-        "type": "object"
-      },
       "ExecutionErrorEvent": {
         "additionalProperties": false,
         "description": "阻塞执行的基础设施或协议错误。",
@@ -339,22 +185,6 @@
           "message"
         ],
         "title": "ExecutionErrorEvent",
-        "type": "object"
-      },
-      "GeneratePlanRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "device_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Device Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "device_id"
-        ],
-        "title": "GeneratePlanRequest",
         "type": "object"
       },
       "LLMProfileSnapshot": {
@@ -555,29 +385,6 @@
         "title": "MessageValidationFailedEvent",
         "type": "object"
       },
-      "PageResponse_DeviceResponse_": {
-        "additionalProperties": false,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/DeviceResponse"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "total": {
-            "minimum": 0.0,
-            "title": "Total",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "items",
-          "total"
-        ],
-        "title": "PageResponse[DeviceResponse]",
-        "type": "object"
-      },
       "PageResponse_StoredRunEvent_": {
         "additionalProperties": false,
         "properties": {
@@ -677,8 +484,7 @@
           "assertion_failed",
           "goal_unreachable",
           "cycle_limit",
-          "device_unavailable",
-          "capture_failed",
+          "evidence_missing",
           "model_unavailable",
           "invalid_model_response",
           "agent_blocked",
@@ -1620,16 +1426,6 @@
         "additionalProperties": false,
         "description": "计划创建时冻结的输入与模型审计事实，不参与后续版本覆盖。",
         "properties": {
-          "device_info": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/DeviceInfo"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "planning_model": {
             "$ref": "#/components/schemas/LLMProfileSnapshot"
           },
@@ -1644,7 +1440,6 @@
         },
         "required": [
           "test_case_content",
-          "device_info",
           "planning_model",
           "planning_prompt_version"
         ],
@@ -1653,17 +1448,11 @@
       },
       "TestRun": {
         "additionalProperties": false,
-        "description": "一次已确认计划在单台设备上的执行聚合根。",
+        "description": "一次已确认计划通过 MCP 工具执行的聚合根。",
         "properties": {
           "created_at": {
             "format": "date-time",
             "title": "Created At",
-            "type": "string"
-          },
-          "device_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Device Id",
             "type": "string"
           },
           "finished_at": {
@@ -1717,7 +1506,6 @@
         "required": [
           "id",
           "test_plan_id",
-          "device_id",
           "status",
           "verdict",
           "started_at",
@@ -1735,12 +1523,6 @@
             "title": "Assumptions Confirmed",
             "type": "boolean"
           },
-          "device_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Device Id",
-            "type": "string"
-          },
           "test_plan_id": {
             "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
             "title": "Test Plan Id",
@@ -1749,7 +1531,6 @@
         },
         "required": [
           "test_plan_id",
-          "device_id",
           "assumptions_confirmed"
         ],
         "title": "TestRunCreateRequest",
@@ -1819,9 +1600,6 @@
         "additionalProperties": false,
         "description": "RunService 在 TestRun 创建时冻结且执行器必须遵守的环境事实。",
         "properties": {
-          "act_model": {
-            "$ref": "#/components/schemas/LLMProfileSnapshot"
-          },
           "act_prompt_version": {
             "minLength": 1,
             "title": "Act Prompt Version",
@@ -1832,31 +1610,32 @@
             "title": "App Version",
             "type": "string"
           },
-          "device_environment": {
-            "$ref": "#/components/schemas/DeviceEnvironmentSnapshot"
+          "execution_model": {
+            "$ref": "#/components/schemas/LLMProfileSnapshot"
           },
           "execution_protocol_version": {
-            "const": "1",
+            "const": "2",
             "title": "Execution Protocol Version",
             "type": "string"
-          },
-          "judge_model": {
-            "$ref": "#/components/schemas/LLMProfileSnapshot"
           },
           "judge_prompt_version": {
             "minLength": 1,
             "title": "Judge Prompt Version",
             "type": "string"
           },
+          "screenshot_history_rounds": {
+            "default": 3,
+            "minimum": 1.0,
+            "title": "Screenshot History Rounds",
+            "type": "integer"
+          },
           "tool_catalog": {
             "$ref": "#/components/schemas/ToolCatalogSnapshot"
           }
         },
         "required": [
-          "device_environment",
           "tool_catalog",
-          "act_model",
-          "judge_model",
+          "execution_model",
           "act_prompt_version",
           "judge_prompt_version",
           "app_version",
@@ -1958,13 +1737,74 @@
         "title": "TestTaskType",
         "type": "string"
       },
+      "ToolAnnotationsSnapshot": {
+        "description": "Standard MCP annotation facts retained for audit, never used as permissions.",
+        "properties": {
+          "destructiveHint": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destructivehint"
+          },
+          "idempotentHint": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotenthint"
+          },
+          "openWorldHint": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Openworldhint"
+          },
+          "readOnlyHint": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readonlyhint"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "ToolAnnotationsSnapshot",
+        "type": "object"
+      },
       "ToolCapability": {
         "additionalProperties": false,
-        "description": "一个最终可用工具的声明事实，由合并后的 Catalog 投影产生。",
+        "description": "One discovered tool definition, owned by its external MCP server.",
         "properties": {
-          "changes_device_state": {
-            "title": "Changes Device State",
-            "type": "boolean"
+          "annotations": {
+            "$ref": "#/components/schemas/ToolAnnotationsSnapshot"
           },
           "description": {
             "title": "Description",
@@ -1980,28 +1820,25 @@
             "title": "Name",
             "type": "string"
           },
-          "scopes": {
-            "items": {
-              "$ref": "#/components/schemas/AgentActivity"
-            },
-            "minItems": 1,
-            "title": "Scopes",
-            "type": "array"
+          "source": {
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
           }
         },
         "required": [
           "name",
           "description",
           "input_schema",
-          "scopes",
-          "changes_device_state"
+          "source",
+          "annotations"
         ],
         "title": "ToolCapability",
         "type": "object"
       },
       "ToolCatalogSnapshot": {
         "additionalProperties": false,
-        "description": "某台设备在 TestRun 创建时冻结的最终工具目录审计事实。",
+        "description": "The actual discovered tool catalog frozen for one execution.",
         "properties": {
           "tools": {
             "items": {
@@ -2134,105 +1971,6 @@
           }
         },
         "summary": "Get Artifact"
-      }
-    },
-    "/api/devices": {
-      "get": {
-        "operationId": "list_devices_api_devices_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PageResponse_DeviceResponse_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            },
-            "description": "Internal Server Error"
-          }
-        },
-        "summary": "List Devices"
-      }
-    },
-    "/api/devices/{device_id}": {
-      "get": {
-        "operationId": "get_device_api_devices__device_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "device_id",
-            "required": true,
-            "schema": {
-              "maxLength": 200,
-              "minLength": 1,
-              "title": "Device Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeviceResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            },
-            "description": "Not Found"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            },
-            "description": "Internal Server Error"
-          }
-        },
-        "summary": "Get Device"
       }
     },
     "/api/runs": {
@@ -2376,6 +2114,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Bad Gateway"
           }
         },
         "summary": "Create Test Run"
@@ -3025,16 +2773,6 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GeneratePlanRequest"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "201": {
             "content": {

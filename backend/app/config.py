@@ -63,13 +63,11 @@ class Settings(BaseSettings):
         validation_alias="LLM_PROFILES",
     )
     planning_model_id: str | None = None
-    act_model_id: str | None = None
-    judge_model_id: str | None = None
+    execution_model_id: str | None = None
 
-    adb_path: str = Field(default="adb", validation_alias="ADB_PATH")
-    adb_serial: str | None = Field(default=None, validation_alias="ADB_SERIAL")
-    action_timeout_seconds: float = 15
-    capture_max_attempts: int = Field(default=3, ge=1, le=10)
+    mcp_config_path: Path = PROJECT_ROOT / "mcp.json"
+    tool_call_timeout_seconds: float = Field(default=120, gt=0)
+    screenshot_history_rounds: int = Field(default=3, ge=1)
     model_call_max_attempts: int = Field(default=3, ge=1, le=10)
     model_response_max_attempts: int = Field(default=3, ge=1, le=10)
 
@@ -83,8 +81,7 @@ class Settings(BaseSettings):
         known = set(ids)
         for field_name in (
             "planning_model_id",
-            "act_model_id",
-            "judge_model_id",
+            "execution_model_id",
         ):
             value = getattr(self, field_name)
             if value is not None and value not in known:
@@ -92,6 +89,8 @@ class Settings(BaseSettings):
         return self
 
     def model_post_init(self, __context: object) -> None:
+        if not self.mcp_config_path.is_absolute():
+            self.mcp_config_path = (PROJECT_ROOT / self.mcp_config_path).resolve()
         if not self.data_dir.is_absolute():
             self.data_dir = (PROJECT_ROOT / self.data_dir).resolve()
         if self.checkpoint_path is not None and not self.checkpoint_path.is_absolute():

@@ -21,40 +21,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/devices": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Devices */
-        get: operations["list_devices_api_devices_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/devices/{device_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Device */
-        get: operations["get_device_api_devices__device_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/runs": {
         parameters: {
             query?: never;
@@ -266,12 +232,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /**
-         * AgentActivity
-         * @description Agent 正在执行的稳定活动，用于模型路由和工具授权。
-         * @enum {string}
-         */
-        AgentActivity: "planning" | "act" | "judge";
         /** ApiError */
         ApiError: {
             /** Code */
@@ -327,51 +287,6 @@ export interface components {
             type: "cycle.started";
         };
         /**
-         * DeviceEnvironmentSnapshot
-         * @description TestRun 创建时冻结的设备提供方、描述与健康状态。
-         */
-        DeviceEnvironmentSnapshot: {
-            health: components["schemas"]["DeviceHealth"];
-            info: components["schemas"]["DeviceInfo"] | null;
-            /** Provider */
-            provider: string;
-        };
-        /**
-         * DeviceHealth
-         * @description 一次实时健康检查结果，由 DeviceProvider 产生并供 API/运行创建消费。
-         */
-        DeviceHealth: {
-            /** Available */
-            available: boolean;
-            /** Message */
-            message: string;
-        };
-        /**
-         * DeviceInfo
-         * @description 可复用的设备客观描述，不包含连接凭据或运行生命周期状态。
-         */
-        DeviceInfo: {
-            /** Locale */
-            locale: string | null;
-            /** Model */
-            model: string | null;
-            /** Resolution */
-            resolution: string | null;
-        };
-        /**
-         * DeviceResponse
-         * @description HTTP 设备查询响应；由 route 从实时设备和工具 provider 投影。
-         */
-        DeviceResponse: {
-            /** Device Id */
-            device_id: string;
-            health: components["schemas"]["DeviceHealth"];
-            info: components["schemas"]["DeviceInfo"] | null;
-            /** Provider */
-            provider: string;
-            tool_catalog: components["schemas"]["ToolCatalogSnapshot"] | null;
-        };
-        /**
          * ExecutionErrorEvent
          * @description 阻塞执行的基础设施或协议错误。
          */
@@ -388,11 +303,6 @@ export interface components {
              * @enum {string}
              */
             type: "execution.error";
-        };
-        /** GeneratePlanRequest */
-        GeneratePlanRequest: {
-            /** Device Id */
-            device_id: string;
         };
         /**
          * LLMProfileSnapshot
@@ -460,13 +370,6 @@ export interface components {
              */
             type: "message.validation_failed";
         };
-        /** PageResponse[DeviceResponse] */
-        PageResponse_DeviceResponse_: {
-            /** Items */
-            items: components["schemas"]["DeviceResponse"][];
-            /** Total */
-            total: number;
-        };
         /** PageResponse[StoredRunEvent] */
         PageResponse_StoredRunEvent_: {
             /** Items */
@@ -500,7 +403,7 @@ export interface components {
          * @description TaskRun/执行错误的稳定结果原因；它是持久化事实而非异常类型。
          * @enum {string}
          */
-        ReasonCode: "completed" | "assertion_failed" | "goal_unreachable" | "cycle_limit" | "device_unavailable" | "capture_failed" | "model_unavailable" | "invalid_model_response" | "agent_blocked" | "tool_failed" | "process_restarted" | "global_fail_fast" | "user_cancelled" | "prompt_version_mismatch" | "model_profile_mismatch" | "model_context_exceeded" | "unexpected_error";
+        ReasonCode: "completed" | "assertion_failed" | "goal_unreachable" | "cycle_limit" | "evidence_missing" | "model_unavailable" | "invalid_model_response" | "agent_blocked" | "tool_failed" | "process_restarted" | "global_fail_fast" | "user_cancelled" | "prompt_version_mismatch" | "model_profile_mismatch" | "model_context_exceeded" | "unexpected_error";
         /** ReportExportRequest */
         ReportExportRequest: {
             /**
@@ -830,7 +733,6 @@ export interface components {
          * @description 计划创建时冻结的输入与模型审计事实，不参与后续版本覆盖。
          */
         TestPlanPlanningContext: {
-            device_info: components["schemas"]["DeviceInfo"] | null;
             planning_model: components["schemas"]["LLMProfileSnapshot"];
             /** Planning Prompt Version */
             planning_prompt_version: string;
@@ -838,7 +740,7 @@ export interface components {
         };
         /**
          * TestRun
-         * @description 一次已确认计划在单台设备上的执行聚合根。
+         * @description 一次已确认计划通过 MCP 工具执行的聚合根。
          */
         TestRun: {
             /**
@@ -846,8 +748,6 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
-            /** Device Id */
-            device_id: string;
             /** Finished At */
             finished_at: string | null;
             /** Id */
@@ -866,8 +766,6 @@ export interface components {
              * @constant
              */
             assumptions_confirmed: true;
-            /** Device Id */
-            device_id: string;
             /** Test Plan Id */
             test_plan_id: string;
         };
@@ -898,20 +796,23 @@ export interface components {
          * @description RunService 在 TestRun 创建时冻结且执行器必须遵守的环境事实。
          */
         TestRunSnapshot: {
-            act_model: components["schemas"]["LLMProfileSnapshot"];
             /** Act Prompt Version */
             act_prompt_version: string;
             /** App Version */
             app_version: string;
-            device_environment: components["schemas"]["DeviceEnvironmentSnapshot"];
+            execution_model: components["schemas"]["LLMProfileSnapshot"];
             /**
              * Execution Protocol Version
              * @constant
              */
-            execution_protocol_version: "1";
-            judge_model: components["schemas"]["LLMProfileSnapshot"];
+            execution_protocol_version: "2";
             /** Judge Prompt Version */
             judge_prompt_version: string;
+            /**
+             * Screenshot History Rounds
+             * @default 3
+             */
+            screenshot_history_rounds: number;
             tool_catalog: components["schemas"]["ToolCatalogSnapshot"];
         };
         /**
@@ -957,12 +858,27 @@ export interface components {
          */
         TestTaskType: "act" | "judge";
         /**
+         * ToolAnnotationsSnapshot
+         * @description Standard MCP annotation facts retained for audit, never used as permissions.
+         */
+        ToolAnnotationsSnapshot: {
+            /** Destructivehint */
+            destructiveHint?: boolean | null;
+            /** Idempotenthint */
+            idempotentHint?: boolean | null;
+            /** Openworldhint */
+            openWorldHint?: boolean | null;
+            /** Readonlyhint */
+            readOnlyHint?: boolean | null;
+            /** Title */
+            title?: string | null;
+        };
+        /**
          * ToolCapability
-         * @description 一个最终可用工具的声明事实，由合并后的 Catalog 投影产生。
+         * @description One discovered tool definition, owned by its external MCP server.
          */
         ToolCapability: {
-            /** Changes Device State */
-            changes_device_state: boolean;
+            annotations: components["schemas"]["ToolAnnotationsSnapshot"];
             /** Description */
             description: string;
             /** Input Schema */
@@ -971,12 +887,12 @@ export interface components {
             };
             /** Name */
             name: string;
-            /** Scopes */
-            scopes: components["schemas"]["AgentActivity"][];
+            /** Source */
+            source: string;
         };
         /**
          * ToolCatalogSnapshot
-         * @description 某台设备在 TestRun 创建时冻结的最终工具目录审计事实。
+         * @description The actual discovered tool catalog frozen for one execution.
          */
         ToolCatalogSnapshot: {
             /** Tools */
@@ -1028,93 +944,6 @@ export interface operations {
                     "application/json": unknown;
                     "image/png": string;
                     "text/html": string;
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-        };
-    };
-    list_devices_api_devices_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PageResponse_DeviceResponse_"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-        };
-    };
-    get_device_api_devices__device_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                device_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeviceResponse"];
                 };
             };
             /** @description Not Found */
@@ -1239,6 +1068,15 @@ export interface operations {
             };
             /** @description Internal Server Error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1740,11 +1578,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GeneratePlanRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             201: {

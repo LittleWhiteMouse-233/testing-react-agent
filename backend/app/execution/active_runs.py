@@ -41,6 +41,11 @@ class ActiveRunRegistry:
     def unregister(self, test_run_id: str) -> None:
         self._active_runs.pop(test_run_id, None)
 
+    @property
+    def active_run_id(self) -> str | None:
+        """Keep the run slot occupied until its MCP sessions have closed."""
+        return next(iter(self._active_runs), None)
+
     async def shutdown(self) -> None:
         handles = tuple(self._active_runs.values())
         for handle in handles:

@@ -1,0 +1,9 @@
+adb_path: adb
+serial: ""
+queue_max_operations: 16
+queue_timeout_seconds: 60
+operation_timeout_seconds: 15
+capture_max_attempts: 3
+wait_min_ms: 100
+wait_max_ms: 10000
+post_action_wait_ms: 1000

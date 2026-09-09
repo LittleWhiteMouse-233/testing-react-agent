@@ -141,6 +141,7 @@ def test_window_trims_old_history_and_images_but_keeps_latest_screenshot() -> No
     )
     messages = [
         SystemMessage(id="system", content="系统规则"),
+        HumanMessage(id="task", content="当前任务及成功标准"),
         HumanMessage(id="old-text", content="旧的中文历史。" * 500),
         screenshot_message("old-image", encoded_size=100_000),
         HumanMessage(id="recent-text", content="最近的工具结果"),
@@ -156,7 +157,9 @@ def test_window_trims_old_history_and_images_but_keeps_latest_screenshot() -> No
 
     window_ids = {message.id for message in window}
     assert "latest-image" in window_ids
-    assert "old-image" not in window_ids
+    assert "task" in window_ids
+    # Images that fit the token budget remain; decision-round pruning is separate.
+    assert "old-image" in window_ids
     assert "old-text" not in window_ids
     assert count_model_request_tokens(
         window,

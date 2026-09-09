@@ -33,7 +33,6 @@ from app.domain.planning import (
     TestTaskDefinition as TaskDefinition,
     TestTaskType as TaskType,
 )
-from app.domain.resources.device import DeviceEnvironmentSnapshot, DeviceHealth
 from app.domain.resources.llm import LLMProfileSnapshot
 from app.domain.resources.tools import ToolCatalogSnapshot
 from app.event_stream import EventBus, EventWriter, project_run_message
@@ -88,18 +87,12 @@ def model_snapshot() -> LLMProfileSnapshot:
 
 def run_snapshot() -> RunSnapshot:
     return RunSnapshot(
-        device_environment=DeviceEnvironmentSnapshot(
-            provider="fake",
-            info=None,
-            health=DeviceHealth(available=True, message="ok"),
-        ),
         tool_catalog=ToolCatalogSnapshot(tools=[]),
-        act_model=model_snapshot(),
-        judge_model=model_snapshot(),
+        execution_model=model_snapshot(),
         act_prompt_version="act-v1",
         judge_prompt_version="judge-v1",
         app_version="0.1.0",
-        execution_protocol_version="1",
+        execution_protocol_version="2",
     )
 
 
@@ -124,7 +117,6 @@ def plan_draft(task_count: int = 1) -> PlanContent[TaskDefinition]:
 def planning_context() -> PlanningContext:
     return PlanningContext(
         test_case_content=CaseContent(name="Case", source_text="Check TV"),
-        device_info=None,
         planning_model=model_snapshot(),
         planning_prompt_version="planner-v1",
     )
@@ -177,7 +169,7 @@ def test_every_business_json_uses_the_central_adapter() -> None:
         )
 
     invalid_snapshot = dump_test_run_snapshot(snapshot)
-    invalid_snapshot["execution_protocol_version"] = "2"
+    invalid_snapshot["execution_protocol_version"] = "1"
     with pytest.raises(ValidationError):
         load_test_run_snapshot(invalid_snapshot)
 
@@ -349,7 +341,6 @@ async def test_latest_plan_and_single_active_run_are_serialized() -> None:
                 *(
                     repository.create_test_run(
                         test_plan_id=created[0].id,
-                        device_id="fake-tv",
                         snapshot=run_snapshot(),
                     )
                     for _ in range(2)
@@ -383,7 +374,6 @@ async def test_task_result_evidence_must_belong_to_the_task_run() -> None:
         )
         run = await repository.create_test_run(
             test_plan_id=plan.id,
-            device_id="fake-tv",
             snapshot=run_snapshot(),
         )
         await repository.start_run(run.id)
@@ -585,7 +575,7 @@ def test_checked_in_openapi_is_current() -> None:
         "text/html",
     }
 
-    assert "409" not in paths["/api/devices"]["get"]["responses"]
+    assert "/api/devices" not in paths
     assert "502" not in paths["/api/runs"]["get"]["responses"]
     assert "409" in paths["/api/runs"]["post"]["responses"]
     assert "502" in paths["/api/test-cases/{test_case_id}/plans"]["post"][

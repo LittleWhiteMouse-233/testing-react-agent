@@ -10,7 +10,6 @@ const plan: TestPlan = {
   derived_from_plan_id: null,
   planning_context: {
     test_case_content: { name: "用例", source_text: "检查页面" },
-    device_info: null,
     planning_model: {
       profile_id: "default",
       provider: "scripted",
