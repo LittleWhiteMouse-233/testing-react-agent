@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import pytest
-from langchain_core.messages import HumanMessage, SystemMessage
+from typing import Any, cast
+from uuid import uuid4
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langgraph.graph.message import Messages, add_messages
 from pydantic import Field, create_model
 
 from app.domain.errors import ModelContextBudgetExceeded
 from app.domain.resources.llm import LLMProfileSnapshot
 from app.execution.task_agent import (
-    count_model_request_tokens,
-    select_model_message_window,
+    _count_model_request_tokens,
+    _select_model_message_window,
+    _collect_expired_screenshot_updates,
 )
+from app.event_stream.projector import project_run_message
 
 
 def model_profile(
@@ -81,7 +86,7 @@ def screenshot_message(message_id: str, *, encoded_size: int) -> HumanMessage:
 def test_chinese_text_uses_profile_calibrated_conservative_ratio() -> None:
     profile = model_profile(characters_per_token=1.5)
     chinese_text = "这是用于校准上下文窗口的中文测试内容。" * 100
-    tokens = count_model_request_tokens(
+    tokens = _count_model_request_tokens(
         [HumanMessage(content=chinese_text)],
         tools=(),
         model_profile=profile,
@@ -93,12 +98,12 @@ def test_chinese_text_uses_profile_calibrated_conservative_ratio() -> None:
 
 def test_1080p_screenshot_uses_configured_image_budget_not_base64_length() -> None:
     profile = model_profile(tokens_per_image=1_500)
-    small_encoding = count_model_request_tokens(
+    small_encoding = _count_model_request_tokens(
         [screenshot_message("small", encoded_size=20)],
         tools=(),
         model_profile=profile,
     )
-    large_encoding = count_model_request_tokens(
+    large_encoding = _count_model_request_tokens(
         [screenshot_message("large", encoded_size=2_000_000)],
         tools=(),
         model_profile=profile,
@@ -118,12 +123,12 @@ def test_long_tool_description_and_parameter_schema_are_counted() -> None:
         parameter_description_length=4_000,
     )
 
-    short_count = count_model_request_tokens(
+    short_count = _count_model_request_tokens(
         messages,
         tools=(short_tool,),
         model_profile=profile,
     )
-    long_count = count_model_request_tokens(
+    long_count = _count_model_request_tokens(
         messages,
         tools=(long_tool,),
         model_profile=profile,
@@ -149,7 +154,7 @@ def test_window_trims_old_history_and_images_but_keeps_latest_screenshot() -> No
     ]
     tools = (structured_tool(),)
 
-    window = select_model_message_window(
+    window = _select_model_message_window(
         messages,
         tools=tools,
         model_profile=profile,
@@ -161,7 +166,7 @@ def test_window_trims_old_history_and_images_but_keeps_latest_screenshot() -> No
     # Images that fit the token budget remain; decision-round pruning is separate.
     assert "old-image" in window_ids
     assert "old-text" not in window_ids
-    assert count_model_request_tokens(
+    assert _count_model_request_tokens(
         window,
         tools=tools,
         model_profile=profile,
@@ -185,7 +190,7 @@ def test_fixed_tool_schema_and_latest_screenshot_over_budget_block_explicitly() 
     )
 
     with pytest.raises(ModelContextBudgetExceeded, match="latest screenshot"):
-        select_model_message_window(
+        _select_model_message_window(
             [
                 SystemMessage(id="system", content="系统规则"),
                 screenshot_message("latest-image", encoded_size=2_000_000),
@@ -207,8 +212,64 @@ def test_system_prompt_is_never_silently_trimmed() -> None:
     )
 
     with pytest.raises(ModelContextBudgetExceeded, match="system prompt"):
-        select_model_message_window(
+        _select_model_message_window(
             [oversized_system_prompt, HumanMessage(id="current", content="当前观察")],
             tools=(structured_tool(),),
             model_profile=profile,
         )
+
+
+@pytest.mark.parametrize("history_rounds", [1, 3])
+def test_visual_retention_replaces_expired_messages_without_mutating_history(history_rounds: int) -> None:
+    messages: list[AnyMessage] = [SystemMessage(content='rules'), HumanMessage(content='task')]
+    artifact_ids = {(decision_round, index): str(uuid4()) for decision_round in (1, 3, 5, 6) for index in range(2)}
+    for index in range(1, 10):
+        messages.append(AIMessage(content='', tool_calls=[{'name': 'inspect', 'args': {}, 'id': str(index)}]))
+        content: list[str | dict[str, Any]] = [{'type': 'text', 'text': str(index), 'extras': {'nested': ['original']}}]
+        if index in (1, 3, 5, 6):
+            content.extend([{'type': 'image', 'base64': 'AA==', 'mime_type': 'image/png', 'id': artifact_ids[index, n]} for n in range(2)])
+        messages.append(ToolMessage(content=content, tool_call_id=str(index)))
+    messages = cast(list[AnyMessage], add_messages([], cast(Messages, messages)))
+    originals = [message.model_dump() for message in messages]
+    replacements = _collect_expired_screenshot_updates(messages, history_rounds)
+    projected = cast(list[AnyMessage], add_messages(cast(Messages, messages), cast(Messages, replacements)))
+    retained_rounds = (1, 3, 5, 6)[-history_rounds:]
+    assert [block.get('id') for message in projected for block in message.content_blocks if block['type'] == 'image'] == [
+        artifact_ids[index, n] for index in retained_rounds for n in range(2)
+    ]
+    assert len(replacements) == 4 - history_rounds
+    assert [message.id for message in projected] == [message.id for message in messages]
+    assert [project_run_message(message) for message in projected] == [project_run_message(message) for message in messages]
+    assert _collect_expired_screenshot_updates(projected, history_rounds) == []
+    assert 'outside the visual history' in projected[3].text
+    assert [block.get('extras', {}).get('artifact_id') for block in projected[3].content_blocks if 'artifact_id' in block.get('extras', {})] == [artifact_ids[1, n] for n in range(2)]
+    assert 'base64' not in projected[3].model_dump_json()
+    assert projected[-1] is messages[-1]  # unchanged messages need no deep copy
+    assert isinstance(replacements[0].content, list)
+    copied_block = replacements[0].content[0]
+    assert isinstance(copied_block, dict)
+    copied_block['extras']['nested'].append('changed')
+    assert [message.model_dump() for message in messages] == originals
+
+
+@pytest.mark.parametrize("history_rounds", [1, 3])
+def test_visual_retention_advances_only_with_new_screenshot_rounds(history_rounds: int) -> None:
+    messages = cast(list[AnyMessage], add_messages([], [SystemMessage(content="rules"), HumanMessage(content="task")]))
+    screenshot_rounds: list[int] = []
+    for decision_round in range(1, 13):
+        content: list[str | dict[str, Any]] = [{"type": "text", "text": f"round {decision_round}"}]
+        if decision_round in (1, 3, 5, 6, 9):
+            screenshot_rounds.append(decision_round)
+            content.extend({"type": "image", "base64": "AA==", "mime_type": "image/png",
+                            "id": f"{decision_round}-{index}"} for index in range(2))
+        messages = cast(list[AnyMessage], add_messages(cast(Messages, messages), [
+            AIMessage(content="", tool_calls=[{"name": "inspect", "args": {}, "id": str(decision_round)}]),
+            ToolMessage(content=content, tool_call_id=str(decision_round)),
+        ]))
+        replacements = _collect_expired_screenshot_updates(messages, history_rounds)
+        messages = cast(list[AnyMessage], add_messages(cast(Messages, messages), cast(Messages, replacements)))
+        assert [block.get("id") for message in messages for block in message.content_blocks if block["type"] == "image"] == [
+            f"{round_number}-{index}" for round_number in screenshot_rounds[-history_rounds:] for index in range(2)
+        ]
+        assert len(messages) == 2 + 2 * decision_round
+        assert _collect_expired_screenshot_updates(messages, history_rounds) == []

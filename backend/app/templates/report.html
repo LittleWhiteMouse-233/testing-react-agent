@@ -9,7 +9,7 @@
     header{border-bottom:3px solid #1677ff;padding-bottom:20px}.result{font-size:32px;font-weight:700}
     .PASS{color:#389e0d}.FAIL{color:#cf1322}.BLOCKED{color:#d46b08}.CANCELLED{color:#595959}
     section{margin:28px 0}.task{border:1px solid #d9d9d9;border-radius:10px;padding:18px;margin:14px 0}
-    img{max-width:100%;border:1px solid #eee}.meta{color:#667085}code{white-space:pre-wrap}
+    img{max-width:100%;border:1px solid #eee}.meta{color:#667085}code,pre{white-space:pre-wrap;overflow-wrap:anywhere}
   </style>
 </head>
 <body>
@@ -41,6 +41,25 @@
       </article>
     {% endfor %}
   </section>
-  <section><h2>事实记录</h2><p>{{ report.events | length }} 个事件，{{ report.artifacts | length }} 个 Artifact。</p></section>
+  <section>
+    <h2>事实记录</h2>
+    <p>{{ report.events | length }} 个事件，{{ report.artifacts | length }} 个 Artifact。</p>
+    {% for entry in report.events %}
+      <article class="task">
+        <div class="meta">{{ entry.sequence }} · {{ entry.event.type }}</div>
+        {% if entry.event.type == 'message.appended' %}
+          <p>{{ entry.event.message.role }}</p>
+          {% for block in entry.event.message.content %}
+            {% if block.type == 'text' %}
+              <pre>{{ block.text }}</pre>
+            {% elif block.type == 'image_artifact' and image_data_urls.get(block.artifact_id) %}
+              <img src="{{ image_data_urls[block.artifact_id] }}" alt="历史截图 {{ block.artifact_id }}">
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        <details><summary>事件详情</summary><pre>{{ entry.event | tojson(indent=2) }}</pre></details>
+      </article>
+    {% endfor %}
+  </section>
 </body>
 </html>

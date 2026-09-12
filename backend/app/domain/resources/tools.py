@@ -15,7 +15,7 @@ class ToolAnnotationsSnapshot(BaseModel):
     openWorldHint: bool | None = None
 
 
-class ToolCapability(BaseModel):
+class ToolDefinitionSnapshot(BaseModel):
     """One discovered tool definition, owned by its external MCP server."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -30,7 +30,7 @@ class ToolCatalogSnapshot(BaseModel):
     """The actual discovered tool catalog frozen for one execution."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    tools: list[ToolCapability]
+    tools: list[ToolDefinitionSnapshot]
 
     @model_validator(mode="after")
     def tool_names_are_unique(self) -> "ToolCatalogSnapshot":

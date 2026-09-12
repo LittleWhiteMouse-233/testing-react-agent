@@ -9,7 +9,6 @@ from app.llm import (
 )
 from app.config import Settings
 from app.event_stream import EventBus, EventWriter
-from app.execution.active_runs import ActiveRunRegistry
 from app.execution.executor import RunExecutor
 from app.execution.run_service import RunService
 from app.execution.task_agent import TaskAgentFactory
@@ -28,7 +27,6 @@ class Container:
         self.sessions = build_session_factory(self.engine)
         self.event_bus = EventBus()
         self.events = EventWriter(self.sessions, self.event_bus)
-        self.active_run_registry = ActiveRunRegistry()
         self.artifacts = ArtifactStore(
             settings.artifacts_dir,
             self.sessions,
@@ -75,7 +73,6 @@ class Container:
         self.run_service = RunService(
             repository=self.repository,
             executor=self.executor,
-            active_run_registry=self.active_run_registry,
             model_provider=self.model_provider,
             app_version=settings.app_version,
             act_prompt=prompt_catalog.act,

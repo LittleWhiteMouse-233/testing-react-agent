@@ -17,7 +17,7 @@ from app.main import create_app
 
 
 PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-FAKE_ENTRY = Path(__file__).resolve().parents[2] / "device/fake_mcp/src/fake_mcp/__main__.py"
+FAKE_ENTRY = Path(__file__).resolve().parents[2] / "mcp_servers/fake_mcp/src/fake_mcp/__main__.py"
 
 
 def image_block() -> dict[str, Any]:

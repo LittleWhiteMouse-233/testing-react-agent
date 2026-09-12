@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+import sys
+from traceback import TracebackException
+
+
+def describe_exception(exception: BaseException, *, phase: str) -> str:
+    """Project complete causes/groups to user messages without stack frames or locals."""
+    diagnostic = TracebackException.from_exception(
+        exception, limit=0, capture_locals=False,
+        max_group_width=sys.maxsize, max_group_depth=sys.maxsize,
+    )
+    return f"{phase}: {''.join(diagnostic.format(chain=True)).strip()}"
+
 
 class ModelCallTimeout(TimeoutError):
     """由 LLM 调用边界产生、由 Graph 重试并最终由执行器归因的超时。"""

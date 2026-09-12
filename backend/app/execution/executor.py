@@ -7,11 +7,11 @@ from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from langgraph.errors import NodeTimeoutError
 from langgraph.graph import add_messages
 from langsmith import tracing_context
 
 from app.domain.errors import (
+    describe_exception,
     ModelContextBudgetExceeded,
     ModelProfileMismatch,
     ModelCallTimeout,
@@ -24,8 +24,6 @@ from app.domain.execution import (
     ReasonCode,
     RunEvent,
     ToolStartedEvent,
-)
-from app.domain.execution import (
     TaskAgentCompletion,
     TaskRun,
     TaskRunResult,
@@ -75,10 +73,7 @@ class RunExecutor:
                 with tracing_context(enabled=False):
                     for index, test_task in enumerate(detail.test_plan.content.tasks):
                         if run_cancellation_event.is_set():
-                            await self.repository.finish_run(
-                                test_run_id, TestRunVerdict.CANCELLED
-                            )
-                            return
+                            break
                         active_task = await self.repository.start_task(
                             test_run_id, test_task
                         )
@@ -114,10 +109,7 @@ class RunExecutor:
                         )[-1]
                         completed.append(active_task)
                         if completion.result.reason_code == ReasonCode.USER_CANCELLED:
-                            await self.repository.finish_run(
-                                test_run_id, TestRunVerdict.CANCELLED
-                            )
-                            return
+                            break
                         if completion.status in {
                             TaskRunStatus.FAILED,
                             TaskRunStatus.BLOCKED,
@@ -130,11 +122,13 @@ class RunExecutor:
                             break
                         active_task = None
             task_runs = await self.repository.list_task_runs(test_run_id)
-            await self.repository.finish_run(
-                test_run_id, aggregate_test_run_verdict(task_runs)
-            )
+            verdict = (TestRunVerdict.CANCELLED if run_cancellation_event.is_set()
+                       else aggregate_test_run_verdict(task_runs))
         except Exception as exc:
+            # This executor owns a root graph, with no parent graph or product
+            # pause/resume contract. Escaping controls must also finish the run.
             reason = self._reason_for_exception(exc)
+            summary = describe_exception(exc, phase="Task agent failed")
             if active_task is not None:
                 latest = await self.repository.list_task_runs(test_run_id)
                 current = next(
@@ -146,7 +140,7 @@ class RunExecutor:
                         status=TaskRunStatus.BLOCKED,
                         result=TaskRunResult(
                             reason_code=reason,
-                            summary=f"Task agent failed: {exc}",
+                            summary=summary,
                             evidence_artifact_ids=[],
                         ),
                         cycle_count=current.cycle_count,
@@ -156,7 +150,15 @@ class RunExecutor:
                             test_run_id,
                             remaining_after_active_task,
                         )
-            await self._block_run(test_run_id, reason, str(exc))
+            await self._report_execution_error(test_run_id, reason, summary)
+            verdict = TestRunVerdict.BLOCKED
+
+        # Commit once outside execution error handling. A persistence failure
+        # must propagate, not trigger another report or terminal write.
+        await self.repository.finish_run(
+            test_run_id,
+            TestRunVerdict.CANCELLED if run_cancellation_event.is_set() else verdict,
+        )
 
     async def _execute_task(
         self,
@@ -213,8 +215,13 @@ class RunExecutor:
     ) -> TaskAgentCompletion | None:
         if not isinstance(data, dict):
             raise TypeError("LangGraph updates stream must contain a node mapping")
-        for update in data.values():
-            if not isinstance(update, dict):
+        for node_name, update in data.items():
+            # Only application-owned publication boundaries expose messages.
+            # ToolNode first writes raw results to State;
+            # after_tools saves evidence and returns the same-ID public version.
+            if not isinstance(update, dict) or node_name not in {
+                "initialize", "guard", "model", "validate", "announce_tool", "after_tools",
+            }:
                 continue
             messages = update.get("messages", [])
             if isinstance(messages, BaseMessage):
@@ -275,7 +282,7 @@ class RunExecutor:
             event, dedup_key=f"{test_run_id}:{task_run_id}:{suffix}"
         )
 
-    async def _block_run(
+    async def _report_execution_error(
         self, test_run_id: str, reason: ReasonCode, message: str
     ) -> None:
         await self.repository.append_event(
@@ -287,9 +294,6 @@ class RunExecutor:
             ),
             dedup_key=f"{test_run_id}:run.error:{reason.value}",
         )
-        run = await self.repository.get_test_run(test_run_id)
-        if run.status.value != "finished":
-            await self.repository.finish_run(test_run_id, TestRunVerdict.BLOCKED)
 
     @staticmethod
     def _reason_for_exception(exc: Exception) -> ReasonCode:
@@ -301,8 +305,6 @@ class RunExecutor:
             return ReasonCode.MODEL_PROFILE_MISMATCH
         if isinstance(exc, ModelContextBudgetExceeded):
             return ReasonCode.MODEL_CONTEXT_EXCEEDED
-        if isinstance(exc, NodeTimeoutError) and exc.node == "tools":
-            return ReasonCode.TOOL_FAILED
         if isinstance(exc, TimeoutError):
             return ReasonCode.TOOL_FAILED
         return ReasonCode.UNEXPECTED_ERROR

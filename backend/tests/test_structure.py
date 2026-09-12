@@ -37,7 +37,7 @@ from app.domain.resources.llm import LLMProfileSnapshot
 from app.domain.resources.tools import ToolCatalogSnapshot
 from app.event_stream import EventBus, EventWriter, project_run_message
 from app.execution.task_agent import TaskAgentGraphState
-from app.execution import ActiveRunRegistry, RunExecutor, RunService, TaskAgentFactory
+from app.execution import RunExecutor, RunService, TaskAgentFactory
 from app.planning import PlanningGraph
 from app.main import create_app
 from app.persistence.adapters import (
@@ -481,7 +481,7 @@ def test_process_boundaries_do_not_restore_obsolete_dependency_ownership() -> No
     run_service_parameters = signature(RunService).parameters
     assert "app_version" in run_service_parameters
     assert "settings" not in run_service_parameters
-    assert "active_run_registry" in run_service_parameters
+    assert "active_run_registry" not in run_service_parameters
     assert "registry" not in signature(RunExecutor).parameters
     assert "registry" not in signature(TaskAgentFactory).parameters
     assert set(signature(PlanningGraph).parameters) == {"prompt_definition"}

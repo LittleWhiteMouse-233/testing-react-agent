@@ -28,7 +28,8 @@ def project_run_message(message: BaseMessage) -> RunMessage:
     """The only LangChain message to stable public message conversion.
 
     Image data is deliberately never dumped. Its standard block id is the
-    already-persisted Artifact id.
+    already-persisted Artifact id. Expired image placeholders project to the
+    same public image reference, so State retention never changes history.
     """
 
     if message.id is None:
@@ -81,7 +82,13 @@ def _project_content(message: BaseMessage) -> list[RunContentBlock]:
     for block in message.content_blocks:
         block_type = block.get("type")
         if block_type == "text":
-            blocks.append(RunTextBlock(text=str(block.get("text", ""))))
+            artifact_id = (block.get("extras") or {}).get("artifact_id")
+            if artifact_id is not None:
+                if not isinstance(artifact_id, str) or not artifact_id:
+                    raise ValueError("public screenshot placeholders require an Artifact id")
+                blocks.append(RunImageArtifactBlock(artifact_id=artifact_id))
+            else:
+                blocks.append(RunTextBlock(text=str(block.get("text", ""))))
         elif block_type == "image":
             artifact_id = block.get("id")
             if not isinstance(artifact_id, str) or not artifact_id:

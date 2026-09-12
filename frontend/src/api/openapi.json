@@ -1799,7 +1799,25 @@
         "title": "ToolAnnotationsSnapshot",
         "type": "object"
       },
-      "ToolCapability": {
+      "ToolCatalogSnapshot": {
+        "additionalProperties": false,
+        "description": "The actual discovered tool catalog frozen for one execution.",
+        "properties": {
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolDefinitionSnapshot"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tools"
+        ],
+        "title": "ToolCatalogSnapshot",
+        "type": "object"
+      },
+      "ToolDefinitionSnapshot": {
         "additionalProperties": false,
         "description": "One discovered tool definition, owned by its external MCP server.",
         "properties": {
@@ -1833,25 +1851,7 @@
           "source",
           "annotations"
         ],
-        "title": "ToolCapability",
-        "type": "object"
-      },
-      "ToolCatalogSnapshot": {
-        "additionalProperties": false,
-        "description": "The actual discovered tool catalog frozen for one execution.",
-        "properties": {
-          "tools": {
-            "items": {
-              "$ref": "#/components/schemas/ToolCapability"
-            },
-            "title": "Tools",
-            "type": "array"
-          }
-        },
-        "required": [
-          "tools"
-        ],
-        "title": "ToolCatalogSnapshot",
+        "title": "ToolDefinitionSnapshot",
         "type": "object"
       },
       "ToolStartedEvent": {

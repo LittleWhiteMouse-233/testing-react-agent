@@ -874,10 +874,18 @@ export interface components {
             title?: string | null;
         };
         /**
-         * ToolCapability
+         * ToolCatalogSnapshot
+         * @description The actual discovered tool catalog frozen for one execution.
+         */
+        ToolCatalogSnapshot: {
+            /** Tools */
+            tools: components["schemas"]["ToolDefinitionSnapshot"][];
+        };
+        /**
+         * ToolDefinitionSnapshot
          * @description One discovered tool definition, owned by its external MCP server.
          */
-        ToolCapability: {
+        ToolDefinitionSnapshot: {
             annotations: components["schemas"]["ToolAnnotationsSnapshot"];
             /** Description */
             description: string;
@@ -889,14 +897,6 @@ export interface components {
             name: string;
             /** Source */
             source: string;
-        };
-        /**
-         * ToolCatalogSnapshot
-         * @description The actual discovered tool catalog frozen for one execution.
-         */
-        ToolCatalogSnapshot: {
-            /** Tools */
-            tools: components["schemas"]["ToolCapability"][];
         };
         /**
          * ToolStartedEvent
