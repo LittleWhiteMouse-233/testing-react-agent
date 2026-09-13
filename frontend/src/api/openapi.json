@@ -1614,7 +1614,7 @@
             "$ref": "#/components/schemas/LLMProfileSnapshot"
           },
           "execution_protocol_version": {
-            "const": "2",
+            "const": "3",
             "title": "Execution Protocol Version",
             "type": "string"
           },

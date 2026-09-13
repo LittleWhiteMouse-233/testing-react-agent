@@ -3,11 +3,16 @@ import json
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 from langchain_core.messages import ToolMessage
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.errors import GraphBubbleUp
+from mcp import ClientSession
 
-from app.tools import MCPConnectionError, MCPToolProvider, snapshot_tools
+from app.domain.errors import ToolCleanupError
+from app.tools import MCPConnectionError, MCPToolProvider, _MCPServerSession, snapshot_tools
 from mcp_support import read_records, replay_call, write_mcp_config
 
 
@@ -92,13 +97,19 @@ async def test_cancelled_call_closes_session_before_later_call(tmp_path: Path) -
 @pytest.mark.asyncio
 @pytest.mark.parametrize('cleanup_fails', [False, True])
 @pytest.mark.parametrize('already_chained', [False, True])
+@pytest.mark.parametrize('body_error_kind', ['application', 'graph_control', 'graph_control_group'])
 async def test_body_exception_preserved_after_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                                     cleanup_fails: bool, already_chained: bool) -> None:
+                                                     cleanup_fails: bool, already_chained: bool,
+                                                     body_error_kind: str) -> None:
     config = write_mcp_config(tmp_path, [])
     provider = MCPToolProvider(config)
     closed = asyncio.Event()
     cleanup_error = RuntimeError('cleanup failed')
-    body_error = ValueError('application failed')
+    body_error = (
+        GraphBubbleUp('graph control') if body_error_kind == 'graph_control' else
+        ExceptionGroup('mixed controls', [GraphBubbleUp('graph control'), OSError('execution failed')])
+        if body_error_kind == 'graph_control_group' else ValueError('application failed')
+    )
     prior_cause = OSError('original execution failed') if already_chained else None
     body_error.__cause__ = prior_cause
 
@@ -111,12 +122,12 @@ async def test_body_exception_preserved_after_cleanup(tmp_path: Path, monkeypatc
             if cleanup_fails:
                 raise cleanup_error
 
-    async def discover(client, connections, sessions):
+    async def discover(client, connections, sessions, on_cleanup_failure=None):
         await sessions.enter_async_context(connection())
         return []
 
     monkeypatch.setattr(provider, '_discover', discover)
-    with pytest.raises(ValueError) as captured:
+    with pytest.raises(type(body_error)) as captured:
         async with provider.connect():
             raise body_error
     assert closed.is_set()
@@ -144,3 +155,68 @@ async def test_body_cancellation_preserved_after_stdio_cleanup(tmp_path: Path) -
     with pytest.raises(asyncio.CancelledError):
         await invocation
     assert any(entry['phase'] == 'closed' for entry in read_records(tmp_path))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_failure", [False, True])
+async def test_session_cleanup_timeout_is_sticky_and_not_restarted(late_failure: bool) -> None:
+    session = create_autospec(ClientSession, instance=True)
+    client = create_autospec(MultiServerMCPClient, instance=True)
+    release = asyncio.Event()
+    close_count = 0
+    failures: list[BaseException] = []
+
+    @asynccontextmanager
+    async def connection(*args, **kwargs):
+        nonlocal close_count
+        try:
+            yield session
+        finally:
+            close_count += 1
+            await release.wait()
+            if late_failure:
+                raise OSError("late close failure")
+
+    client.session.side_effect = connection
+    owner = _MCPServerSession(client, "fixture", 1, 0.03, failures.append)
+    await owner.session()
+    with pytest.raises(ToolCleanupError) as first:
+        await asyncio.wait_for(owner.close(), 1)
+    assert close_count == 1 and failures
+    with pytest.raises(ToolCleanupError) as repeated:
+        await owner.close()
+    assert repeated.value is first.value
+    release.set()
+    assert owner._owner is not None
+    await asyncio.gather(owner._owner, return_exceptions=True)
+    with pytest.raises(ToolCleanupError) as unavailable:
+        await owner.session()
+    assert unavailable.value is first.value
+    assert close_count == 1
+    if late_failure:
+        assert any(isinstance(failure, OSError) for failure in failures)
+
+
+@pytest.mark.asyncio
+async def test_initialization_failure_and_cleanup_failure_are_both_preserved() -> None:
+    session = create_autospec(ClientSession, instance=True)
+    session.initialize.side_effect = OSError("initialize failed")
+    client = create_autospec(MultiServerMCPClient, instance=True)
+    failures: list[BaseException] = []
+
+    @asynccontextmanager
+    async def connection(*args, **kwargs):
+        try:
+            yield session
+        finally:
+            raise OSError("close failed")
+
+    client.session.side_effect = connection
+    owner = _MCPServerSession(client, "fixture", 1, 0.1, failures.append)
+    with pytest.raises(MCPConnectionError) as initialization:
+        await owner.session()
+    assert str(initialization.value.__cause__) == "initialize failed"
+    with pytest.raises(ToolCleanupError) as cleanup:
+        await owner.close()
+    assert str(cleanup.value.__cause__) == "close failed"
+    assert failures

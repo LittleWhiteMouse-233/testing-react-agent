@@ -92,7 +92,7 @@ def run_snapshot() -> RunSnapshot:
         act_prompt_version="act-v1",
         judge_prompt_version="judge-v1",
         app_version="0.1.0",
-        execution_protocol_version="2",
+        execution_protocol_version="3",
     )
 
 

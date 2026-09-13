@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_core.tools import BaseTool
 from langchain_core.utils.pydantic import model_json_schema
@@ -18,7 +18,57 @@ from mcp.types import CallToolResult
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.resources.tools import ToolDefinitionSnapshot, ToolCatalogSnapshot, ToolAnnotationsSnapshot
-from app.domain.errors import describe_exception
+from app.domain.errors import ToolCallError, ToolCleanupError, describe_exception
+
+
+_pending_tool_cleanup: set[asyncio.Task[Any]] = set()
+
+
+async def wait_for_tool_cleanup(
+    invocation: asyncio.Task[Any], *, deadline: float,
+    on_cleanup_failure: Callable[[BaseException], None] | None = None,
+) -> None:
+    """Join within one deadline; asyncio.wait never cancels an uncooperative child.
+
+    The caller owns the single cancellation/close request. Strong references
+    keep late cleanup observable without another wait or an automatic replay.
+    """
+    interruption: asyncio.CancelledError | None = None
+    while not invocation.done():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            failure = ToolCleanupError("Tool interruption cleanup timed out; restart the service before another run")
+            _pending_tool_cleanup.add(invocation)
+
+            def observe_late_result(completed: asyncio.Task[Any]) -> None:
+                _pending_tool_cleanup.discard(completed)
+                if not completed.cancelled():
+                    late_failure = completed.exception()
+                    if late_failure is not None and on_cleanup_failure is not None:
+                        on_cleanup_failure(late_failure)
+
+            invocation.add_done_callback(observe_late_result)
+            if on_cleanup_failure is not None:
+                on_cleanup_failure(failure)
+            if interruption is not None:
+                raise interruption from failure
+            raise failure
+        try:
+            await asyncio.wait({invocation}, timeout=remaining)
+        except asyncio.CancelledError as exc:
+            interruption = exc
+    try:
+        if not invocation.cancelled():
+            invocation.result()
+    except BaseException as failure:
+        # An unsuccessful task exit does not certify successful cleanup.
+        if on_cleanup_failure is not None:
+            on_cleanup_failure(failure)
+        if interruption is not None:
+            raise interruption from failure
+        raise
+    if interruption is not None:
+        raise interruption
 
 
 class MCPServerSettings(BaseModel):
@@ -51,18 +101,27 @@ class _MCPServerSession:
     process cleanup and the adapter still owns schemas and result conversion.
     """
 
-    def __init__(self, client: MultiServerMCPClient, server_name: str, timeout_seconds: float) -> None:
+    def __init__(self, client: MultiServerMCPClient, server_name: str, timeout_seconds: float,
+                 cleanup_timeout_seconds: float = 30,
+                 on_cleanup_failure: Callable[[BaseException], None] | None = None) -> None:
         self.client = client
         self.server_name = server_name
         self.timeout_seconds = timeout_seconds
+        self.cleanup_timeout_seconds = cleanup_timeout_seconds
+        self.on_cleanup_failure = on_cleanup_failure
         self._owner: asyncio.Task[None] | None = None
         self._ready: asyncio.Future[ClientSession] | None = None
         self._close_requested = asyncio.Event()
+        self._close_deadline: float | None = None
+        self._close_failure: BaseException | None = None
 
     async def session(self) -> ClientSession:
+        if self._close_failure is not None:
+            raise self._close_failure
         if self._owner is None:
             self._ready = asyncio.get_running_loop().create_future()
             self._close_requested = asyncio.Event()
+            self._close_deadline = None
             self._owner = asyncio.create_task(self._own_session(), name=f"mcp-session-{self.server_name}")
         assert self._ready is not None
         return await asyncio.shield(self._ready)
@@ -71,7 +130,13 @@ class _MCPServerSession:
         assert self._ready is not None
         try:
             async with self.client.session(self.server_name, auto_initialize=False) as session:
-                await asyncio.wait_for(session.initialize(), timeout=self.timeout_seconds)
+                try:
+                    await asyncio.wait_for(session.initialize(), timeout=self.timeout_seconds)
+                except Exception as exc:
+                    failure = MCPConnectionError("MCP initialization failed")
+                    failure.__cause__ = exc
+                    self._ready.set_exception(failure)
+                    return  # SDK exit still belongs to this owner task.
                 self._ready.set_result(session)
                 await self._close_requested.wait()
         except Exception as exc:
@@ -86,47 +151,57 @@ class _MCPServerSession:
                 self._ready.cancel()
 
     async def close(self) -> None:
+        if self._close_failure is not None:
+            raise self._close_failure
         if self._owner is None:
             return
-        self._close_requested.set()
-        if self._ready is not None and not self._ready.done():
-            self._owner.cancel()
+        if self._close_deadline is None:
+            self._close_deadline = asyncio.get_running_loop().time() + self.cleanup_timeout_seconds
+            self._close_requested.set()
+            if self._ready is not None and not self._ready.done() and not self._owner.cancelling():
+                self._owner.cancel()
         try:
-            await self._owner
-        except asyncio.CancelledError:
-            if not self._owner.cancelled():
-                raise
+            await wait_for_tool_cleanup(self._owner, deadline=self._close_deadline,
+                                        on_cleanup_failure=self.on_cleanup_failure)
+        except Exception as exc:
+            failure = ToolCleanupError(f"MCP session cleanup failed: {self.server_name}")
+            failure.__cause__ = exc
+            self._close_failure = failure
+            if self.on_cleanup_failure is not None:
+                self.on_cleanup_failure(failure)
+            raise failure
         finally:
             if self._ready is not None and self._ready.done() and not self._ready.cancelled():
                 self._ready.exception()
-            self._owner = None
-            self._ready = None
+        self._owner = None
+        self._ready = None
 
     async def call_tool(
         self, request: MCPToolCallRequest,
         handler: object,
     ) -> CallToolResult:
-        initialized = False
         try:
             session = await self.session()
-            initialized = True
             return await session.call_tool(request.name, request.args)
         except asyncio.CancelledError:
             await self.close()
-            if not initialized:
-                raise MCPConnectionError("MCP reinitialization interrupted before tool execution") from None
             raise
+        except Exception as exc:
+            raise ToolCallError("MCP tool invocation failed") from exc
 
 
 class MCPToolProvider:
     """Run-scoped connections, with each SDK context kept in one owning task."""
 
-    def __init__(self, config_path: Path, timeout_seconds: float = 120) -> None:
+    def __init__(self, config_path: Path, timeout_seconds: float = 120,
+                 cleanup_timeout_seconds: float = 30) -> None:
         self.config_path = config_path
         self.timeout_seconds = timeout_seconds
+        self.cleanup_timeout_seconds = cleanup_timeout_seconds
 
     @asynccontextmanager
-    async def connect(self) -> AsyncIterator[tuple[BaseTool, ...]]:
+    async def connect(self, *, on_cleanup_failure: Callable[[BaseException], None] | None = None,
+                      ) -> AsyncIterator[tuple[BaseTool, ...]]:
         try:
             settings = MCPSettings.model_validate_json(
                 await asyncio.to_thread(self.config_path.read_text, encoding="utf-8")
@@ -149,7 +224,7 @@ class MCPToolProvider:
         body_error: BaseException | None = None
         try:
             async with AsyncExitStack() as sessions:
-                loaded_tools = await self._discover(client, connections, sessions)
+                loaded_tools = await self._discover(client, connections, sessions, on_cleanup_failure)
                 try:
                     yield tuple(loaded_tools)
                 except BaseException as exc:
@@ -172,10 +247,12 @@ class MCPToolProvider:
     async def _discover(
         self, client: MultiServerMCPClient, connections: dict[str, Connection],
         sessions: AsyncExitStack,
+        on_cleanup_failure: Callable[[BaseException], None] | None = None,
     ) -> list[BaseTool]:
         loaded_tools: list[BaseTool] = []
         for server_name in connections:
-            server_session = _MCPServerSession(client, server_name, self.timeout_seconds)
+            server_session = _MCPServerSession(client, server_name, self.timeout_seconds,
+                                               self.cleanup_timeout_seconds, on_cleanup_failure)
             sessions.push_async_callback(server_session.close)
             session = await server_session.session()
             tools = await asyncio.wait_for(

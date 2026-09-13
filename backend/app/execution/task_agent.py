@@ -28,7 +28,9 @@ from langgraph.types import Command, RetryPolicy
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from app.domain.errors import (
-    describe_exception,
+    TaskAgentCancelled,
+    ToolCallError,
+    ToolCleanupError,
     ModelContextBudgetExceeded,
     ModelProfileMismatch,
     ModelCallTimeout,
@@ -48,10 +50,19 @@ from app.execution.signals import MessageValidationSignal, ToolStartedSignal
 from app.artifacts import ArtifactStore
 from app.llm import ChatModelClient, ModelProvider
 from app.prompts import PromptDefinition
+from app.tools import wait_for_tool_cleanup
 
 
 _FRAMEWORK_DEFAULT_RETRY = RetryPolicy().retry_on
 _JSON_VALUE = TypeAdapter(JsonValue)
+
+
+def contains_graph_control(exception: BaseException) -> bool:
+    """Return tool control exceptions to the enclosing graph unchanged."""
+    return isinstance(exception, GraphBubbleUp) or (
+        isinstance(exception, BaseExceptionGroup)
+        and exception.subgroup(GraphBubbleUp) is not None
+    )
 
 
 class TaskAgentGraphState(MessagesState):
@@ -79,13 +90,14 @@ class TaskAgentFactory:
     def __init__(
         self, *, artifacts: ArtifactStore, model_provider: ModelProvider,
         act_prompt: PromptDefinition, judge_prompt: PromptDefinition,
-        tool_call_timeout_seconds: float = 120,
+        tool_call_timeout_seconds: float = 120, tool_cleanup_timeout_seconds: float = 30,
         model_call_max_attempts: int = 3, model_response_max_attempts: int = 3,
     ) -> None:
         self.artifacts = artifacts
         self.model_provider = model_provider
         self.prompts_by_task_type = {TestTaskType.ACT: act_prompt, TestTaskType.JUDGE: judge_prompt}
         self.tool_call_timeout_seconds = tool_call_timeout_seconds
+        self.tool_cleanup_timeout_seconds = tool_cleanup_timeout_seconds
         self.model_call_max_attempts = model_call_max_attempts
         self.model_response_max_attempts = model_response_max_attempts
 
@@ -94,6 +106,7 @@ class TaskAgentFactory:
         screenshot_history_rounds: int, task: TestTask, previous_task_runs: list[TaskRun],
         expected_model_profile: LLMProfileSnapshot, expected_prompt_version: str,
         run_cancellation_event: asyncio.Event, checkpointer: BaseCheckpointSaver[Any] | None,
+        on_cleanup_failure: Callable[[BaseException], None] | None = None,
     ) -> tuple[Any, TaskAgentGraphState]:
         try:
             model_client = self.model_provider.client_by_id(expected_model_profile.profile_id)
@@ -111,6 +124,8 @@ class TaskAgentFactory:
             model_response_max_attempts=self.model_response_max_attempts,
             screenshot_history_rounds=screenshot_history_rounds,
             tool_call_timeout_seconds=self.tool_call_timeout_seconds,
+            tool_cleanup_timeout_seconds=self.tool_cleanup_timeout_seconds,
+            on_cleanup_failure=on_cleanup_failure,
         )
         graph = StateGraph(TaskAgentGraphState)
         graph.add_node("initialize", runtime.initialize)
@@ -164,6 +179,8 @@ class _TaskRuntime:
     model_response_max_attempts: int
     screenshot_history_rounds: int
     tool_call_timeout_seconds: float
+    tool_cleanup_timeout_seconds: float = 30
+    on_cleanup_failure: Callable[[BaseException], None] | None = None
     bound_model: Any = field(default=None, init=False)
 
     async def initialize(self, state: TaskAgentGraphState) -> dict[str, object]:
@@ -179,13 +196,8 @@ class _TaskRuntime:
         if self.run_cancellation_event.is_set():
             return self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state)
         if state["cycle_count"] >= self.task.definition.max_cycles:
-            evidence = _latest_artifact_ids(state["messages"])
-            return self._completion(
-                TaskRunStatus.FAILED if evidence else TaskRunStatus.BLOCKED,
-                ReasonCode.CYCLE_LIMIT if evidence else ReasonCode.EVIDENCE_MISSING,
-                "Decision round limit reached" if evidence else "Decision round limit reached without screenshot evidence",
-                state, evidence=evidence,
-            )
+            return self._completion(TaskRunStatus.BLOCKED, ReasonCode.CYCLE_LIMIT,
+                                    "Decision round limit reached", state)
         return {"route": "model"}
 
     async def call_model(self, state: TaskAgentGraphState) -> dict[str, object]:
@@ -252,122 +264,83 @@ class _TaskRuntime:
         self, request: ToolCallRequest,
         execute: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
-        """Own one invocation through timeout/cancellation and cooperative cleanup."""
-        async def invoke_tool() -> ToolMessage | Command:
-            return await execute(request)
-
-        invocation = asyncio.create_task(invoke_tool())
+        """Bound the generic invocation, including lazy session acquisition."""
+        invocation = asyncio.ensure_future(execute(request))
         cancellation = asyncio.create_task(self.run_cancellation_event.wait())
-        failure: Exception | None = None
-        phase = "Tool execution failed"
+        cleanup_started = False
         try:
-            done, _ = await asyncio.wait(
-                {invocation, cancellation}, timeout=self.tool_call_timeout_seconds,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if invocation in done:
-                return invocation.result()
-            phase = "Tool cleanup failed"
-            await self._settle_tool_cancellation(invocation)
-        except asyncio.CancelledError as cancellation_error:
             try:
+                done, _ = await asyncio.wait(
+                    {invocation, cancellation}, timeout=self.tool_call_timeout_seconds,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if invocation in done:
+                    result = invocation.result()  # An actual failure wins over cancellation.
+                    if self.run_cancellation_event.is_set():
+                        raise TaskAgentCancelled("Cancelled after tool invocation")
+                    return result
+                cleanup_started = True
                 await self._settle_tool_cancellation(invocation)
-            except Exception as cleanup_error:
-                raise cancellation_error from cleanup_error
-            raise
-        except GraphBubbleUp as exc:
-            # Graph controls belong to the graph unless user cancellation has
-            # already won; then retain cleanup diagnostics in the tool result.
-            if not self.run_cancellation_event.is_set():
+            except asyncio.CancelledError as cancellation_error:
+                if not cleanup_started:
+                    try:
+                        await self._settle_tool_cancellation(invocation)
+                    except BaseException as cleanup_error:
+                        if isinstance(cleanup_error, asyncio.CancelledError):
+                            if cleanup_error.__cause__ is not None:
+                                raise cancellation_error from cleanup_error.__cause__
+                            raise cancellation_error
+                        raise cancellation_error from cleanup_error
                 raise
-            failure = exc
-        except Exception as exc:
-            if (not self.run_cancellation_event.is_set()
-                    and isinstance(exc, ExceptionGroup) and exc.subgroup(GraphBubbleUp) is not None):
-                raise
-            failure = exc
         finally:
             cancellation.cancel()
             await asyncio.gather(cancellation, return_exceptions=True)
 
-        # Reporting is outside the execution catch: reporting failures propagate.
-        summary = "Tool execution cancelled" if self.run_cancellation_event.is_set() else "Tool execution timed out"
-        if failure is not None:
-            summary = describe_exception(failure, phase=phase)
-        summary += (
-            "; the operation may have partially executed. Unreceived results are unconfirmed. "
-            "No operation was automatically replayed."
+        if self.run_cancellation_event.is_set():
+            raise TaskAgentCancelled("Cancelled after tool interruption cleanup")
+        return ToolMessage(
+            content=("Tool execution timed out; the operation may have partially executed. "
+                     "Unreceived results are unconfirmed. No operation was automatically replayed. "
+                     "Observe the target before deciding the next action."),
+            tool_call_id=request.tool_call["id"], name=request.tool_call["name"], status="error",
         )
-        if failure is None and not self.run_cancellation_event.is_set():
-            summary += " The affected session has been closed; a subsequent tool call will initialize a new session."
-        result = ToolMessage(content=summary, tool_call_id=request.tool_call["id"],
-                             name=request.tool_call["name"], status="error")
-        if failure is None:
-            return result
-        return Command(update={"messages": [result], **self._completion(
-            TaskRunStatus.BLOCKED, ReasonCode.TOOL_FAILED, summary, cast(TaskAgentGraphState, request.state),
-        )})
 
-    @staticmethod
-    async def _settle_tool_cancellation(invocation: asyncio.Task[ToolMessage | Command]) -> None:
+    async def _settle_tool_cancellation(self, invocation: asyncio.Task[ToolMessage | Command]) -> None:
         if not invocation.done() and not invocation.cancelling():
             invocation.cancel()
-        interruption: asyncio.CancelledError | None = None
-        while not invocation.done():
-            try:
-                await asyncio.shield(invocation)
-            except asyncio.CancelledError as exc:
-                if not invocation.cancelled():
-                    interruption = exc
-            except BaseException:
-                # Read/rethrow the actual task exception below, including controls.
-                break
         try:
-            if not invocation.cancelled():
-                invocation.result()
-        except BaseException as failure:
-            if interruption is not None:
-                raise interruption from failure
-            raise
-        if interruption is not None:
-            raise interruption
+            await wait_for_tool_cleanup(
+                invocation, deadline=asyncio.get_running_loop().time() + self.tool_cleanup_timeout_seconds,
+                on_cleanup_failure=self.on_cleanup_failure,
+            )
+        except Exception as exc:
+            if contains_graph_control(exc) or isinstance(exc, ToolCleanupError):
+                raise
+            raise ToolCleanupError("Tool interruption cleanup failed") from exc
 
-    async def _prepare_tool_result(self, result: ToolMessage) -> tuple[ToolMessage, Exception | None]:
-        """Return publishable content and any evidence failure, retaining saved facts."""
+    async def _prepare_tool_result(self, result: ToolMessage) -> ToolMessage:
+        """Save evidence and project content; application failures propagate."""
         content: list[dict[str, Any]] = []
         image_references: dict[str, str] = {}
-        diagnostics: list[str] = []
-        failure: Exception | None = None
-        blocks = result.content_blocks
-        for block in blocks:
-            if block.get("type") == "image" and isinstance(encoded := block.get("base64"), str):
-                image_references[encoded] = "[Image unavailable: evidence was not saved]"
-                image_references[f"data:{block.get('mime_type')};base64,{encoded}"] = image_references[encoded]
-        for block in blocks:
-            try:
+        try:
+            for block in result.content_blocks:
                 saved_block = dict(block)
                 if block.get("type") == "image":
-                    if failure is not None:
-                        continue
                     encoded = block.get("base64")
                     mime_type = block.get("mime_type")
                     if not isinstance(encoded, str) or not isinstance(mime_type, str):
                         raise ValueError("Screenshot evidence must contain inline base64 and MIME type")
                     raw = await asyncio.to_thread(base64.b64decode, encoded, validate=True)
-                    artifact = await self.artifacts.save_screenshot(task_run_id=self.task_run_id, content=raw, mime_type=mime_type)
+                    artifact = await self.artifacts.save_screenshot(
+                        task_run_id=self.task_run_id, content=raw, mime_type=mime_type,
+                    )
                     saved_block["id"] = artifact.id
                     image_references[encoded] = f"[Image artifact {artifact.id}]"
                     image_references[f"data:{mime_type};base64,{encoded}"] = image_references[encoded]
                 elif block.get("type") != "text":
                     raise ValueError(f"Unsupported tool content block: {block.get('type')!r}")
                 content.append(saved_block)
-            except Exception as exc:
-                diagnostics.append(describe_exception(exc, phase="Tool evidence processing failed"))
-                if failure is None:
-                    failure = exc
-        # The adapter carries structuredContent in artifact. Project distinct
-        # facts to text once, and clear the opaque duplicate from checkpoints.
-        try:
+            # Adapter structuredContent is projected once, then removed from checkpoints.
             structured = None
             has_structured_content = isinstance(result.artifact, dict) and "structured_content" in result.artifact
             if has_structured_content:
@@ -389,18 +362,13 @@ class _TaskRuntime:
                     _project_structured_tool_content(structured, image_references), ensure_ascii=False,
                 )})
         except Exception as exc:
-            diagnostics.append(describe_exception(exc, phase="Structured tool result processing failed"))
-            if failure is None:
-                failure = exc
-        content.extend({"type": "text", "text": diagnostic} for diagnostic in diagnostics)
-        return result.model_copy(update={
-            "content": content, "artifact": None, "status": "error" if failure is not None else result.status,
-        }), failure
+            raise ToolCallError("Tool result processing failed") from exc
+        return result.model_copy(update={"content": content, "artifact": None})
 
     async def after_tools(self, state: TaskAgentGraphState) -> dict[str, object]:
         tool_message = state["messages"][-1]
         assert isinstance(tool_message, ToolMessage)
-        tool_message, evidence_failure = await self._prepare_tool_result(tool_message)
+        tool_message = await self._prepare_tool_result(tool_message)
         messages = cast(list[BaseMessage], add_messages(cast(Messages, state["messages"]), [tool_message]))
         # Product visual retention policy; add_messages replaces these messages
         # by ID without mutating earlier State snapshots or persisted events.
@@ -408,11 +376,6 @@ class _TaskRuntime:
         update: dict[str, object] = {"route": "guard", "messages": [*replacements, tool_message]}
         if self.run_cancellation_event.is_set():
             update.update(self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state))
-        elif evidence_failure is not None:
-            update.update(self._completion(TaskRunStatus.BLOCKED, ReasonCode.TOOL_FAILED, tool_message.text, state))
-        elif state["completion"] is not None:
-            update["route"] = "end"
-            update["completion"] = state["completion"]
         elif (call := _latest_ai_call(state["messages"]))["name"] == finish_task.name and tool_message.status != "error":
             terminal = FinishTaskRunToolInput.model_validate(call["args"])
             status = TaskRunStatus(terminal.status)

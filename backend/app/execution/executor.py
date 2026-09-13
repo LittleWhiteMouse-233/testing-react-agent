@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any, cast
 
 from langchain_core.messages import BaseMessage
@@ -12,6 +13,8 @@ from langsmith import tracing_context
 
 from app.domain.errors import (
     describe_exception,
+    TaskAgentCancelled,
+    ToolCallError,
     ModelContextBudgetExceeded,
     ModelProfileMismatch,
     ModelCallTimeout,
@@ -60,9 +63,11 @@ class RunExecutor:
         test_run_id: str,
         run_cancellation_event: asyncio.Event,
         tools: tuple[BaseTool, ...],
+        on_cleanup_failure: Callable[[BaseException], None] | None = None,
     ) -> None:
         active_task: TaskRun | None = None
         remaining_after_active_task: list[TestTask] = []
+        cancellation_completed = False
         try:
             detail = await self.repository.get_test_run_detail(test_run_id)
             await self.repository.start_run(test_run_id)
@@ -73,6 +78,7 @@ class RunExecutor:
                 with tracing_context(enabled=False):
                     for index, test_task in enumerate(detail.test_plan.content.tasks):
                         if run_cancellation_event.is_set():
+                            cancellation_completed = True
                             break
                         active_task = await self.repository.start_task(
                             test_run_id, test_task
@@ -97,6 +103,7 @@ class RunExecutor:
                             ),
                             run_cancellation_event=run_cancellation_event,
                             checkpointer=checkpointer,
+                            on_cleanup_failure=on_cleanup_failure,
                         )
                         await self.repository.finish_task(
                             active_task.id,
@@ -109,6 +116,7 @@ class RunExecutor:
                         )[-1]
                         completed.append(active_task)
                         if completion.result.reason_code == ReasonCode.USER_CANCELLED:
+                            cancellation_completed = True
                             break
                         if completion.status in {
                             TaskRunStatus.FAILED,
@@ -122,13 +130,12 @@ class RunExecutor:
                             break
                         active_task = None
             task_runs = await self.repository.list_task_runs(test_run_id)
-            verdict = (TestRunVerdict.CANCELLED if run_cancellation_event.is_set()
+            verdict = (TestRunVerdict.CANCELLED if cancellation_completed
                        else aggregate_test_run_verdict(task_runs))
         except Exception as exc:
-            # This executor owns a root graph, with no parent graph or product
-            # pause/resume contract. Escaping controls must also finish the run.
-            reason = self._reason_for_exception(exc)
-            summary = describe_exception(exc, phase="Task agent failed")
+            cancelled = isinstance(exc, TaskAgentCancelled)
+            reason = ReasonCode.USER_CANCELLED if cancelled else self._reason_for_exception(exc)
+            summary = str(exc) if cancelled else describe_exception(exc, phase="Task agent failed")
             if active_task is not None:
                 latest = await self.repository.list_task_runs(test_run_id)
                 current = next(
@@ -137,7 +144,7 @@ class RunExecutor:
                 if current.status == TaskRunStatus.RUNNING:
                     await self.repository.finish_task(
                         current.id,
-                        status=TaskRunStatus.BLOCKED,
+                        status=TaskRunStatus.CANCELLED if cancelled else TaskRunStatus.BLOCKED,
                         result=TaskRunResult(
                             reason_code=reason,
                             summary=summary,
@@ -145,19 +152,20 @@ class RunExecutor:
                         ),
                         cycle_count=current.cycle_count,
                     )
-                    if remaining_after_active_task:
+                    if remaining_after_active_task and not cancelled:
                         await self.repository.skip_remaining(
                             test_run_id,
                             remaining_after_active_task,
                         )
-            await self._report_execution_error(test_run_id, reason, summary)
-            verdict = TestRunVerdict.BLOCKED
+            if not cancelled:
+                await self._report_execution_error(test_run_id, reason, summary)
+            verdict = TestRunVerdict.CANCELLED if cancelled else TestRunVerdict.BLOCKED
 
         # Commit once outside execution error handling. A persistence failure
         # must propagate, not trigger another report or terminal write.
         await self.repository.finish_run(
             test_run_id,
-            TestRunVerdict.CANCELLED if run_cancellation_event.is_set() else verdict,
+            verdict,
         )
 
     async def _execute_task(
@@ -173,6 +181,7 @@ class RunExecutor:
         expected_prompt_version: str,
         run_cancellation_event: asyncio.Event,
         checkpointer: BaseCheckpointSaver[Any],
+        on_cleanup_failure: Callable[[BaseException], None] | None = None,
     ) -> TaskAgentCompletion:
         graph, initial = await self.agent_factory.build(
             task_run_id=task_run.id,
@@ -184,6 +193,7 @@ class RunExecutor:
             expected_prompt_version=expected_prompt_version,
             run_cancellation_event=run_cancellation_event,
             checkpointer=checkpointer,
+            on_cleanup_failure=on_cleanup_failure,
         )
         completion: TaskAgentCompletion | None = None
         async for part in graph.astream(
@@ -305,6 +315,6 @@ class RunExecutor:
             return ReasonCode.MODEL_PROFILE_MISMATCH
         if isinstance(exc, ModelContextBudgetExceeded):
             return ReasonCode.MODEL_CONTEXT_EXCEEDED
-        if isinstance(exc, TimeoutError):
+        if isinstance(exc, (ToolCallError, TimeoutError)):
             return ReasonCode.TOOL_FAILED
         return ReasonCode.UNEXPECTED_ERROR

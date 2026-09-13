@@ -805,7 +805,7 @@ export interface components {
              * Execution Protocol Version
              * @constant
              */
-            execution_protocol_version: "2";
+            execution_protocol_version: "3";
             /** Judge Prompt Version */
             judge_prompt_version: string;
             /**

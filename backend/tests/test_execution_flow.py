@@ -48,7 +48,7 @@ def test_act_and_judge_share_tools_and_model(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("control_kind", ["bubble", "group", "interrupt"])
-def test_root_graph_controls_finish_run_and_release_slot(
+def test_unsupported_graph_exit_is_blocked_and_releases_run_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, control_kind: str,
 ) -> None:
     async def raise_control(self: _TaskRuntime, state: TaskAgentGraphState) -> dict[str, object]:
@@ -70,9 +70,12 @@ def test_root_graph_controls_finish_run_and_release_slot(
         events = client.get(f"/api/runs/{run_id}/events").json()["items"]
         errors = [entry["event"] for entry in events if entry["event"]["type"] == "execution.error"]
         assert len(errors) == 1
-        expected = {"bubble": "unhandled graph control", "group": "execution failed",
-                    "interrupt": "TaskAgent ended without TaskAgentCompletion"}[control_kind]
-        assert expected in errors[0]["message"]
+        expected_error = {
+            "interrupt": "TaskAgent ended without TaskAgentCompletion",
+            "bubble": "unhandled graph control",
+            "group": "execution failed",
+        }[control_kind]
+        assert expected_error in errors[0]["message"]
         assert events[-1]["event"]["type"] == "run.finished"
 
         async def wait_for_cleanup() -> None:
@@ -88,7 +91,7 @@ def test_root_graph_controls_finish_run_and_release_slot(
         assert wait_for_run(client, start_run(client, plan))["run"]["verdict"] == "PASS"
 
 
-@pytest.mark.parametrize("with_image,verdict,reason", [(True, "FAIL", "cycle_limit"), (False, "BLOCKED", "evidence_missing")])
+@pytest.mark.parametrize("with_image,verdict,reason", [(True, "BLOCKED", "cycle_limit"), (False, "BLOCKED", "cycle_limit")])
 def test_round_limit_and_evidence(tmp_path: Path, with_image: bool, verdict: str, reason: str) -> None:
     content = [image_block()] if with_image else [text_block()]
     with build_client(tmp_path, calls=[replay_call(content=content)], turns=[tool_turn(1)]) as client:
@@ -160,14 +163,22 @@ def test_timeout_rebuilds_after_cleanup_or_blocks_cleanup_failure(tmp_path: Path
             assert any(isinstance(message, ToolMessage) and 'partially executed' in message.text
                        for invocation in model.invocations for message in invocation)
         else:
-            assert 'partially executed' in detail['task_runs'][0]['result']['summary']
+            assert 'cleanup failed' in detail['task_runs'][0]['result']['summary']
+            denied = client.post('/api/runs', json={
+                'test_plan_id': detail['test_plan']['id'], 'assumptions_confirmed': True,
+            })
+            assert denied.status_code == 409 and denied.json()['code'] == 'run_resources_unavailable'
     records = read_records(tmp_path)
     started = [entry for entry in records if entry['phase'] == 'started']
     assert len(started) == (3 if cooperative else 2)
     assert started[0]['pid'] == started[1]['pid']
     if cooperative:
         assert started[1]['pid'] != started[2]['pid']
-    assert sum(entry['phase'] == 'closed' for entry in records) == (2 if cooperative else 1)
+    if cooperative:
+        assert sum(entry['phase'] == 'closed' for entry in records) == 2
+    else:
+        # SDK process termination may preempt the remote finally block.
+        assert sum(entry['phase'] == 'closed' for entry in records) <= 1
     assert sum(entry['phase'] == 'completed' for entry in records) == 2
 
 
@@ -178,10 +189,10 @@ def test_timeout_budget_priority_and_no_unneeded_rebuild(tmp_path: Path, with_im
     with build_client(tmp_path, calls=[initial, replay_call(delay=10)], turns=[tool_turn(1), tool_turn(2)],
                       tool_call_timeout_seconds=2, model_response_max_attempts=1) as client:
         detail = wait_for_run(client, start_run(client, create_plan(client, max_cycles=max_cycles)))
-        reason = ('cycle_limit' if with_image else 'evidence_missing') if max_cycles == 2 else 'tool_failed'
+        reason = 'cycle_limit' if max_cycles == 2 else 'tool_failed'
         assert detail['task_runs'][0]['result']['reason_code'] == reason
         assert detail['task_runs'][0]['cycle_count'] == 2
-        assert detail['run']['verdict'] == ('FAIL' if max_cycles == 2 and with_image else 'BLOCKED')
+        assert detail['run']['verdict'] == 'BLOCKED'
     assert len({entry['pid'] for entry in read_records(tmp_path)}) == 1
 
 
@@ -390,7 +401,7 @@ def test_visual_retention_reaches_state_and_terminal_checkpoint(
         run_id = start_run(client, create_plan(client, max_cycles=2 if exit_kind == "cycle_limit" else 3))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == {
-            "finish": "PASS", "cancel": "CANCELLED", "tool_error": "BLOCKED", "cycle_limit": "FAIL",
+            "finish": "PASS", "cancel": "CANCELLED", "tool_error": "BLOCKED", "cycle_limit": "BLOCKED",
         }[exit_kind]
         task_id = detail["task_runs"][0]["id"]
         if exit_kind == "finish":
@@ -440,13 +451,13 @@ def test_running_session_ignores_config_changes_and_holds_the_single_run_slot(tm
 
 
 @pytest.mark.parametrize("with_image", [False, True])
-def test_exhaustion_during_repair_uses_evidence_rule(tmp_path: Path, with_image: bool) -> None:
+def test_exhaustion_during_repair_is_always_blocked(tmp_path: Path, with_image: bool) -> None:
     content = [image_block()] if with_image else [text_block()]
     with build_client(tmp_path, calls=[replay_call(content=content)],
                       turns=[tool_turn(1), AIMessage(content="invalid")], model_response_max_attempts=1) as client:
         detail = wait_for_run(client, start_run(client, create_plan(client, max_cycles=2)))
-        assert detail["run"]["verdict"] == ("FAIL" if with_image else "BLOCKED")
-        assert detail["task_runs"][0]["result"]["reason_code"] == ("cycle_limit" if with_image else "evidence_missing")
+        assert detail["run"]["verdict"] == "BLOCKED"
+        assert detail["task_runs"][0]["result"]["reason_code"] == "cycle_limit"
 
 
 def test_custom_schema_structured_result_and_history_without_online_mcp(tmp_path: Path) -> None:
@@ -520,27 +531,12 @@ def test_evidence_failure_preserves_saved_facts_and_blocks(
         events = [entry["event"] for entry in report["events"]]
         returned = [event["message"] for event in events
                     if event["type"] == "message.appended" and event["message"]["role"] == "tool"]
-        assert len(returned) == 1
-        assert returned[0]["status"] == "error"
-        assert [block["text"] for block in returned[0]["content"] if block["type"] == "text"][:3] == [
-            "before", "between", "after",
-        ]
-        assert sum(block["type"] == "image_artifact" for block in returned[0]["content"]) == expected_images
+        assert not returned  # application failures are execution events, not retryable tool messages
+        errors = [event for event in events if event["type"] == "execution.error"]
+        assert len(errors) == 1 and errors[0]["reason_code"] == "tool_failed"
         assert PNG_BASE64 not in json.dumps(events)
         for artifact in report["artifacts"]:
             assert client.get(f"/api/artifacts/{artifact['id']}").status_code == 200
-        task_id = detail["task_runs"][0]["id"]
-
-    async def verify_checkpoint():
-        async with AsyncSqliteSaver.from_conn_string(str(tmp_path / "checkpoints.db")) as saver:
-            checkpoint = await saver.aget({"configurable": {"thread_id": f"task-run:{task_id}"}})
-            assert checkpoint is not None
-            messages = checkpoint["channel_values"]["messages"]
-            tool_messages = [message for message in messages if isinstance(message, ToolMessage)]
-            assert len(tool_messages) == 1 and tool_messages[0].artifact is None
-            assert project_run_message(tool_messages[0]).model_dump(mode="json") == returned[0]
-
-    asyncio.run(verify_checkpoint())
     assert sum(entry["phase"] == "started" for entry in read_records(tmp_path)) == 1
 
 
@@ -603,3 +599,29 @@ def test_tool_event_write_failure_stops_execution(tmp_path: Path, monkeypatch: p
         assert "event storage unavailable" in detail["task_runs"][0]["result"]["summary"]
         model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
         assert len(model.invocations) == 2  # planning, then the first execution decision
+
+
+@pytest.mark.parametrize("recover", [False, True])
+def test_tool_correction_budget_is_shared_and_success_resets_it(tmp_path: Path, recover: bool) -> None:
+    invalid = tool_turn(1, "unavailable_tool")
+    if recover:
+        calls = [replay_call(error=True), replay_call(), replay_call(error=True), replay_call()]
+        turns = [invalid, tool_turn(2), tool_turn(3), tool_turn(4, "unavailable_tool"),
+                 tool_turn(5), tool_turn(6), finish_turn(7)]
+    else:
+        calls = [replay_call(error=True), replay_call(delay=10)]
+        turns = [invalid, tool_turn(2), tool_turn(3), finish_turn(4)]
+    with build_client(tmp_path, calls=calls, turns=turns, tool_call_timeout_seconds=2) as client:
+        run_id = start_run(client, create_plan(client))
+        detail = wait_for_run(client, run_id)
+        assert detail["run"]["verdict"] == ("PASS" if recover else "BLOCKED")
+        assert detail["task_runs"][0]["cycle_count"] == (7 if recover else 3)
+        if not recover:
+            assert detail["task_runs"][0]["result"]["reason_code"] == "tool_failed"
+        events = client.get(f"/api/runs/{run_id}/events").json()["items"]
+        assert not any(entry["event"]["type"] == "execution.error" for entry in events)
+        returned_errors = [entry for entry in events if entry["event"]["type"] == "message.appended"
+                           and entry["event"]["message"]["role"] == "tool"
+                           and entry["event"]["message"]["status"] == "error"]
+        assert len(returned_errors) == (4 if recover else 3)
+    assert sum(entry["phase"] == "started" for entry in read_records(tmp_path)) == (4 if recover else 2)

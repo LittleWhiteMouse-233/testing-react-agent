@@ -90,7 +90,7 @@ def test_complete_message_first_run_and_exports() -> None:
                 "passed",
                 "passed",
             ]
-            assert detail["snapshot"]["execution_protocol_version"] == "2"
+            assert detail["snapshot"]["execution_protocol_version"] == "3"
             assert "planning_model" not in detail["snapshot"]
 
             events_response = client.get(

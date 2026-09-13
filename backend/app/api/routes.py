@@ -21,7 +21,7 @@ from app.domain.execution import Artifact, StoredRunEvent, TestRun, TestRunDetai
 from app.domain.ids import ArtifactId, TestCaseId, TestPlanId, TestRunId
 from app.domain.planning import TestCase, TestPlan
 from app.reporting import TestRunReport
-from app.execution.run_service import RunConflict
+from app.execution.run_service import RunConflict, RunResourcesUnavailable
 from app.tools import MCPConnectionError
 
 
@@ -154,6 +154,8 @@ async def create_test_run(
         raise problem(502, "mcp_unavailable", str(exc)) from exc
     except RunConflict as exc:
         raise problem(409, "active_run_exists", str(exc)) from exc
+    except RunResourcesUnavailable as exc:
+        raise problem(409, "run_resources_unavailable", str(exc)) from exc
     except LookupError as exc:
         raise problem(404, "run_input_not_found", str(exc)) from exc
     except ValueError as exc:

@@ -31,7 +31,8 @@ class Container:
             settings.artifacts_dir,
             self.sessions,
         )
-        self.tools = MCPToolProvider(settings.mcp_config_path, settings.tool_call_timeout_seconds)
+        self.tools = MCPToolProvider(settings.mcp_config_path, settings.tool_call_timeout_seconds,
+                                     settings.tool_cleanup_timeout_seconds)
         prompt_catalog = load_prompt_catalog()
         model_clients_by_id: dict[str, ChatModelClient] = {}
         for profile in settings.llm_profiles:
@@ -62,6 +63,7 @@ class Container:
             act_prompt=prompt_catalog.act,
             judge_prompt=prompt_catalog.judge,
             tool_call_timeout_seconds=settings.tool_call_timeout_seconds,
+            tool_cleanup_timeout_seconds=settings.tool_cleanup_timeout_seconds,
             model_call_max_attempts=settings.model_call_max_attempts,
             model_response_max_attempts=settings.model_response_max_attempts,
         )

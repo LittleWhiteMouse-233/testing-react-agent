@@ -6,6 +6,18 @@ import sys
 from traceback import TracebackException
 
 
+class ToolCallError(RuntimeError):
+    """The tool invocation mechanism or its result processing failed."""
+
+
+class ToolCleanupError(ToolCallError):
+    """Tool resources could not be released within the cleanup boundary."""
+
+
+class TaskAgentCancelled(Exception):
+    """A product cancellation reached a safe boundary after successful cleanup."""
+
+
 def describe_exception(exception: BaseException, *, phase: str) -> str:
     """Project complete causes/groups to user messages without stack frames or locals."""
     diagnostic = TracebackException.from_exception(
