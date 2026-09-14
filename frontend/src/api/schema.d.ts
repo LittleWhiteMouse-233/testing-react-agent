@@ -723,6 +723,14 @@ export interface components {
             title: string;
         };
         /**
+         * TestPlanGenerateRequest
+         * @description HTTP 规划命令的可选输入；重新规划必填由应用服务验证。
+         */
+        TestPlanGenerateRequest: {
+            /** User Input */
+            user_input?: string | null;
+        };
+        /**
          * TestPlanOrigin
          * @description 计划版本的产生方式，用于区分模型规划与人工修订历史。
          * @enum {string}
@@ -737,6 +745,8 @@ export interface components {
             /** Planning Prompt Version */
             planning_prompt_version: string;
             test_case_content: components["schemas"]["TestCaseContent"];
+            /** User Input */
+            user_input?: string | null;
         };
         /**
          * TestRun
@@ -1578,7 +1588,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["TestPlanGenerateRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             201: {
@@ -1591,6 +1605,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

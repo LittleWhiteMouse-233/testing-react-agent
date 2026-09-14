@@ -35,6 +35,14 @@ class PlanningFailure(RuntimeError):
     """由 PlanningGraph 在有限重试耗尽后产生，供应用/API 边界消费。"""
 
 
+class PlanningUserInputRequired(ValueError):
+    """重新规划缺少本轮用户修改要求，必须在模型调用前拒绝。"""
+
+
+class TestPlanNotLatest(ValueError):
+    """计划创建事务发现本次参考版本已不是最新版本。"""
+
+
 class PromptVersionMismatch(RuntimeError):
     """由执行 factory 在可用 prompt 与 TestRun snapshot 不一致时产生。"""
 

@@ -8,6 +8,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.execution import Artifact, ArtifactType, ReasonCode
+from app.domain.errors import TestPlanNotLatest
 from app.domain.execution import (
     CycleStartedEvent,
     ExecutionErrorEvent,
@@ -135,19 +136,13 @@ class SqlAlchemyTestRepository:
                 .order_by(TestPlanRow.version_number.desc())
                 .limit(1)
             )
-            if origin == TestPlanOrigin.MANUAL_REVISION:
+            if origin != TestPlanOrigin.PLANNING:
                 if latest is None or latest.id != derived_from_plan_id:
-                    raise ValueError("manual revision must derive from the latest plan")
+                    raise TestPlanNotLatest("计划版本已变化，请刷新后基于最新计划重试")
             elif derived_from_plan_id is not None:
-                raise ValueError("only manual revisions have a parent plan")
-            else:
-                # Planning may finish concurrently, so the definitive origin
-                # must be chosen beside the serialized version allocation.
-                origin = (
-                    TestPlanOrigin.REPLANNING
-                    if latest is not None
-                    else TestPlanOrigin.PLANNING
-                )
+                raise ValueError("initial planning must not have a parent plan")
+            elif latest is not None:
+                raise TestPlanNotLatest("已有计划生成，请刷新后填写额外输入重新规划")
             row = TestPlanRow(
                 id=str(uuid4()),
                 test_case_id=test_case_id,
@@ -186,6 +181,18 @@ class SqlAlchemyTestRepository:
                 raise LookupError("Test plan not found")
             tasks = await self._task_rows(session, test_plan_id)
         return test_plan_from_rows(row, tasks)
+
+    async def get_latest_test_plan(self, test_case_id: str) -> TestPlan | None:
+        async with self.sessions() as session:
+            row = await session.scalar(
+                select(TestPlanRow)
+                .where(TestPlanRow.test_case_id == test_case_id)
+                .order_by(TestPlanRow.version_number.desc())
+                .limit(1)
+            )
+            if row is None:
+                return None
+            return test_plan_from_rows(row, await self._task_rows(session, row.id))
 
     async def list_test_plans(self, test_case_id: str) -> list[TestPlan]:
         async with self.sessions() as session:

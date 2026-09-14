@@ -14,11 +14,13 @@ from app.api.schemas import (
     ReportExportRequest,
     ReviseTestPlanRequest,
     TestCaseCreateRequest,
+    TestPlanGenerateRequest,
     TestRunCreateRequest,
 )
 from app.container import Container
 from app.domain.execution import Artifact, StoredRunEvent, TestRun, TestRunDetail, TestRunStatus
 from app.domain.ids import ArtifactId, TestCaseId, TestPlanId, TestRunId
+from app.domain.errors import PlanningUserInputRequired, TestPlanNotLatest
 from app.domain.planning import TestCase, TestPlan
 from app.reporting import TestRunReport
 from app.execution.run_service import RunConflict, RunResourcesUnavailable
@@ -87,15 +89,20 @@ async def get_test_case(test_case_id: TestCaseId, request: Request) -> TestCase:
     "/test-cases/{test_case_id}/plans",
     status_code=201,
     response_model=TestPlan,
-    responses={**NOT_FOUND_RESPONSE, **BAD_GATEWAY_RESPONSE},
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE, **BAD_GATEWAY_RESPONSE},
 )
 async def generate_plan(
-    test_case_id: TestCaseId, request: Request
+    test_case_id: TestCaseId, request: Request,
+    payload: TestPlanGenerateRequest | None = None,
 ) -> TestPlan:
     try:
         return await container(request).planning.generate(
-            test_case_id=test_case_id
+            test_case_id=test_case_id, user_input=payload.user_input if payload else None,
         )
+    except PlanningUserInputRequired as exc:
+        raise problem(422, "planning_user_input_required", str(exc)) from exc
+    except TestPlanNotLatest as exc:
+        raise problem(409, "test_plan_not_latest", str(exc)) from exc
     except LookupError as exc:
         raise problem(404, "planning_input_not_found", str(exc)) from exc
     except Exception as exc:

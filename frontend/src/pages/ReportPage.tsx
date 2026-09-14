@@ -65,6 +65,7 @@ export default function ReportPage() {
           <Descriptions.Item label="计划">{data.detail.test_plan.content.title}</Descriptions.Item>
           <Descriptions.Item label="计划版本">{data.detail.test_plan.version_number}</Descriptions.Item>
           <Descriptions.Item label="规划模型">{data.detail.test_plan.planning_context.planning_model.profile_id}</Descriptions.Item>
+          <Descriptions.Item label="规划额外输入"><span style={{ whiteSpace: "pre-wrap" }}>{data.detail.test_plan.planning_context.user_input ?? "无"}</span></Descriptions.Item>
           <Descriptions.Item label="执行模型">{data.detail.snapshot.execution_model.profile_id}</Descriptions.Item>
         </Descriptions>
         <Row gutter={16}>

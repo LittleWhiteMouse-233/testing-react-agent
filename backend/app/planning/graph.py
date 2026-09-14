@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langsmith import tracing_context
 
@@ -88,15 +87,18 @@ class PlanningGraph:
         request: TestCaseContent,
         *,
         model_client: ChatModelClient,
+        previous_plan: PlanDraft | None = None,
+        user_input: str | None = None,
     ) -> PlanDraft:
         """以本 Graph 的固定 prompt 和本次唯一解析的客户端生成草稿。"""
 
-        initial_messages = [
+        initial_messages: list[BaseMessage] = [
             SystemMessage(content=self.prompt_definition.text),
-            HumanMessage(
-                content=json.dumps(request.model_dump(mode="json"), ensure_ascii=False)
-            ),
+            HumanMessage(content=request.model_dump_json()),
         ]
+        if previous_plan is not None:
+            initial_messages.append(AIMessage(content=previous_plan.model_dump_json()))
+        initial_messages.append(HumanMessage(content=user_input or "无额外要求。"))
         with tracing_context(enabled=False):
             state = await self._build(model_client).compile().ainvoke(
                 {

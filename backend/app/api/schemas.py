@@ -15,6 +15,14 @@ class TestCaseCreateRequest(TestCaseContent):
     """Command name over the canonical TestCase content fields."""
 
 
+class TestPlanGenerateRequest(BaseModel):
+    """HTTP 规划命令的可选输入；重新规划必填由应用服务验证。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_input: str | None = None
+
+
 class ReviseTestPlanRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

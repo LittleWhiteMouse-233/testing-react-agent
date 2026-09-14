@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -151,15 +150,13 @@ class ScriptedChatModel(BaseChatModel):
         return RunnableLambda(invoke)
 
 
-def _request_from_messages(messages: Any) -> TestCaseContent:
-    for message in reversed(list(messages)):
-        content = getattr(message, "content", "")
-        if isinstance(content, str):
-            try:
-                return TestCaseContent.model_validate(json.loads(content))
-            except (ValueError, TypeError):
-                continue
-    return TestCaseContent(name="脚本测试", source_text="脚本测试")
+def _request_from_messages(messages: list[BaseMessage]) -> TestCaseContent:
+    # Planning always supplies the original case immediately after the system
+    # prompt. Later user input may itself be JSON and must not replace the case.
+    content = messages[1].content
+    if not isinstance(content, str):
+        raise TypeError("Planning test case message must contain JSON text")
+    return TestCaseContent.model_validate_json(content)
 
 
 class ScriptedChatModelClient:

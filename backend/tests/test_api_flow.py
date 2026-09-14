@@ -61,6 +61,7 @@ def test_complete_message_first_run_and_exports() -> None:
 
             plan_response = client.post(
                 f"/api/test-cases/{test_case['id']}/plans",
+                json={"user_input": "检查版本号完整显示"},
             )
             assert plan_response.status_code == 201, plan_response.text
             plan = plan_response.json()
@@ -199,6 +200,7 @@ def test_complete_message_first_run_and_exports() -> None:
             )
             assert report_response.status_code == 200, report_response.text
             report = report_response.json()
+            assert report["detail"]["test_plan"]["planning_context"]["user_input"] == "检查版本号完整显示"
             assert report["detail"] == detail
             assert report["events"] == events
             assert len(report["artifacts"]) == 2
@@ -226,6 +228,7 @@ def test_complete_message_first_run_and_exports() -> None:
                 else:
                     assert download.headers["content-type"].startswith("text/html")
                     assert "data:image/png;base64," in download.text
+                    assert "检查版本号完整显示" in download.text
 
 
 def test_only_latest_plan_can_start() -> None:
@@ -239,6 +242,7 @@ def test_only_latest_plan_can_start() -> None:
             ).json()
             second = client.post(
                 f"/api/test-cases/{case['id']}/plans",
+                json={"user_input": "细化成功标准"},
             ).json()
             assert second["origin"] == "replanning"
             stale_revision = client.post(

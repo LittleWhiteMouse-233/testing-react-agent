@@ -5,7 +5,7 @@
 ## 结构和边界
 
 - `backend/app/domain/`：用例、计划、运行、工具目录、模型快照和事件的领域事实。
-- `backend/app/planning/`：无工具的规划流程，只读取用例；`execution/`：Act/Judge 共用执行图。
+- `backend/app/planning/`：无工具的规划流程，读取原始用例、最新计划与本轮额外输入；`execution/`：Act/Judge 共用执行图。
 - `backend/app/tools.py`：标准 stdio MCP 配置、会话和 LangChain 工具导入；不理解设备或工具参数语义。
 - `backend/app/event_stream/`：从 LangGraph updates 投影持久消息事件，提交后发布 SSE。
 - `frontend/`：计划编辑、实时运行、历史和报告。
@@ -138,7 +138,7 @@ RunService 用一个工作状态管理准备、执行和清理阶段；准备阶
 
 ## API 与数据升级
 
-- `POST /api/test-cases/{id}/plans` 不需要请求体，规划不读取设备信息。
+- `POST /api/test-cases/{id}/plans` 接受可选请求体 `{"user_input":"本轮补充或修改要求"}`。首次规划可不填写；已有计划时必须提供非空白输入，基于最新已保存计划（含人工修订）重新规划。缺少输入返回 `422 / planning_user_input_required`；生成期间参考版本变化返回 `409 / test_plan_not_latest`，不保存结果或自动重试。规划不读取设备信息。
 - `POST /api/runs` 接收 `test_plan_id` 和 `assumptions_confirmed: true`。
 - 设备查询 API 和 device 字段已删除；运行保存一个 `execution_model` 和实际工具目录。
 - 计划修订创建新版本，只允许 latest 启动；相同运行的事件只追加，重复导出创建新文件。

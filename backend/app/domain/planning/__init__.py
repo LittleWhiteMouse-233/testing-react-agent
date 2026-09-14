@@ -122,6 +122,7 @@ class TestPlanPlanningContext(BaseModel):
     test_case_content: TestCaseContent
     planning_model: LLMProfileSnapshot
     planning_prompt_version: str = Field(min_length=1)
+    user_input: str | None = None
 
 
 class TestPlan(BaseModel):
@@ -140,12 +141,24 @@ class TestPlan(BaseModel):
 
     @model_validator(mode="after")
     def lineage_is_consistent(self) -> "TestPlan":
-        if self.origin == TestPlanOrigin.MANUAL_REVISION:
+        if self.origin != TestPlanOrigin.PLANNING:
             if self.derived_from_plan_id is None:
-                raise ValueError("manual revision requires derived_from_plan_id")
+                raise ValueError("replanning and manual revision require derived_from_plan_id")
         elif self.derived_from_plan_id is not None:
-            raise ValueError("only manual revision may have derived_from_plan_id")
+            raise ValueError("initial planning must not have derived_from_plan_id")
         return self
+
+
+def draft_plan_content(
+    content: TestPlanContent[TestTask],
+) -> TestPlanContent[TestTaskDefinition]:
+    """将已保存的计划投影为规划内容；剥离旧任务身份，保留全部设计事实。"""
+    return TestPlanContent[TestTaskDefinition](
+        title=content.title,
+        setup_steps=content.setup_steps,
+        assumptions=content.assumptions,
+        tasks=[task.definition for task in content.tasks],
+    )
 
 
 def identify_plan_content(

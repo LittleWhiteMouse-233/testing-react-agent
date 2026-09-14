@@ -58,8 +58,8 @@ def upgrade() -> None:
             "test_case_id", "version_number", name="uq_test_plan_version"
         ),
         sa.CheckConstraint(
-            "(origin = 'manual_revision' AND derived_from_plan_id IS NOT NULL) "
-            "OR (origin != 'manual_revision' AND derived_from_plan_id IS NULL)",
+            "(origin != 'planning' AND derived_from_plan_id IS NOT NULL) "
+            "OR (origin = 'planning' AND derived_from_plan_id IS NULL)",
             name="ck_test_plan_lineage",
         ),
     )

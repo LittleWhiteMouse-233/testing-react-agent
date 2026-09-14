@@ -301,11 +301,9 @@ async def test_latest_plan_and_single_active_run_are_serialized() -> None:
             (item for item in generated if isinstance(item, DomainTestPlan)),
             key=lambda item: item.version_number,
         )
-        assert [item.version_number for item in generated_plans] == [1, 2]
-        assert [item.origin for item in generated_plans] == [
-            PlanOrigin.PLANNING,
-            PlanOrigin.REPLANNING,
-        ]
+        assert [item.version_number for item in generated_plans] == [1]
+        assert generated_plans[0].origin == PlanOrigin.PLANNING
+        assert sum(isinstance(item, ValueError) for item in generated) == 1
 
         test_case = await repository.create_test_case(planning_context().test_case_content)
         initial = await repository.create_plan(

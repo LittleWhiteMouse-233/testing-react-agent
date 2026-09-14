@@ -1412,6 +1412,25 @@
         "title": "TestPlanContent[TestTask]",
         "type": "object"
       },
+      "TestPlanGenerateRequest": {
+        "additionalProperties": false,
+        "description": "HTTP 规划命令的可选输入；重新规划必填由应用服务验证。",
+        "properties": {
+          "user_input": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Input"
+          }
+        },
+        "title": "TestPlanGenerateRequest",
+        "type": "object"
+      },
       "TestPlanOrigin": {
         "description": "计划版本的产生方式，用于区分模型规划与人工修订历史。",
         "enum": [
@@ -1436,6 +1455,17 @@
           },
           "test_case_content": {
             "$ref": "#/components/schemas/TestCaseContent"
+          },
+          "user_input": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Input"
           }
         },
         "required": [
@@ -2773,6 +2803,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TestPlanGenerateRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "content": {
@@ -2793,6 +2840,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
