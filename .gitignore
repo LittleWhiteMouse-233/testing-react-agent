@@ -20,6 +20,7 @@ frontend/vite.config.d.ts
 .env
 .env.*
 !.env.example
+models.toml
 
 # dev
 .agents/

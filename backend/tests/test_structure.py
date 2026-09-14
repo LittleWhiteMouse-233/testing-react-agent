@@ -529,7 +529,12 @@ def test_checked_in_openapi_is_current() -> None:
             "utf-8"
         )
     )
-    generated = create_app(Settings(data_dir=repository_root / "data" / "openapi-test")).openapi()
+    generated = create_app(Settings(
+        model_config_path=repository_root / "models.example.toml",
+        planning_model_id=None,
+        execution_model_id=None,
+        data_dir=repository_root / "data" / "openapi-test",
+    )).openapi()
     assert checked_in == generated
     schema_names = set(checked_in["components"]["schemas"])
     assert "ApiError" in schema_names

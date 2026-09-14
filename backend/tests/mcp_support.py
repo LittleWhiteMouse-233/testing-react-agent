@@ -10,7 +10,7 @@ from typing import Any, cast
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
-from app.config import LLMProfileSettings, Settings
+from app.config import Settings
 from app.container import Container
 from app.llm import ScriptedChatModelClient
 from app.main import create_app
@@ -69,8 +69,10 @@ def finish_turn(index: int, status: str = "passed") -> AIMessage:
 def build_client(root: Path, *, calls: list[dict[str, Any]] | None = None,
                  turns: list[Any] | None = None, **overrides: Any) -> TestClient:
     config = write_mcp_config(root, calls if calls is not None else [replay_call(), replay_call()])
+    model_config_path = root / "models.toml"
+    model_config_path.write_text('[[profiles]]\nid = "default"\n', encoding="utf-8")
     # BaseSettings supports _env_file publicly; Pydantic's generated signature omits it.
-    settings = Settings(_env_file=None, llm_profiles=[LLMProfileSettings(id="default", mode="scripted")],  # type: ignore[call-arg]
+    settings = Settings(_env_file=None, model_config_path=model_config_path,  # type: ignore[call-arg]
                         planning_model_id="default", execution_model_id="default",
                         data_dir=root, database_url=f"sqlite+aiosqlite:///{(root / 'app.db').as_posix()}",
                         checkpoint_path=root / "checkpoints.db", mcp_config_path=config, **overrides)

@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "start:app": "concurrently --kill-others --names backend,frontend \"cd ../backend && conda run --no-capture-output -n llm-dev python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1\" \"vite --host localhost --port 5173 --strictPort\"",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",
@@ -29,6 +30,7 @@
     "@vitejs/plugin-react": "^5.0.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
+    "concurrently": "10.0.5",
     "esbuild": "^0.28.1",
     "jsdom": "^26.0.0",
     "openapi-typescript": "^7.8.0",

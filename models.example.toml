@@ -1,0 +1,36 @@
+# Copy to models.toml (ignored by Git), then configure your models and API keys.
+# Profiles are ordered: the first is the default for an unset/empty route in .env.
+# The minimal scripted profile below is for local testing only.
+[[profiles]]
+id = "default"
+
+# For real models, replace the scripted profile above with profiles like these.
+# Each model owns its connection, API key, and context budget.
+# Set the context window and output limit to match your model service.
+# Select their ids through TEST_AGENT_PLANNING_MODEL_ID and
+# TEST_AGENT_EXECUTION_MODEL_ID in .env.
+
+# [[profiles]]
+# id = "planner"
+# mode = "real"
+# base_url = "https://example.com/v1"
+# api_key = "replace-with-planner-key"
+# model = "your-planning-model"
+# context_window_tokens = 32768
+# max_output_tokens = 2048
+
+# [[profiles]]
+# id = "vision"
+# mode = "real"
+# base_url = "https://example.com/v1"
+# api_key = "replace-with-vision-key"
+# model = "your-multimodal-tool-model"
+# context_window_tokens = 131072
+# max_output_tokens = 4096
+
+# Optional per-profile tuning (defaults shown; put under the relevant [[profiles]]):
+# temperature = 0
+# timeout_seconds = 60
+# characters_per_token = 1.5
+# tokens_per_image = 1024
+# context_safety_margin_tokens = 1024

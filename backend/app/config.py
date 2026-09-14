@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from pathlib import Path
+import tomllib
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -40,11 +41,27 @@ class LLMProfileSettings(BaseModel):
         return self
 
 
+class LLMProfilesSettings(BaseModel):
+    """TOML document boundary: an ordered, nonempty list with unique profile IDs."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    profiles: list[LLMProfileSettings] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def profile_ids_are_unique(self) -> "LLMProfilesSettings":
+        profile_ids = [profile.id for profile in self.profiles]
+        if len(profile_ids) != len(set(profile_ids)):
+            raise ValueError("Model profile ids must be unique")
+        return self
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
         env_prefix="TEST_AGENT_",
+        env_ignore_empty=True,
         extra="ignore",
         populate_by_name=True,
     )
@@ -58,10 +75,7 @@ class Settings(BaseSettings):
     database_url: str | None = None
     checkpoint_path: Path | None = None
 
-    llm_profiles: list[LLMProfileSettings] = Field(
-        default_factory=lambda: [LLMProfileSettings(id="default")],
-        validation_alias="LLM_PROFILES",
-    )
+    model_config_path: Path = PROJECT_ROOT / "models.toml"
     planning_model_id: str | None = None
     execution_model_id: str | None = None
 
@@ -74,11 +88,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def model_routes_are_valid(self) -> "Settings":
-        if not self.llm_profiles:
-            raise ValueError("LLM_PROFILES must contain at least one model")
         ids = [profile.id for profile in self.llm_profiles]
-        if len(ids) != len(set(ids)):
-            raise ValueError("LLM_PROFILES ids must be unique")
         known = set(ids)
         for field_name in (
             "planning_model_id",
@@ -90,12 +100,21 @@ class Settings(BaseSettings):
         return self
 
     def model_post_init(self, __context: object) -> None:
+        if not self.model_config_path.is_absolute():
+            self.model_config_path = (PROJECT_ROOT / self.model_config_path).resolve()
         if not self.mcp_config_path.is_absolute():
             self.mcp_config_path = (PROJECT_ROOT / self.mcp_config_path).resolve()
         if not self.data_dir.is_absolute():
             self.data_dir = (PROJECT_ROOT / self.data_dir).resolve()
         if self.checkpoint_path is not None and not self.checkpoint_path.is_absolute():
             self.checkpoint_path = (PROJECT_ROOT / self.checkpoint_path).resolve()
+
+    @cached_property
+    def llm_profiles(self) -> list[LLMProfileSettings]:
+        # The file owns model parameters; environment settings only select routes.
+        # Parse once per Settings instance so all consumers see the startup config.
+        with self.model_config_path.open("rb") as model_config_file:
+            return LLMProfilesSettings.model_validate(tomllib.load(model_config_file)).profiles
 
     @property
     def db_url(self) -> str:

@@ -17,41 +17,66 @@
 
 ## 安装和启动
 
-Python 使用已有 Conda 环境 `llm-dev`，PowerShell 每个会话先设置 UTF-8：
+首次使用时，复制 `.env.example` 为 `.env`，并复制 `models.example.toml` 为 `models.toml`。在 `models.toml` 中配置各模型的连接、API key 和参数，在 `.env` 中选择规划与执行模型并配置 MCP。默认 scripted 模型只用于测试；没有显式执行场景时返回 blocked，不会猜测工具名称或伪造截图。
+
+安装依赖（需已安装 Conda、Node.js，并创建 `llm-dev` 环境，在仓库根目录运行）：
 
 ```powershell
+.\install.cmd
+```
+
+安装脚本分别检查前后端依赖，通过检查的部分直接跳过；未通过时才调用包管理器安装，并在安装后复查。后端使用 pip 默认的增量安装，保留满足要求的第三方包；前端使用 `npm install --include=dev`，保留已有 `node_modules`，不使用会清空它的 `npm ci`。安装意外中止后重新运行即可复用已完成的部分；未完成或版本不兼容的包仍需要安装，后端本地项目的 editable 注册可能重新生成。独立 MCP 服务仍按各自说明安装。
+
+完成依赖安装后，Windows 日常启动只需在仓库根目录运行：
+
+```powershell
+.\start.cmd
+```
+
+脚本自动设置 Python UTF-8，先执行数据库迁移，再在同一个终端运行后端和前端；迁移失败时不会启动服务。打开 http://localhost:5173 使用应用，后端监听 `127.0.0.1:8000`（单 worker）。日志以 `backend` / `frontend` 区分，按 Ctrl+C 停止两个服务；任一服务退出时另一个也会停止。5173 被占用时直接报错，不会自动切换到其他端口。
+
+启动入口先调用 `check-dependencies.cmd` 检查依赖，失败时提示运行 `install.cmd` 并退出，不自动安装。检查通过后才执行数据库迁移和服务启动。检查包括后端项目安装记录、启动/开发工具导入与 `pip check`，以及前端依赖树和启动工具；它不校验每个已安装文件的完整性。模型配置变更后重新运行启动命令。
+
+开发时仍可单独启动各服务：
+
+```powershell
+# 后端终端
 $env:PYTHONUTF8 = "1"
 cd backend
-conda run -n llm-dev python -m pip install -e ".[dev]"
-conda run -n llm-dev python -m alembic upgrade head
-conda run -n llm-dev python -m uvicorn app.main:app --port 8000
+conda run --no-capture-output -n llm-dev python -m uvicorn app.main:app --port 8000
 ```
-
-如果本机 `conda.bat` 入口失效，可用 `D:/SoftwareInstalled/miniconda3/Scripts/conda.exe` 替代命令名，仍使用同一 Conda 环境。
-
-另一个终端启动前端：
 
 ```powershell
+# 前端终端
 cd frontend
-npm.cmd install
 npm.cmd run dev
 ```
-
-复制 `.env.example` 为 `.env`，配置模型和 MCP。默认 scripted 模型只用于测试；没有显式执行场景时返回 blocked，不会猜测工具名称或伪造截图。
 
 ## 宿主配置
 
 | 配置 | 默认值 / 作用 |
 |---|---|
-| `LLM_PROFILES` | 有序模型配置列表；保留密钥在本地 `.env` |
-| `TEST_AGENT_PLANNING_MODEL_ID` | 规划模型 ID，未设时使用首个 profile |
-| `TEST_AGENT_EXECUTION_MODEL_ID` | Act/Judge 共用模型 ID，未设时使用首个 profile |
+| `TEST_AGENT_MODEL_CONFIG_PATH` | 默认 `./models.toml`；模型配置文件，相对路径从仓库根目录解析 |
+| `TEST_AGENT_PLANNING_MODEL_ID` | 规划模型 ID，未设或留空时使用首个 profile |
+| `TEST_AGENT_EXECUTION_MODEL_ID` | Act/Judge 共用模型 ID，未设或留空时使用首个 profile |
 | `TEST_AGENT_MCP_CONFIG_PATH` | 仓库根目录 `mcp.json`，相对路径从根目录解析 |
 | `TEST_AGENT_TOOL_CALL_TIMEOUT_SECONDS` | 120 秒，通用工具调用与发现超时；可能包含会话重建 |
 | `TEST_AGENT_TOOL_CLEANUP_TIMEOUT_SECONDS` | 30 秒，调用中止与会话收尾的独立等待上限 |
 | `TEST_AGENT_SCREENSHOT_HISTORY_ROUNDS` | 3，State 保留原图 base64 的最近有截图决策轮数；过期图片替换为 artifact 引用 |
 | `TEST_AGENT_MODEL_CALL_MAX_ATTEMPTS` | 3，模型传输错误有限重试 |
 | `TEST_AGENT_MODEL_RESPONSE_MAX_ATTEMPTS` | 3，连续无效响应/工具错误上限 |
+
+模型参数统一放在 `models.toml` 的有序 `[[profiles]]` 中，每个 profile 独立填写 `api_key`、`base_url`、`model`、`mode` 和所需预算参数；省略的参数采用代码默认值，完整示例见 `models.example.toml`。真实模型必须设置 `mode = "real"`，并按服务实际能力填写上下文窗口与输出上限。
+
+`.env` 不再使用 `LLM_PROFILES`，模型选择示例：
+
+```dotenv
+TEST_AGENT_MODEL_CONFIG_PATH=./models.toml
+TEST_AGENT_PLANNING_MODEL_ID=planner
+TEST_AGENT_EXECUTION_MODEL_ID=vision
+```
+
+两个 ID 必须存在于模型文件中；Act/Judge 共用 execution 模型。配置在启动时读取，修改后重启后端。文件缺失、TOML 格式错误、空列表、重复 ID、未知字段或无效预算会阻止启动。`models.toml` 已加入 Git 忽略；真实密钥只写入本地文件，提交示例文件时保留占位符。
 
 旧的 `ADB_*`、Act/Judge 模型路由和设备操作参数已移除。模型上下文预算仍由 profile 的 context window、输出保留、图片 token 估计和安全余量共同决定。
 

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from app.config import LLMProfileSettings, Settings
+from app.config import LLMProfileSettings
 from app.domain.activity import AgentActivity
 from app.domain.execution import (
     Artifact,
@@ -164,11 +164,6 @@ def test_settings_to_snapshot_is_a_single_secret_free_projection() -> None:
     snapshot = profile_snapshot_from_settings(settings)
     assert snapshot.profile_id == "audited"
     assert "api_key" not in snapshot.model_dump()
-    with pytest.raises(ValidationError, match="unknown model"):
-        Settings(
-            llm_profiles=[LLMProfileSettings(id="first")],
-            execution_model_id="missing",
-        )
 
 
 def test_activity_conversion_and_model_provider_routes_are_explicit() -> None:
