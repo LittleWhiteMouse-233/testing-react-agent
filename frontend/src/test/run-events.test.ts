@@ -4,7 +4,6 @@ import {
   mergeStoredRunEvent,
   openRunEventStream,
   parseStoredRunEvent,
-  startRunEventStream,
   type RunEventSource
 } from "../api/runEvents";
 
@@ -135,37 +134,6 @@ describe("parseStoredRunEvent", () => {
 });
 
 describe("run event stream boundary", () => {
-  it("falls back to sequence zero when REST history loading fails", async () => {
-    const source: RunEventSource = { close: vi.fn(), onmessage: null };
-    const createEventSource = vi.fn(() => source);
-    const started = await startRunEventStream(
-      RUN_ID,
-      { onEvent: vi.fn(), onTerminal: vi.fn(), onContractError: vi.fn() },
-      () => Promise.reject(new TypeError("offline")),
-      createEventSource
-    );
-    expect(started.events).toEqual([]);
-    expect(started.source).toBe(source);
-    expect(createEventSource).toHaveBeenCalledWith(
-      `/api/runs/${RUN_ID}/stream?after=0`
-    );
-  });
-
-  it("does not reconnect after restored history is already terminal", async () => {
-    const terminalEvent = parseStoredRunEvent(
-      JSON.stringify(lifecycleEvent("run.finished"))
-    );
-    const createEventSource = vi.fn();
-    const started = await startRunEventStream(
-      RUN_ID,
-      { onEvent: vi.fn(), onTerminal: vi.fn(), onContractError: vi.fn() },
-      () => Promise.resolve([terminalEvent]),
-      createEventSource
-    );
-    expect(started).toEqual({ events: [terminalEvent], source: null });
-    expect(createEventSource).not.toHaveBeenCalled();
-  });
-
   it("leaves network reconnection to the browser for non-terminal events", () => {
     const source: RunEventSource = { close: vi.fn(), onmessage: null };
     const onEvent = vi.fn();

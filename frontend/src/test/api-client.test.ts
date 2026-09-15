@@ -22,7 +22,7 @@ describe("OpenAPI client boundary", () => {
       fetch: fetchSpy
     });
 
-    await client.GET("/api/runs/{test_run_id}/events", {
+    await client.GET("/api/runs/{test_run_id}/stream", {
       params: {
         path: { test_run_id: "run/id" },
         query: { after: 3 }
@@ -35,7 +35,7 @@ describe("OpenAPI client boundary", () => {
     const getRequest = fetchSpy.mock.calls[0]?.[0];
     const postRequest = fetchSpy.mock.calls[1]?.[0];
     expect(getRequest?.url).toBe(
-      "https://example.test/api/runs/run%2Fid/events?after=3"
+      "https://example.test/api/runs/run%2Fid/stream?after=3"
     );
     expect(postRequest?.url).toBe("https://example.test/api/test-cases");
     expect(await postRequest?.json()).toEqual({

@@ -13,7 +13,7 @@ const queryClient = new QueryClient({
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: "#2563eb", borderRadius: 10 } }}>
+    <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: "#0066cc", colorText: "#1d1d1f", colorBorder: "#e0e0e0", borderRadius: 8, fontSize: 13, fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif' } }}>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <App />
@@ -22,4 +22,3 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     </ConfigProvider>
   </React.StrictMode>
 );
-

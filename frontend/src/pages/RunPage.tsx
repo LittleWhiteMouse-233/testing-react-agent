@@ -1,156 +1,73 @@
-import { FileTextOutlined, StopOutlined } from "@ant-design/icons";
-import {
-  Alert,
-  Button,
-  Card,
-  Col,
-  Descriptions,
-  List,
-  Progress,
-  Row,
-  Space,
-  Spin,
-  Tag,
-  Typography,
-  message
-} from "antd";
-import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import {
-  $api,
-  apiErrorMessage,
-  artifactUrl
-} from "../api/client";
-import {
-  latestScreenshotArtifactId,
-  mergeStoredRunEvent,
-  startRunEventStream,
-  type RunEventSource
-} from "../api/runEvents";
-import type { StoredRunEvent } from "../api/contracts";
+import { StopOutlined } from "@ant-design/icons";
+import { Alert, Button, Empty, Image, Spin, message } from "antd";
+import { useState } from "react";
+import { Link, Navigate, useParams } from "react-router-dom";
+import { $api, apiErrorMessage, artifactUrl } from "../api/client";
+import { latestScreenshotArtifactId } from "../api/runEvents";
+import { useRunReport } from "../api/useRunReport";
+import { ElapsedTime, EventTimeline, RunResources, StatusBadge, taskCycleCount, taskStatus } from "../runPresentation";
 
-function eventDetails(stored: StoredRunEvent): string {
-  return JSON.stringify(stored.event, null, 2);
+export function ActiveRunPage() {
+  const runs = $api.useQuery("get", "/api/runs", { params: { query: { status: ["pending", "running"], limit: 1 } } }, { refetchInterval: 3000 });
+  if (runs.isLoading) return <div className="page-empty"><Spin /></div>;
+  if (runs.error) return <div className="page-empty"><Alert type="error" title={apiErrorMessage(runs.error, "运行加载失败")} /></div>;
+  const run = runs.data?.items[0];
+  if (run) return <Navigate to={"/runs/" + run.id} replace />;
+  return <div className="page-empty"><Empty description="当前没有活动运行"><Link to="/"><Button type="primary">前往用例规划</Button></Link></Empty></div>;
 }
 
 export default function RunPage() {
   const { runId = "" } = useParams();
-  const [events, setEvents] = useState<StoredRunEvent[]>([]);
-  const [streamContractError, setStreamContractError] = useState<string>();
-  const detail = $api.useQuery("get", "/api/runs/{test_run_id}", {
-    params: { path: { test_run_id: runId } }
-  }, {
-    refetchInterval: (query) =>
-      query.state.data?.run.status !== "finished" ? 1000 : false
-  });
+  return <RunExecution key={runId} runId={runId} />;
+}
+
+function RunExecution({ runId }: { runId: string }) {
+  const report = useRunReport(runId);
+  const [cancelRequested, setCancelRequested] = useState(false);
   const cancel = $api.useMutation("post", "/api/runs/{test_run_id}/cancel", {
-    onSuccess: () => message.info("取消请求已提交，将在安全边界生效"),
+    onSuccess: () => { setCancelRequested(true); message.info("取消请求已提交，将在安全边界生效"); },
     onError: (error) => message.error(apiErrorMessage(error, "取消请求失败"))
   });
-
-  useEffect(() => {
-    setEvents([]);
-    setStreamContractError(undefined);
-    let source: RunEventSource | null = null;
-    let disposed = false;
-    const restoreAndConnect = async () => {
-      const started = await startRunEventStream(runId, {
-        onEvent: (stored) => {
-          setEvents((current) => mergeStoredRunEvent(current, stored));
-        },
-        onTerminal: () => {
-          void detail.refetch();
-        },
-        onContractError: () => {
-          setStreamContractError("事件流违反 OpenAPI 契约，实时更新已停止");
-        }
-      });
-      if (disposed) {
-        started.source?.close();
-        return;
-      }
-      setEvents(started.events);
-      source = started.source;
-    };
-    void restoreAndConnect();
-    return () => {
-      disposed = true;
-      source?.close();
-    };
-  }, [runId]);
-
-  const latestScreenshot = useMemo(() => latestScreenshotArtifactId(events), [events]);
-
-  if (detail.isLoading) return <Spin />;
-  if (detail.error || !detail.data) {
-    return <Alert type="error" message={apiErrorMessage(detail.error, "运行不存在")} />;
-  }
-  const data = detail.data;
-  const activeTaskRun = data.task_runs.find((task) => task.status === "running");
-  const activeTask = data.test_plan.content.tasks.find(
-    (task) => task.test_task_id === activeTaskRun?.test_task_id
-  );
-  const percent = activeTaskRun && activeTask
-    ? Math.min(100, Math.round((activeTaskRun.cycle_count / activeTask.definition.max_cycles) * 100))
-    : 0;
-
-  return (
-    <Space direction="vertical" size="large" style={{ width: "100%" }}>
-      {streamContractError && <Alert type="error" showIcon message={streamContractError} />}
-      <Card>
-        <div className="toolbar">
-          <div>
-            <Typography.Title level={3} style={{ margin: 0 }}>运行 {runId.slice(0, 8)}</Typography.Title>
-            <Space>
-              <Tag>{data.run.status}</Tag>
-              {data.run.verdict && <Tag color={data.run.verdict === "PASS" ? "green" : data.run.verdict === "FAIL" ? "red" : "orange"}>{data.run.verdict}</Tag>}
-            </Space>
-          </div>
-          <Space>
-            {data.run.status !== "finished" && <Button danger icon={<StopOutlined />} onClick={() => cancel.mutate({ params: { path: { test_run_id: runId } } })} loading={cancel.isPending}>取消</Button>}
-            {data.run.verdict && <Link to={`/runs/${runId}/report`}><Button type="primary" icon={<FileTextOutlined />}>查看报告</Button></Link>}
-          </Space>
-        </div>
-        <Descriptions column={{ xs: 1, sm: 2, md: 3 }}>
-          <Descriptions.Item label="计划版本">{data.test_plan.version_number}</Descriptions.Item>
-          <Descriptions.Item label="执行协议">{data.snapshot.execution_protocol_version}</Descriptions.Item>
-          <Descriptions.Item label="执行模型">{data.snapshot.execution_model.profile_id}</Descriptions.Item>
-        </Descriptions>
-        {activeTaskRun && activeTask && (
-          <>
-            <Typography.Text strong>当前任务：{activeTask.definition.title}</Typography.Text>
-            <Progress percent={percent} format={() => `${activeTaskRun.cycle_count}/${activeTask.definition.max_cycles}`} />
-          </>
-        )}
-      </Card>
-      <Row gutter={[20, 20]}>
-        <Col xs={24} lg={13}>
-          <Card title="最新电视截图">
-            {latestScreenshot ? (
-              <img className="screenshot" src={artifactUrl(latestScreenshot)} alt="电视截图" />
-            ) : (
-              <Alert message="等待首次截图…" type="info" />
-            )}
-          </Card>
-        </Col>
-        <Col xs={24} lg={11}>
-          <Card title={`事实时间线（${events.length}）`}>
-            <List
-              className="event-list"
-              dataSource={[...events].reverse()}
-              locale={{ emptyText: "等待事件…" }}
-              renderItem={(stored) => (
-                <List.Item>
-                  <div className="event-item">
-                    <Space><Tag>{stored.sequence}</Tag><strong>{stored.event.type}</strong></Space>
-                    <Typography.Paragraph type="secondary" ellipsis={{ rows: 3, expandable: true }}>{eventDetails(stored)}</Typography.Paragraph>
-                  </div>
-                </List.Item>
-              )}
-            />
-          </Card>
-        </Col>
-      </Row>
-    </Space>
-  );
+  if (report.isLoading) return <div className="page-empty"><Spin /></div>;
+  if (!report.data) return <div className="page-empty"><Alert type="error" title={apiErrorMessage(report.error, "运行不存在")} action={<Button onClick={() => void report.refetch()}>重试</Button>} /></div>;
+  const { run, test_plan: plan, task_runs: taskRuns } = report.data.detail;
+  const finished = run.status === "finished";
+  const activeTask = taskRuns.find((task) => task.status === "running");
+  const activeIndex = plan.content.tasks.findIndex((task) => task.test_task_id === activeTask?.test_task_id);
+  const passed = taskRuns.filter((task) => task.status === "passed").length;
+  const screenshotId = latestScreenshotArtifactId(report.events);
+  return <>
+    <header className="page-heading"><div><div className="eyebrow"><Link to={"/cases/" + plan.test_case_id + "/plan"}>用例库</Link> / <span className="mono">{plan.test_case_id.slice(0, 8)}</span> / 执行</div>
+      <h1>{plan.planning_context.test_case_content.name}</h1><p><StatusBadge status={run.verdict ?? run.status} /> <span className="mono">{run.id}</span></p></div>
+      <div className="heading-actions"><Link to={"/cases/" + plan.test_case_id + "/plan"}><Button>查看最新计划</Button></Link>
+        {finished ? <Link to={"/runs/" + runId + "/report"}><Button type="primary">查看执行记录</Button></Link> :
+          <Button danger icon={<StopOutlined />} disabled={cancelRequested} loading={cancel.isPending} onClick={() => cancel.mutate({ params: { path: { test_run_id: runId } } })}>{cancelRequested ? "等待取消生效" : "终止"}</Button>}
+      </div>
+    </header>
+    {report.contractError && <Alert type="error" title="事件流违反 OpenAPI 契约，实时更新已停止" />}
+    {report.error && <Alert type="warning" title="运行详情刷新失败，保留最近一次读取的记录" action={<Button onClick={() => void report.refetch()}>重试</Button>} />}
+    <div className="execution-layout">
+      <aside className="task-queue"><div className="section-heading"><div><small>任务队列</small><h2>执行进度</h2></div><span>{passed}/{plan.content.tasks.length} 通过</span></div>
+        <div className="queue-meta"><span>已用 <ElapsedTime startedAt={run.started_at} finishedAt={run.finished_at} active={!finished} /></span><span>{activeIndex >= 0 ? "当前第 " + (activeIndex + 1) + " 步" : finished ? "已结束" : "等待启动"}</span></div>
+        {plan.content.tasks.map((task, index) => {
+          const taskRun = taskRuns.find((entry) => entry.test_task_id === task.test_task_id);
+          return <article key={task.test_task_id} className={"queue-task " + (taskRun?.status === "running" ? "active" : "")}>
+            <span className={"task-number " + task.definition.type}>{index + 1}</span><div><div className="task-title"><h3>{task.definition.title}</h3><StatusBadge status={taskStatus(taskRun, finished)} /></div>
+              <small>{task.definition.type.toUpperCase()}</small><p>{task.definition.goal}</p>
+              <details><summary>成功标准</summary><ul>{task.definition.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul></details>
+              <div className="task-runtime"><span>{taskRun ? taskCycleCount(taskRun, report.events) : "—"} / {task.definition.max_cycles} 轮</span><ElapsedTime startedAt={taskRun?.started_at ?? null} finishedAt={taskRun?.finished_at ?? null} active={taskRun?.status === "running"} /></div>
+              {taskRun?.result && <p className="task-result">{taskRun.result.summary}</p>}
+            </div>
+          </article>;
+        })}
+      </aside>
+      <section className="execution-observation"><div className="section-heading"><div><small>观察与证据</small><h2>最新截图</h2></div><span>v{plan.version_number}</span></div>
+        <div className="latest-screenshot">{screenshotId ? <Image src={artifactUrl(screenshotId)} alt="最新电视截图" /> : <Empty description={finished ? "本次运行没有截图" : "等待首次截图…"} />}</div>
+        <div className="section-heading"><div><small>本次运行冻结的资源</small><h2>工具与模型</h2></div></div><RunResources report={report.data} />
+      </section>
+      <section className="execution-events"><div className="section-heading"><div><small>持久化运行事实</small><h2>事件流</h2></div><span className={"connection " + report.connection}>{report.contractError ? "已停止" : ({ connecting: "连接中", connected: "实时连接", reconnecting: "正在重连", finished: "已结束" }[report.connection])}</span></div>
+        <EventTimeline events={report.events} controls /><footer className="event-footer">{report.events.length} 条事件 · 按保存顺序显示</footer>
+      </section>
+    </div>
+  </>;
 }

@@ -67,7 +67,7 @@ def test_unsupported_graph_exit_is_blocked_and_releases_run_entry(
         assert detail["run"]["verdict"] == "BLOCKED"
         assert [task["status"] for task in detail["task_runs"]] == ["blocked", "skipped"]
         assert detail["task_runs"][0]["result"]["reason_code"] == "unexpected_error"
-        events = client.get(f"/api/runs/{run_id}/events").json()["items"]
+        events = client.get(f"/api/runs/{run_id}").json()["events"]
         errors = [entry["event"] for entry in events if entry["event"]["type"] == "execution.error"]
         assert len(errors) == 1
         expected_error = {
@@ -106,7 +106,7 @@ def test_finish_without_image_is_repaired_and_counted(tmp_path: Path) -> None:
         detail = wait_for_run(client, start_run(client, create_plan(client)))
         assert detail["run"]["verdict"] == "PASS"
         assert detail["task_runs"][0]["cycle_count"] == 3
-        events = client.get(f"/api/runs/{detail['run']['id']}/events").json()["items"]
+        events = client.get(f"/api/runs/{detail['run']['id']}").json()["events"]
         assert sum(entry["event"]["type"] == "message.validation_failed" for entry in events) == 1
 
 
@@ -123,7 +123,7 @@ def test_tool_errors_keep_partial_images_and_are_not_automatically_replayed(tmp_
                       turns=[tool_turn(1), finish_turn(2, "blocked")]) as client:
         run_id = start_run(client, create_plan(client))
         assert wait_for_run(client, run_id)["run"]["verdict"] == "BLOCKED"
-        report = client.get(f"/api/runs/{run_id}/report").json()
+        report = client.get(f"/api/runs/{run_id}").json()
         assert len(report["artifacts"]) == 1
         messages = [entry["event"]["message"] for entry in report["events"] if entry["event"]["type"] == "message.appended"]
         returned = next(message for message in messages if message["role"] == "tool" and message["name"] == "fixture_inspect")
@@ -155,7 +155,7 @@ def test_timeout_rebuilds_after_cleanup_or_blocks_cleanup_failure(tmp_path: Path
         else:
             assert detail['task_runs'][0]['result']['reason_code'] == 'tool_failed'
             assert detail['task_runs'][1]['status'] == 'skipped'
-        report = client.get(f'/api/runs/{run_id}/report').json()
+        report = client.get(f'/api/runs/{run_id}').json()
         assert len(report['artifacts']) == (2 if cooperative else 1)  # late image is not accepted
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
         model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
@@ -234,7 +234,7 @@ def test_model_can_correct_parameters_after_timeout(tmp_path: Path) -> None:
         detail = wait_for_run(client, run_id)
         assert detail['run']['verdict'] == 'PASS'
         assert detail['task_runs'][0]['cycle_count'] == 3
-        assert len(client.get(f'/api/runs/{run_id}/report').json()['artifacts']) == 1
+        assert len(client.get(f'/api/runs/{run_id}').json()['artifacts']) == 1
     records = read_records(tmp_path)
     started = [entry for entry in records if entry['phase'] == 'started']
     assert [entry['arguments'] for entry in started] == [{'wait_seconds': 10}, {'wait_seconds': 0}]
@@ -320,7 +320,7 @@ def test_visual_history_preserves_order_text_events_and_artifacts(tmp_path: Path
         run_id = start_run(client, create_plan(client))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "PASS"
-        report = client.get(f"/api/runs/{run_id}/report").json()
+        report = client.get(f"/api/runs/{run_id}").json()
         assert len(report["artifacts"]) == 8
         event_messages = [entry["event"]["message"] for entry in report["events"] if entry["event"]["type"] == "message.appended"]
         assert len({message["message_id"] for message in event_messages}) == len(event_messages)
@@ -409,7 +409,7 @@ def test_visual_retention_reaches_state_and_terminal_checkpoint(
             # model input projection. Earlier node snapshots remain unchanged.
             assert sum(block["type"] == "image" for message in observed_states[-1] for block in message.content_blocks) == 1
         assert sum(block["type"] == "image" for message in observed_states[1] for block in message.content_blocks) == 2
-        report = client.get(f"/api/runs/{run_id}/report").json()
+        report = client.get(f"/api/runs/{run_id}").json()
 
     async def verify_checkpoint() -> None:
         async with AsyncSqliteSaver.from_conn_string(str(tmp_path / "checkpoints.db")) as saver:
@@ -479,7 +479,7 @@ def test_custom_schema_structured_result_and_history_without_online_mcp(tmp_path
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "PASS"
         assert detail["snapshot"]["tool_catalog"]["tools"][0]["input_schema"]["required"] == ["document", "pages"]
-        report = client.get(f"/api/runs/{run_id}/report").json()
+        report = client.get(f"/api/runs/{run_id}").json()
         returned = next(entry["event"]["message"] for entry in report["events"]
                         if entry["event"]["type"] == "message.appended" and entry["event"]["message"].get("name") == turn.tool_calls[0]["name"])
         structured = json.loads(returned["content"][-1]["text"])
@@ -490,7 +490,7 @@ def test_custom_schema_structured_result_and_history_without_online_mcp(tmp_path
     # Refresh/history/export works after the service configuration is unavailable.
     with build_client(tmp_path) as client:
         (tmp_path / "mcp.json").write_text("invalid", encoding="utf-8")
-        assert client.get(f"/api/runs/{run_id}/report").json() == report
+        assert client.get(f"/api/runs/{run_id}").json() == report
         exported = client.post(f"/api/runs/{run_id}/exports", json={"format": "json"}).json()
         assert client.get(f"/api/artifacts/{exported['id']}").json() == report
 
@@ -525,7 +525,7 @@ def test_evidence_failure_preserves_saved_facts_and_blocks(
         assert detail["run"]["verdict"] == "BLOCKED"
         assert detail["task_runs"][0]["result"]["reason_code"] == "tool_failed"
         assert detail["task_runs"][1]["status"] == "skipped"
-        report = client.get(f"/api/runs/{run_id}/report").json()
+        report = client.get(f"/api/runs/{run_id}").json()
         expected_images = 0 if failure_kind == "first_save" else 1
         assert len(report["artifacts"]) == expected_images
         events = [entry["event"] for entry in report["events"]]
@@ -575,7 +575,7 @@ def test_slow_evidence_save_is_outside_tool_timeout_and_precedes_publication(
         assert detail["run"]["verdict"] == "PASS"
         assert not any(event["type"] == "message.appended" and event["message"]["role"] == "tool"
                        for event in observed_unsaved_events)
-        events = [entry["event"] for entry in client.get(f"/api/runs/{run_id}/events").json()["items"]]
+        events = [entry["event"] for entry in client.get(f"/api/runs/{run_id}").json()["events"]]
         started = next(index for index, event in enumerate(events) if event["type"] == "tool.started")
         returned = next(index for index, event in enumerate(events)
                         if event["type"] == "message.appended" and event["message"]["role"] == "tool")
@@ -618,7 +618,7 @@ def test_tool_correction_budget_is_shared_and_success_resets_it(tmp_path: Path, 
         assert detail["task_runs"][0]["cycle_count"] == (7 if recover else 3)
         if not recover:
             assert detail["task_runs"][0]["result"]["reason_code"] == "tool_failed"
-        events = client.get(f"/api/runs/{run_id}/events").json()["items"]
+        events = client.get(f"/api/runs/{run_id}").json()["events"]
         assert not any(entry["event"]["type"] == "execution.error" for entry in events)
         returned_errors = [entry for entry in events if entry["event"]["type"] == "message.appended"
                            and entry["event"]["message"]["role"] == "tool"

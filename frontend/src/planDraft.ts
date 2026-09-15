@@ -26,13 +26,16 @@ export function emptyTask(setup = ""): TestTaskDefinition {
 export function isPlanDraftValid(plan: TestPlanDraft | null): boolean {
   return !!plan &&
     plan.title.trim().length > 0 &&
+    plan.title.length <= 200 &&
+    [...plan.assumptions, ...plan.setup_steps].every((text) => text.trim().length > 0) &&
     plan.tasks.length > 0 &&
     plan.tasks.every(
       (task) =>
         task.title.trim().length > 0 &&
+        task.title.length <= 200 &&
         task.goal.trim().length > 0 &&
         task.success_criteria.length > 0 &&
         task.success_criteria.every((criterion) => criterion.trim().length > 0) &&
-        task.max_cycles >= 1
+        Number.isInteger(task.max_cycles) && task.max_cycles >= 1 && task.max_cycles <= 100
     );
 }

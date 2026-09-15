@@ -1,10 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { transferableAbortController } from "node:util";
 import { message } from "antd";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TestCase, TestPlan, TestPlanDraft } from "../api/contracts";
+import type { TestCase, TestPlan, TestPlanDraft, TestRunReport } from "../api/contracts";
 import PlanPage from "../pages/PlanPage";
 import ReportPage from "../pages/ReportPage";
 
@@ -88,6 +88,7 @@ beforeEach(() => {
     requests.push(request.clone());
     const path = new URL(request.url).pathname;
     if (request.method === "GET") {
+      if (path === "/api/runs") return Response.json({ items: [], total: 0 });
       if (path === "/api/test-cases/another-case/plans") return Response.json({ items: [], total: 0 });
       if (path === "/api/test-cases/another-case") return Response.json({ ...testCase, id: "another-case", content: { name: "另一用例", source_text: "另一个原始目标" } });
       if (path.endsWith("/plans")) return Response.json({ items: plans, total: plans.length });
@@ -119,10 +120,10 @@ beforeEach(() => {
   }));
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
-  message.destroy();
   queryClient.clear();
+  await act(async () => { message.destroy(); await new Promise((resolve) => setTimeout(resolve, 0)); });
   vi.unstubAllGlobals();
 });
 
@@ -202,6 +203,7 @@ describe("planning page", () => {
     const replan = await screen.findByRole("button", { name: "重新规划" });
     fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.change(planningInput(), { target: { value: "补充要求" } });
+    fireEvent.click(screen.getByRole("button", { name: /编辑计划/ }));
     fireEvent.change(screen.getByDisplayValue("计划 1"), { target: { value: "人工修改标题" } });
     expect(replan).toBeDisabled();
     expect(startButton()).toBeDisabled();
@@ -219,6 +221,7 @@ describe("planning page", () => {
     renderPlanPage();
     const replan = await screen.findByRole("button", { name: "重新规划" });
     fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /编辑计划/ }));
     fireEvent.change(planningInput(), { target: { value: "细化计划" } });
     fireEvent.click(replan);
     await waitFor(() => expect(planningPosts()).toHaveLength(1));
@@ -263,14 +266,45 @@ describe("planning page", () => {
     expect(planningInput()).toHaveValue("");
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
+
+  it("allows historical versions only for reading", async () => {
+    plans = [savedPlan(2), savedPlan(1)];
+    renderPlanPage();
+    await screen.findByText("版本 2 · replanning");
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "计划版本" }));
+    fireEvent.click(await screen.findByText("v1 · 只读"));
+    await screen.findByText("版本 1 · planning");
+    expect(screen.getByRole("button", { name: /编辑计划/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重新规划" })).toBeDisabled();
+    expect(startButton()).toBeDisabled();
+  });
+
+  it("can discard a draft after another client saves a newer plan", async () => {
+    plans = [savedPlan()];
+    renderPlanPage();
+    fireEvent.click(await screen.findByRole("button", { name: /编辑计划/ }));
+    fireEvent.change(screen.getByDisplayValue("计划 1"), { target: { value: "未保存草稿" } });
+    plans = [savedPlan(2), ...plans];
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["get", "/api/test-cases/{test_case_id}/plans"] }); });
+    expect(screen.getByRole("button", { name: /保存新版本/ })).toBeDisabled();
+    fireEvent.click(screen.getAllByRole("button", { name: "放弃修改" }).at(-1)!);
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "计划版本" })).not.toBeDisabled());
+    expect(screen.queryByText("未保存草稿")).not.toBeInTheDocument();
+  });
 });
 
 it("shows the saved planning input in the online report", async () => {
   const plan = savedPlan(1, "报告保留的规划输入");
-  vi.stubGlobal("fetch", vi.fn(async () => Response.json({
-    detail: { test_plan: plan, run: { verdict: "PASS" }, snapshot: { execution_model: plan.planning_context.planning_model }, task_runs: [] },
+  const report: TestRunReport = {
+    detail: { test_plan: plan, run: {
+      id: "run", test_plan_id: plan.id, status: "finished", verdict: "PASS",
+      created_at: plan.created_at, started_at: plan.created_at, finished_at: plan.created_at
+    }, snapshot: { execution_model: plan.planning_context.planning_model, tool_catalog: { tools: [] },
+      act_prompt_version: "act-v1", judge_prompt_version: "judge-v1", app_version: "0.1.0", execution_protocol_version: "3", screenshot_history_rounds: 3
+    }, task_runs: [] },
     artifacts: [], events: []
-  })));
+  };
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json(report)));
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={["/runs/run/report"]}>

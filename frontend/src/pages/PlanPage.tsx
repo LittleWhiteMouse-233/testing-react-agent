@@ -1,293 +1,152 @@
-import {
-  ArrowDownOutlined,
-  ArrowUpOutlined,
-  DeleteOutlined,
-  PlusOutlined,
-  RocketOutlined,
-  SaveOutlined
-} from "@ant-design/icons";
+import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, EditOutlined, PlusOutlined, RocketOutlined, SaveOutlined } from "@ant-design/icons";
 import { useQueryClient } from "@tanstack/react-query";
-import {
-  Alert,
-  Button,
-  Card,
-  Checkbox,
-  Col,
-  Empty,
-  Form,
-  Input,
-  InputNumber,
-  List,
-  Popconfirm,
-  Radio,
-  Row,
-  Space,
-  Spin,
-  Typography,
-  message
-} from "antd";
-import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Alert, Button, Checkbox, Empty, Form, Input, InputNumber, Modal, Radio, Select, Spin, message } from "antd";
+import { useEffect, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage } from "../api/client";
-import type {
-  TestPlan,
-  TestPlanDraft,
-  TestTaskDefinition
-} from "../api/contracts";
+import type { TestPlan, TestPlanDraft, TestTaskDefinition } from "../api/contracts";
 import { emptyTask, isPlanDraftValid, toPlanDraft } from "../planDraft";
+import { formatTime, runSummary, StatusBadge } from "../runPresentation";
 
 export default function PlanPage() {
   const { caseId = "" } = useParams();
-  return <TestCasePlanPage key={caseId} caseId={caseId} />;
+  return <TestCasePlan key={caseId} caseId={caseId} />;
 }
 
-function TestCasePlanPage({ caseId }: { caseId: string }) {
+function TestCasePlan({ caseId }: { caseId: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<TestPlanDraft | null>(null);
   const [plan, setPlan] = useState<TestPlan | null>(null);
-  const [confirmed, setConfirmed] = useState(false);
+  const [draft, setDraft] = useState<TestPlanDraft | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
   const [userInput, setUserInput] = useState("");
-
-  const testCase = $api.useQuery("get", "/api/test-cases/{test_case_id}", {
-    params: { path: { test_case_id: caseId } }
-  });
-  const plans = $api.useQuery("get", "/api/test-cases/{test_case_id}/plans", {
-    params: { path: { test_case_id: caseId } }
-  });
-
-  useEffect(() => {
-    const latest = plans.data?.items[0];
-    if (latest && !plan) {
-      setPlan(latest);
-      setDraft(toPlanDraft(latest));
-    }
-  }, [plans.data, plan]);
-
+  const [editing, setEditing] = useState(false);
+  const testCase = $api.useQuery("get", "/api/test-cases/{test_case_id}", { params: { path: { test_case_id: caseId } } });
+  const plans = $api.useQuery("get", "/api/test-cases/{test_case_id}/plans", { params: { path: { test_case_id: caseId } } });
+  const runs = $api.useQuery("get", "/api/runs", { params: { query: { test_case_id: caseId, limit: 5 } } });
+  const selectPlan = (value: TestPlan) => {
+    setPlan(value); setDraft(toPlanDraft(value)); setConfirmed(false); setDirty(false); setEditing(false);
+  };
+  useEffect(() => { if (!plan && plans.data?.items[0]) selectPlan(plans.data.items[0]); }, [plans.data, plan]);
   const acceptPlan = (value: TestPlan) => {
-    setPlan(value);
-    setDraft(toPlanDraft(value));
-    setConfirmed(false);
-    setDirty(false);
-    void queryClient.invalidateQueries({
-      queryKey: $api.queryOptions(
-        "get",
-        "/api/test-cases/{test_case_id}/plans",
-        { params: { path: { test_case_id: caseId } } }
-      ).queryKey
-    });
+    selectPlan(value);
+    void queryClient.invalidateQueries({ queryKey: ["get", "/api/test-cases/{test_case_id}/plans"] });
+    void queryClient.invalidateQueries({ queryKey: ["get", "/api/test-cases"] });
   };
-  const generate = $api.useMutation(
-    "post",
-    "/api/test-cases/{test_case_id}/plans",
-    {
-      onSuccess: (value) => {
-        acceptPlan(value);
-        setUserInput("");
-        message.success("计划已生成");
-      },
-      onError: async (error) => {
-        message.error(apiErrorMessage(error, "计划生成失败"));
-        if (error.code === "test_plan_not_latest") {
-          const response = await plans.refetch();
-          const latest = response.data?.items[0];
-          if (latest) acceptPlan(latest);
-        }
-      }
-    }
-  );
-  const revise = $api.useMutation(
-    "post",
-    "/api/test-plans/{test_plan_id}/revisions",
-    {
-      onSuccess: (value) => {
-        acceptPlan(value);
-        message.success(`已保存为计划版本 ${value.version_number}`);
-      },
-      onError: (error) => message.error(apiErrorMessage(error, "计划保存失败"))
-    }
-  );
-  const start = $api.useMutation("post", "/api/runs", {
-    onSuccess: (run) => navigate(`/runs/${run.id}`),
-    onError: (error) => {
-      const errorMessage = apiErrorMessage(error, "运行启动失败");
-      if (["active_run_exists", "test_plan_not_startable"].includes(error.code)) {
-        message.warning(errorMessage);
-      } else {
-        message.error(errorMessage);
+  const generate = $api.useMutation("post", "/api/test-cases/{test_case_id}/plans", {
+    onSuccess: (value) => { acceptPlan(value); setUserInput(""); message.success("计划已生成"); },
+    onError: async (error) => {
+      message.error(apiErrorMessage(error, "计划生成失败"));
+      if (error.code === "test_plan_not_latest") {
+        const latest = (await plans.refetch()).data?.items[0];
+        if (latest) selectPlan(latest);
       }
     }
   });
-
-  const generatePlan = () => {
-    generate.mutate({
-      params: { path: { test_case_id: caseId } },
-      body: { user_input: userInput.trim() || null }
-    });
-  };
-  const revisePlan = () => {
-    if (!draft || !plan) return;
-    revise.mutate({
-      params: { path: { test_plan_id: plan.id } },
-      body: { content: draft }
-    });
-  };
-  const startRun = () => {
-    if (!plan) return;
-    start.mutate({
-      body: {
-        test_plan_id: plan.id,
-        assumptions_confirmed: true
-      }
-    });
-  };
-
-  const valid = useMemo(() => isPlanDraftValid(draft), [draft]);
-  const latestVersion = Math.max(0, ...(plans.data?.items.map((item) => item.version_number) ?? []));
-  const isLatest = !!plan && plan.version_number >= latestVersion;
-  const isReplanning = !!plan || latestVersion > 0;
+  const revise = $api.useMutation("post", "/api/test-plans/{test_plan_id}/revisions", {
+    onSuccess: (value) => { acceptPlan(value); message.success("已保存为计划版本 " + value.version_number); },
+    onError: (error) => {
+      message.error(apiErrorMessage(error, "保存失败"));
+      if (error.code === "test_plan_not_latest") void plans.refetch();
+    }
+  });
+  const start = $api.useMutation("post", "/api/runs", {
+    onSuccess: (run) => {
+      void queryClient.invalidateQueries({ queryKey: ["get", "/api/runs"] });
+      navigate("/runs/" + run.id);
+    },
+    onError: (error) => {
+      message.error(apiErrorMessage(error, "启动失败"));
+      if (error.code === "test_plan_not_startable") { setConfirmed(false); void plans.refetch(); }
+    }
+  });
+  const latest = plans.data?.items[0];
+  const isLatest = !!plan && plan.version_number >= (latest?.version_number ?? 0);
   const busy = generate.isPending || revise.isPending || start.isPending;
-  const planningInput = (
-    <Form.Item label={`额外输入（${isReplanning ? "必填" : "可选"}）`} required={isReplanning}>
-      <Input.TextArea
-        aria-label="规划额外输入"
-        rows={3}
-        value={userInput}
-        disabled={busy}
-        onChange={(event) => setUserInput(event.target.value)}
-        placeholder={isReplanning ? "说明希望如何修改最新计划" : "补充本次规划的要求"}
-      />
-    </Form.Item>
-  );
-
+  const valid = isPlanDraftValid(draft);
+  const canGenerate = !busy && !dirty && (!plan || (isLatest && !!userInput.trim()));
+  const generatePlan = () => { if (canGenerate) generate.mutate({ params: { path: { test_case_id: caseId } }, body: { user_input: userInput.trim() || null } }); };
+  const updateDraft = (value: TestPlanDraft) => { setDraft(value); setDirty(true); setConfirmed(false); };
   const updateTask = (index: number, patch: Partial<TestTaskDefinition>) => {
+    if (draft) updateDraft({ ...draft, tasks: draft.tasks.map((task, position) => position === index ? { ...task, ...patch } : task) });
+  };
+  const moveTask = (index: number, direction: number) => {
     if (!draft) return;
     const tasks = [...draft.tasks];
-    const task = tasks[index];
-    if (!task) return;
-    tasks[index] = { ...task, ...patch };
-    setDraft({ ...draft, tasks });
-    setDirty(true);
-    setConfirmed(false);
+    const current = tasks[index]; const other = tasks[index + direction];
+    if (!current || !other) return;
+    tasks[index] = other; tasks[index + direction] = current; updateDraft({ ...draft, tasks });
   };
-  const moveTask = (index: number, delta: number) => {
-    if (!draft || index + delta < 0 || index + delta >= draft.tasks.length) return;
-    const tasks = [...draft.tasks];
-    const task = tasks[index];
-    const destinationTask = tasks[index + delta];
-    if (!task || !destinationTask) return;
-    tasks[index] = destinationTask;
-    tasks[index + delta] = task;
-    setDraft({ ...draft, tasks });
-    setDirty(true);
-    setConfirmed(false);
-  };
+  if (testCase.isLoading || plans.isLoading) return <div className="planning-welcome"><Spin /></div>;
+  if (testCase.error || plans.error || !testCase.data) return <div className="planning-welcome"><Alert type="error" title={apiErrorMessage(testCase.error ?? plans.error, "用例加载失败")} action={<Button onClick={() => { void testCase.refetch(); void plans.refetch(); }}>重试</Button>} /></div>;
 
-  if (testCase.isLoading || plans.isLoading) return <Spin />;
-  if (!draft || !plan) {
-    return (
-      <Card>
-        <Typography.Title level={3}>{testCase.data?.content.name}</Typography.Title>
-        <Typography.Paragraph>{testCase.data?.content.source_text}</Typography.Paragraph>
-        {planningInput}
-        <Empty description="尚未生成计划">
-          <Button type="primary" disabled={busy || (isReplanning && !userInput.trim())} loading={generate.isPending} onClick={generatePlan}>生成计划</Button>
-        </Empty>
-      </Card>
-    );
-  }
-
-  return (
-    <Space direction="vertical" size="large" style={{ width: "100%" }}>
-      <Card>
-        <div className="toolbar">
-          <div>
-            <Typography.Title level={3} style={{ margin: 0 }}>{testCase.data?.content.name}</Typography.Title>
-            <Typography.Text type="secondary">版本 {plan.version_number} · {plan.origin}</Typography.Text>
-          </div>
-          <Space wrap>
-            <Button disabled={busy || dirty || !userInput.trim()} loading={generate.isPending} onClick={generatePlan}>重新规划</Button>
-            <Button icon={<SaveOutlined />} disabled={busy || !valid || !dirty || !isLatest} loading={revise.isPending} onClick={revisePlan}>保存新版本</Button>
-          </Space>
+  return <>
+    <section className="plan-context">
+      <div className="context-heading"><div className="eyebrow">用例库 / <span className="mono" title={caseId}>{caseId.slice(0, 8)}</span></div><h2>{testCase.data.content.name}</h2>
+        {plan && <div className="version-strip"><span className="pill blue">版本 {plan.version_number} · {plan.origin}</span>
+          <Select aria-label="计划版本" value={plan.id} disabled={busy || dirty} onChange={(id) => { const selected = plans.data?.items.find((entry) => entry.id === id); if (selected) selectPlan(selected); }}
+            options={plans.data?.items.map((entry) => ({ value: entry.id, label: "v" + entry.version_number + (entry.id === latest?.id ? " · 最新" : " · 只读") }))} />
+        </div>}
+      </div>
+      <div className="context-scroll"><section className="case-description"><div className="section-label">用例描述 <span>{testCase.data.content.source_text.length} 字</span></div><p>{testCase.data.content.source_text}</p>
+        {plan && <>
+          <h3>准备步骤</h3>{plan.content.setup_steps.length ? <ol className="setup-list">{plan.content.setup_steps.map((step, index) => <li key={index}>{step}</li>)}</ol> : <p className="muted">无准备步骤</p>}
+          <h3>前置假设</h3>{plan.content.assumptions.length ? <ul>{plan.content.assumptions.map((assumption, index) => <li key={index}>{assumption}</li>)}</ul> : <p className="muted">无前置假设</p>}
+        </>}
+      </section>
+      {plan && <details className="planning-audit"><summary>规划来源与额外输入</summary><dl><dt>生成此计划时的额外输入</dt><dd>{plan.planning_context.user_input ?? "无"}</dd>
+        <dt>规划模型</dt><dd>{plan.planning_context.planning_model.model}</dd><dt>父计划</dt><dd className="mono">{plan.derived_from_plan_id ?? "首次规划"}</dd></dl></details>}
+      </div>
+      <div className="planning-prompt"><div className="section-label">告诉规划 Agent 如何调整 <small>Ctrl / ⌘ + Enter 发送</small></div>
+        <Form.Item label={"额外输入（" + (plan ? "必填" : "可选") + "）"} required={!!plan}>
+          <Input.TextArea aria-label="规划额外输入" value={userInput} disabled={busy || (!!plan && !isLatest)} rows={4} placeholder={plan ? "说明希望如何修改最新计划" : "补充本次规划的要求"}
+            onChange={(event) => setUserInput(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); generatePlan(); } }} />
+        </Form.Item>
+        {dirty && <Alert type="info" title="存在未保存的修改，请先保存新版本再重新规划" action={<Button disabled={busy} onClick={() => { if (plan) selectPlan(plan); }}>放弃修改</Button>} />}
+        {!!plan && !isLatest && <Alert type="info" title="历史计划仅供回溯，不能修订或启动" />}
+        <div className="prompt-actions"><span className="muted">{generate.isPending ? "规划中…" : "以目标和成功标准描述任务"}</span><Button type="primary" loading={generate.isPending} disabled={!canGenerate} onClick={generatePlan}>{plan ? "重新规划" : "生成计划"}</Button></div>
+      </div>
+    </section>
+    <aside className="plan-results"><div className="section-heading"><div><small>规划结果</small><h2>任务序列</h2></div>{plan && <Button icon={<EditOutlined />} disabled={busy || !isLatest} onClick={() => setEditing(true)}>编辑计划</Button>}</div>
+      {plan && draft ? <>
+        <div className="plan-task-list"><h3>{draft.title}</h3>{draft.tasks.map((task, index) => <article className="plan-task" key={index}><span className={"task-number " + task.type}>{index + 1}</span><div>
+          <div className="task-title"><h3>{task.title}</h3><span className={"pill " + (task.type === "judge" ? "purple" : "blue")}>{task.type === "judge" ? "Judge" : "Act"}</span></div>
+          <p>{task.goal}</p><ul>{task.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul><small>最多 {task.max_cycles} 轮</small>
+        </div></article>)}</div>
+        <div className="plan-start"><Checkbox disabled={busy || dirty || !isLatest} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}>我已确认计划 assumptions、任务目标和成功标准</Checkbox>
+          <Button block size="large" type="primary" icon={<RocketOutlined />} loading={start.isPending} disabled={busy || !valid || dirty || !confirmed || !isLatest}
+            onClick={() => start.mutate({ body: { test_plan_id: plan.id, assumptions_confirmed: true } })}>启动运行</Button>
+          {dirty && <p className="muted">保存为新计划版本后才能启动</p>}
         </div>
-        <Typography.Paragraph>{testCase.data?.content.source_text}</Typography.Paragraph>
-        {planningInput}
-        {dirty && <Alert type="info" showIcon message="存在未保存的修改，请先保存新版本再重新规划" />}
-        <Typography.Paragraph style={{ whiteSpace: "pre-wrap" }}><strong>生成此计划时的额外输入：</strong>{plan.planning_context.user_input ?? "无"}</Typography.Paragraph>
-      </Card>
-
-      <Form component="fieldset" disabled={busy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, display: "grid", gap: 24 }}>
-        <Card title="计划信息">
-          <Form.Item label="标题" required>
-            <Input value={draft.title} onChange={(event) => { setDraft({ ...draft, title: event.target.value }); setDirty(true); setConfirmed(false); }} />
-          </Form.Item>
-          <Typography.Title level={5}>Assumptions</Typography.Title>
-          <List dataSource={draft.assumptions} locale={{ emptyText: "无" }} renderItem={(item) => <List.Item>{item}</List.Item>} />
-          <Typography.Title level={5}>Setup steps</Typography.Title>
-          <List
-            dataSource={draft.setup_steps}
-            locale={{ emptyText: "无" }}
-            renderItem={(item) => (
-              <List.Item actions={[<Button key="promote" onClick={() => { setDraft({ ...draft, tasks: [...draft.tasks, emptyTask(item)] }); setDirty(true); setConfirmed(false); }}>转为任务</Button>]}>{item}</List.Item>
-            )}
-          />
-        </Card>
-
-        <Card title="有序任务">
-          {draft.tasks.map((task, index) => (
-            <Card
-              key={index}
-              size="small"
-              className="task-card"
-              title={`${index + 1}. ${task.title || "未命名任务"}`}
-              extra={(
-                <Space>
-                  <Button size="small" icon={<ArrowUpOutlined />} disabled={busy || index === 0} onClick={() => moveTask(index, -1)} />
-                  <Button size="small" icon={<ArrowDownOutlined />} disabled={busy || index === draft.tasks.length - 1} onClick={() => moveTask(index, 1)} />
-                  <Popconfirm title="删除此任务？" onConfirm={() => { setDraft({ ...draft, tasks: draft.tasks.filter((_, taskIndex) => taskIndex !== index) }); setDirty(true); setConfirmed(false); }}>
-                    <Button size="small" danger icon={<DeleteOutlined />} />
-                  </Popconfirm>
-                </Space>
-              )}
-            >
-              <div className="task-grid">
-                <Form.Item label="类型" required>
-                  <Radio.Group value={task.type} onChange={(event) => updateTask(index, { type: event.target.value as TestTaskDefinition["type"] })}>
-                    <Radio.Button value="act">Act</Radio.Button>
-                    <Radio.Button value="judge">Judge</Radio.Button>
-                  </Radio.Group>
-                </Form.Item>
-                <Form.Item label="最大 cycles" required>
-                  <InputNumber min={1} max={100} value={task.max_cycles} onChange={(value) => updateTask(index, { max_cycles: value ?? 10 })} />
-                </Form.Item>
-              </div>
-              <Form.Item label="标题" required><Input value={task.title} onChange={(event) => updateTask(index, { title: event.target.value })} /></Form.Item>
-              <Form.Item label="目标" required><Input.TextArea value={task.goal} onChange={(event) => updateTask(index, { goal: event.target.value })} /></Form.Item>
-              <Form.Item label="成功标准（每行一条）" required>
-                <Input.TextArea rows={3} value={task.success_criteria.join("\n")} onChange={(event) => updateTask(index, { success_criteria: event.target.value.split("\n") })} />
-              </Form.Item>
-            </Card>
-          ))}
-          <Button block icon={<PlusOutlined />} onClick={() => { setDraft({ ...draft, tasks: [...draft.tasks, emptyTask()] }); setDirty(true); setConfirmed(false); }}>新增任务</Button>
-        </Card>
-      </Form>
-
-      <Card>
-        {!valid && <Alert type="warning" showIcon message="请补全计划标题及所有任务的目标、成功标准与 cycle 上限" style={{ marginBottom: 16 }} />}
-        {dirty && valid && <Alert type="info" showIcon message="保存为新计划版本后才能启动" style={{ marginBottom: 16 }} />}
-        {!isLatest && <Alert type="warning" showIcon message="历史计划仅供回溯，不能启动" style={{ marginBottom: 16 }} />}
-        <Checkbox disabled={busy} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}>
-          我已确认计划 assumptions、任务目标和成功标准
-        </Checkbox>
-        <Row gutter={16} align="middle" style={{ marginTop: 16 }}>
-          <Col>
-            <Button type="primary" size="large" icon={<RocketOutlined />} disabled={busy || !valid || dirty || !confirmed || !isLatest} loading={start.isPending} onClick={startRun}>
-              启动运行
-            </Button>
-          </Col>
-        </Row>
-      </Card>
-    </Space>
-  );
+      </> : <Empty className="plan-empty" image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未生成计划" />}
+      <div className="recent-runs"><div className="section-heading"><div><small>最近 5 次 · 按时间倒序</small><h3>历史运行 · 本用例</h3></div><Link to={"/runs?case=" + caseId}>查看全部 →</Link></div>
+        {runs.error ? <Alert type="error" title="历史运行加载失败" /> : runs.data?.items.length ? runs.data.items.map((run) => <Link className="recent-run" to={"/runs/" + run.id + "/report"} key={run.id}>
+          <div><span className="mono">{run.id.slice(0, 8)}</span><time>{formatTime(run.created_at)}</time><StatusBadge status={run.verdict ?? run.status} /></div><p>{runSummary(run)}</p>
+        </Link>) : <p className="muted">暂无历史运行</p>}
+      </div>
+    </aside>
+    <Modal title="编辑语义计划" open={editing} width={760} onCancel={() => setEditing(false)} footer={null} mask={{ closable: false }}>
+      {draft && <Form layout="vertical" disabled={busy || !isLatest}>
+        <Form.Item label="计划标题"><Input value={draft.title} maxLength={200} onChange={(event) => updateDraft({ ...draft, title: event.target.value })} /></Form.Item>
+        <Form.Item label="前置假设（每行一条）"><Input.TextArea value={draft.assumptions.join("\n")} onChange={(event) => updateDraft({ ...draft, assumptions: event.target.value ? event.target.value.split("\n") : [] })} /></Form.Item>
+        <Form.Item label="准备步骤（每行一条）"><Input.TextArea value={draft.setup_steps.join("\n")} onChange={(event) => updateDraft({ ...draft, setup_steps: event.target.value ? event.target.value.split("\n") : [] })} /></Form.Item>
+        {draft.tasks.map((task, index) => <section className="task-editor" key={index}><div className="task-editor-heading"><strong>任务 {index + 1}</strong><div>
+          <Button aria-label={"上移任务 " + (index + 1)} icon={<ArrowUpOutlined />} disabled={busy || index === 0} onClick={() => moveTask(index, -1)} />
+          <Button aria-label={"下移任务 " + (index + 1)} icon={<ArrowDownOutlined />} disabled={busy || index === draft.tasks.length - 1} onClick={() => moveTask(index, 1)} />
+          <Button aria-label={"删除任务 " + (index + 1)} danger icon={<DeleteOutlined />} onClick={() => updateDraft({ ...draft, tasks: draft.tasks.filter((_, position) => position !== index) })} /></div></div>
+          <div className="task-editor-options"><Form.Item label="类型"><Radio.Group value={task.type} onChange={(event) => updateTask(index, { type: event.target.value })}><Radio.Button value="act">Act</Radio.Button><Radio.Button value="judge">Judge</Radio.Button></Radio.Group></Form.Item>
+            <Form.Item label="最大循环数"><InputNumber min={1} max={100} value={task.max_cycles} onChange={(value) => updateTask(index, { max_cycles: value ?? 1 })} /></Form.Item></div>
+          <Form.Item label="任务标题"><Input value={task.title} maxLength={200} onChange={(event) => updateTask(index, { title: event.target.value })} /></Form.Item>
+          <Form.Item label="目标"><Input.TextArea value={task.goal} onChange={(event) => updateTask(index, { goal: event.target.value })} /></Form.Item>
+          <Form.Item label="成功标准（每行一条）"><Input.TextArea value={task.success_criteria.join("\n")} onChange={(event) => updateTask(index, { success_criteria: event.target.value.split("\n") })} /></Form.Item>
+        </section>)}
+        <Button block icon={<PlusOutlined />} onClick={() => updateDraft({ ...draft, tasks: [...draft.tasks, emptyTask()] })}>新增任务</Button>
+        {draft.setup_steps.map((step, index) => <Button key={index} type="link" onClick={() => updateDraft({ ...draft, tasks: [...draft.tasks, emptyTask(step)] })}>将准备步骤 {index + 1} 转为任务</Button>)}
+        {!valid && <Alert type="warning" title="请补全计划标题、任务目标、成功标准与循环上限" />}
+        <div className="editor-footer"><Button disabled={busy} onClick={() => { if (plan) selectPlan(plan); }}>放弃修改</Button><Button type="primary" icon={<SaveOutlined />} disabled={busy || !dirty || !valid || !isLatest} loading={revise.isPending}
+          onClick={() => { if (plan) revise.mutate({ params: { path: { test_plan_id: plan.id } }, body: { content: draft } }); }}>保存新版本</Button></div>
+      </Form>}
+    </Modal>
+  </>;
 }

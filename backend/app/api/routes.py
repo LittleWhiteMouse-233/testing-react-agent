@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
+from app.api import queries
 
 from app.api.schemas import (
     ApiError,
@@ -16,9 +17,14 @@ from app.api.schemas import (
     TestCaseCreateRequest,
     TestPlanGenerateRequest,
     TestRunCreateRequest,
+    TestCaseListResponse,
+    TestRunListResponse,
+    TestRunFilterQuery,
+    TestRunPageQuery,
+    TestRunStatisticsResponse,
 )
 from app.container import Container
-from app.domain.execution import Artifact, StoredRunEvent, TestRun, TestRunDetail, TestRunStatus
+from app.domain.execution import Artifact, TestRun, TestRunStatus
 from app.domain.ids import ArtifactId, TestCaseId, TestPlanId, TestRunId
 from app.domain.errors import PlanningUserInputRequired, TestPlanNotLatest
 from app.domain.planning import TestCase, TestPlan
@@ -61,16 +67,16 @@ async def create_test_case(
     return await container(request).repository.create_test_case(payload)
 
 
-@router.get("/test-cases", response_model=PageResponse[TestCase])
+@router.get("/test-cases", response_model=PageResponse[TestCaseListResponse])
 async def list_test_cases(
     request: Request,
+    search: str = "",
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-) -> PageResponse[TestCase]:
-    items, total = await container(request).repository.list_test_cases(
-        limit=limit, offset=offset
+) -> PageResponse[TestCaseListResponse]:
+    return await queries.list_test_cases(
+        container(request).sessions, search=search, limit=limit, offset=offset
     )
-    return PageResponse[TestCase](items=items, total=total)
 
 
 @router.get(
@@ -169,27 +175,30 @@ async def create_test_run(
         raise problem(409, "test_plan_not_startable", str(exc)) from exc
 
 
-@router.get("/runs", response_model=PageResponse[TestRun])
+@router.get("/runs", response_model=PageResponse[TestRunListResponse])
 async def list_test_runs(
     request: Request,
-    test_case_id: TestCaseId | None = None,
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-) -> PageResponse[TestRun]:
-    items, total = await container(request).repository.list_test_runs(
-        test_case_id=test_case_id, limit=limit, offset=offset
-    )
-    return PageResponse[TestRun](items=items, total=total)
+    filters: Annotated[TestRunPageQuery, Query()],
+) -> PageResponse[TestRunListResponse]:
+    return await queries.list_test_runs(container(request).sessions, filters)
+
+
+@router.get("/runs/statistics", response_model=TestRunStatisticsResponse)
+async def get_test_run_statistics(
+    request: Request,
+    filters: Annotated[TestRunFilterQuery, Query()],
+) -> TestRunStatisticsResponse:
+    return await queries.test_run_statistics(container(request).sessions, filters)
 
 
 @router.get(
     "/runs/{test_run_id}",
-    response_model=TestRunDetail,
+    response_model=TestRunReport,
     responses=NOT_FOUND_RESPONSE,
 )
-async def get_test_run(test_run_id: TestRunId, request: Request) -> TestRunDetail:
+async def get_test_run(test_run_id: TestRunId, request: Request) -> TestRunReport:
     try:
-        return await container(request).repository.get_test_run_detail(test_run_id)
+        return await container(request).reports.build(test_run_id)
     except LookupError as exc:
         raise problem(404, "test_run_not_found", str(exc)) from exc
 
@@ -207,25 +216,6 @@ async def cancel_test_run(test_run_id: TestRunId, request: Request) -> Response:
     except LookupError as exc:
         raise problem(404, "test_run_not_found", str(exc)) from exc
     return Response(status_code=202)
-
-
-@router.get(
-    "/runs/{test_run_id}/events",
-    response_model=PageResponse[StoredRunEvent],
-    responses=NOT_FOUND_RESPONSE,
-)
-async def list_run_events(
-    test_run_id: TestRunId,
-    request: Request,
-    after: int = Query(default=0, ge=0),
-) -> PageResponse[StoredRunEvent]:
-    try:
-        items = await container(request).repository.list_events(
-            test_run_id, after=after
-        )
-    except LookupError as exc:
-        raise problem(404, "test_run_not_found", str(exc)) from exc
-    return PageResponse[StoredRunEvent](items=items, total=len(items))
 
 
 @router.get(
@@ -285,20 +275,6 @@ async def stream_run_events(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
-@router.get(
-    "/runs/{test_run_id}/report",
-    response_model=TestRunReport,
-    responses=NOT_FOUND_RESPONSE,
-)
-async def get_test_run_report(
-    test_run_id: TestRunId, request: Request
-) -> TestRunReport:
-    try:
-        return await container(request).reports.build(test_run_id)
-    except LookupError as exc:
-        raise problem(404, "test_run_not_found", str(exc)) from exc
 
 
 @router.post(

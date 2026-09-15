@@ -111,7 +111,7 @@ def start_run(client: TestClient, plan: dict[str, Any]) -> str:
 
 def wait_for_run(client: TestClient, run_id: str) -> dict[str, Any]:
     for _ in range(600):
-        detail = client.get(f"/api/runs/{run_id}").json()
+        detail = client.get(f"/api/runs/{run_id}").json()["detail"]
         if detail["run"]["status"] == "finished":
             return detail
         time.sleep(0.02)

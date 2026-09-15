@@ -24,7 +24,7 @@ def wait_for_run(client: TestClient, test_run_id: str) -> dict:
     for _ in range(200):
         response = client.get(f"/api/runs/{test_run_id}")
         assert response.status_code == 200, response.text
-        detail = response.json()
+        detail = response.json()["detail"]
         if detail["run"]["status"] == "finished":
             return detail
         time.sleep(0.03)
@@ -84,7 +84,7 @@ def test_complete_message_first_run_and_exports() -> None:
             assert pending["finished_at"] is None
             detail = wait_for_run(client, run_response.json()["id"])
             diagnostic_events = client.get(
-                f"/api/runs/{detail['run']['id']}/events"
+                f"/api/runs/{detail['run']['id']}"
             ).json()
             assert detail["run"]["verdict"] == "PASS", diagnostic_events
             assert [item["status"] for item in detail["task_runs"]] == [
@@ -95,10 +95,10 @@ def test_complete_message_first_run_and_exports() -> None:
             assert "planning_model" not in detail["snapshot"]
 
             events_response = client.get(
-                f"/api/runs/{detail['run']['id']}/events"
+                f"/api/runs/{detail['run']['id']}"
             )
             assert events_response.status_code == 200, events_response.text
-            events = events_response.json()["items"]
+            events = events_response.json()["events"]
             assert [item["sequence"] for item in events] == list(
                 range(1, len(events) + 1)
             )
@@ -196,7 +196,7 @@ def test_complete_message_first_run_and_exports() -> None:
                 )
 
             report_response = client.get(
-                f"/api/runs/{detail['run']['id']}/report"
+                f"/api/runs/{detail['run']['id']}"
             )
             assert report_response.status_code == 200, report_response.text
             report = report_response.json()

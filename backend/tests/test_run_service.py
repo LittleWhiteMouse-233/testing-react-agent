@@ -74,7 +74,7 @@ def test_run_terminal_precedes_cleanup_and_cleanup_failure_only_logs(
         assert client.portal is not None
         run_id = client.portal.call(start_and_wait_for_cleanup)
         # SSE and exports must finish while resource cleanup is still blocked.
-        history = client.get(f"/api/runs/{run_id}/events").json()["items"]
+        history = client.get(f"/api/runs/{run_id}").json()["events"]
         errors = [entry["event"] for entry in history if entry["event"]["type"] == "execution.error"]
         assert not errors
         terminals = [entry for entry in history if entry["event"]["type"] in {"run.finished", "run.cancelled"}]
@@ -82,13 +82,13 @@ def test_run_terminal_precedes_cleanup_and_cleanup_failure_only_logs(
         stream = client.get(f"/api/runs/{run_id}/stream")
         streamed = [json.loads(line.removeprefix("data: ")) for line in stream.text.splitlines() if line.startswith("data: ")]
         assert streamed == history
-        report = client.get(f"/api/runs/{run_id}/report").json()
+        report = client.get(f"/api/runs/{run_id}").json()
         assert report["events"] == history
         exported = client.post(f"/api/runs/{run_id}/exports", json={"format": "json"}).json()
         assert client.get(f"/api/artifacts/{exported['id']}").json() == report
-        report_after_export = client.get(f"/api/runs/{run_id}/report").json()
+        report_after_export = client.get(f"/api/runs/{run_id}").json()
         client.portal.call(finish_cleanup)
-        assert client.get(f"/api/runs/{run_id}/report").json() == report_after_export
+        assert client.get(f"/api/runs/{run_id}").json() == report_after_export
         records = [record for record in caplog.records if record.name.startswith("app.") and record.levelno >= 40]
         assert len(records) == (0 if failure_kind == "none" else 1)
         if records:

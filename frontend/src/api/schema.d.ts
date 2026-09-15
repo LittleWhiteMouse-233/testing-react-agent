@@ -39,6 +39,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/statistics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Test Run Statistics */
+        get: operations["get_test_run_statistics_api_runs_statistics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{test_run_id}": {
         parameters: {
             query?: never;
@@ -73,23 +90,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/runs/{test_run_id}/events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Run Events */
-        get: operations["list_run_events_api_runs__test_run_id__events_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/runs/{test_run_id}/exports": {
         parameters: {
             query?: never;
@@ -101,23 +101,6 @@ export interface paths {
         put?: never;
         /** Export Test Run Report */
         post: operations["export_test_run_report_api_runs__test_run_id__exports_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/runs/{test_run_id}/report": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Test Run Report */
-        get: operations["get_test_run_report_api_runs__test_run_id__report_get"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -370,17 +353,10 @@ export interface components {
              */
             type: "message.validation_failed";
         };
-        /** PageResponse[StoredRunEvent] */
-        PageResponse_StoredRunEvent_: {
+        /** PageResponse[TestCaseListResponse] */
+        PageResponse_TestCaseListResponse_: {
             /** Items */
-            items: components["schemas"]["StoredRunEvent"][];
-            /** Total */
-            total: number;
-        };
-        /** PageResponse[TestCase] */
-        PageResponse_TestCase_: {
-            /** Items */
-            items: components["schemas"]["TestCase"][];
+            items: components["schemas"]["TestCaseListResponse"][];
             /** Total */
             total: number;
         };
@@ -391,10 +367,10 @@ export interface components {
             /** Total */
             total: number;
         };
-        /** PageResponse[TestRun] */
-        PageResponse_TestRun_: {
+        /** PageResponse[TestRunListResponse] */
+        PageResponse_TestRunListResponse_: {
             /** Items */
-            items: components["schemas"]["TestRun"][];
+            items: components["schemas"]["TestRunListResponse"][];
             /** Total */
             total: number;
         };
@@ -679,6 +655,22 @@ export interface components {
             source_text: string;
         };
         /**
+         * TestCaseListResponse
+         * @description API list projection; the plan table owns the optional latest version.
+         */
+        TestCaseListResponse: {
+            content: components["schemas"]["TestCaseContent"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Id */
+            id: string;
+            /** Latest Plan Version */
+            latest_plan_version: number | null;
+        };
+        /**
          * TestPlan
          * @description 一次不可变、可追溯的测试计划版本；执行仅允许使用最新版本。
          */
@@ -780,6 +772,23 @@ export interface components {
             test_plan_id: string;
         };
         /**
+         * TestRunDailyStatistics
+         * @description Read-only aggregates grouped by creation day in Asia/Shanghai.
+         */
+        TestRunDailyStatistics: {
+            /** Average Duration Seconds */
+            average_duration_seconds: number | null;
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Run Count */
+            run_count: number;
+            /** Total Duration Seconds */
+            total_duration_seconds: number;
+        };
+        /**
          * TestRunDetail
          * @description 执行信息家族的完整查询组合，由 repository 装配并供执行/API 消费。
          */
@@ -789,6 +798,42 @@ export interface components {
             /** Task Runs */
             task_runs: components["schemas"]["TaskRun"][];
             test_plan: components["schemas"]["TestPlan"];
+        };
+        /**
+         * TestRunListResponse
+         * @description API join projection, not a second persisted run entity.
+         *
+         *     Plan/case tables own case identity; task definitions own task_count;
+         *     TaskRun and screenshot rows own the counts. Never write this projection back.
+         */
+        TestRunListResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Finished At */
+            finished_at: string | null;
+            /** Id */
+            id: string;
+            /** Screenshot Count */
+            screenshot_count: number;
+            /** Started At */
+            started_at: string | null;
+            status: components["schemas"]["TestRunStatus"];
+            /** Task Count */
+            task_count: number;
+            /** Task Status Counts */
+            task_status_counts: {
+                [key: string]: number;
+            };
+            /** Test Case Id */
+            test_case_id: string;
+            /** Test Case Name */
+            test_case_name: string;
+            /** Test Plan Id */
+            test_plan_id: string;
+            verdict: components["schemas"]["TestRunVerdict"] | null;
         };
         /**
          * TestRunReport
@@ -824,6 +869,22 @@ export interface components {
              */
             screenshot_history_rounds: number;
             tool_catalog: components["schemas"]["ToolCatalogSnapshot"];
+        };
+        /**
+         * TestRunStatisticsResponse
+         * @description Whole-filter aggregates, independent of the visible table page.
+         */
+        TestRunStatisticsResponse: {
+            /** Average Duration Seconds */
+            average_duration_seconds: number | null;
+            /** Daily */
+            daily: components["schemas"]["TestRunDailyStatistics"][];
+            /** Run Count */
+            run_count: number;
+            /** Verdict Counts */
+            verdict_counts: {
+                [key: string]: number;
+            };
         };
         /**
          * TestRunStatus
@@ -988,7 +1049,12 @@ export interface operations {
     list_test_runs_api_runs_get: {
         parameters: {
             query?: {
+                search?: string;
                 test_case_id?: string | null;
+                status?: components["schemas"]["TestRunStatus"][];
+                verdict?: components["schemas"]["TestRunVerdict"] | null;
+                created_from?: string | null;
+                created_before?: string | null;
                 limit?: number;
                 offset?: number;
             };
@@ -1004,7 +1070,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PageResponse_TestRun_"];
+                    "application/json": components["schemas"]["PageResponse_TestRunListResponse_"];
                 };
             };
             /** @description Unprocessable Entity */
@@ -1096,6 +1162,51 @@ export interface operations {
             };
         };
     };
+    get_test_run_statistics_api_runs_statistics_get: {
+        parameters: {
+            query?: {
+                search?: string;
+                test_case_id?: string | null;
+                status?: components["schemas"]["TestRunStatus"][];
+                verdict?: components["schemas"]["TestRunVerdict"] | null;
+                created_from?: string | null;
+                created_before?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestRunStatisticsResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
     get_test_run_api_runs__test_run_id__get: {
         parameters: {
             query?: never;
@@ -1113,7 +1224,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TestRunDetail"];
+                    "application/json": components["schemas"]["TestRunReport"];
                 };
             };
             /** @description Not Found */
@@ -1192,57 +1303,6 @@ export interface operations {
             };
         };
     };
-    list_run_events_api_runs__test_run_id__events_get: {
-        parameters: {
-            query?: {
-                after?: number;
-            };
-            header?: never;
-            path: {
-                test_run_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PageResponse_StoredRunEvent_"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-        };
-    };
     export_test_run_report_api_runs__test_run_id__exports_post: {
         parameters: {
             query?: never;
@@ -1265,55 +1325,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Artifact"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-        };
-    };
-    get_test_run_report_api_runs__test_run_id__report_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                test_run_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TestRunReport"];
                 };
             };
             /** @description Not Found */
@@ -1401,6 +1412,7 @@ export interface operations {
     list_test_cases_api_test_cases_get: {
         parameters: {
             query?: {
+                search?: string;
                 limit?: number;
                 offset?: number;
             };
@@ -1416,7 +1428,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PageResponse_TestCase_"];
+                    "application/json": components["schemas"]["PageResponse_TestCaseListResponse_"];
                 };
             };
             /** @description Unprocessable Entity */
