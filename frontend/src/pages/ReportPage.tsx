@@ -35,7 +35,9 @@ export function RunReportContent({ runId }: { runId: string }) {
   const completed = taskRuns.filter((task) => task.status === "passed" || task.status === "failed" || task.status === "blocked" || task.status === "cancelled").length;
   return <div className="run-report">
     <header className="report-heading"><div className="eyebrow">执行记录 <span className="mono">{runId}</span></div><h2>{plan.planning_context.test_case_content.name}</h2></header>
-    {(report.error || report.contractError) && <Alert type="warning" title={report.contractError ? "实时更新已停止：事件契约错误" : "刷新失败，正在展示已读取记录"} />}
+    {report.contractError && <Alert type="warning" title="实时更新已停止：事件契约错误" />}
+    {report.error && <Alert type="warning" title="运行详情刷新失败，保留最近一次读取的记录" action={<Button loading={report.isFetching} onClick={() => void report.refetch()}>重试</Button>} />}
+    {report.awaitingFinalResult && <Alert type="info" title="已收到结束通知，等待服务端最终结果" />}
     <section className="report-summary"><h3>执行概要</h3><div className="summary-grid">
       <div><small>状态</small><StatusBadge status={run.verdict ?? run.status} /></div>
       <div><small>开始时间</small><strong>{formatTime(run.started_at)}</strong><small>Asia/Shanghai · +08</small></div>

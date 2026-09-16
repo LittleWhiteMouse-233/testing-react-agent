@@ -26,12 +26,25 @@ export function parseStoredRunEvent(raw: string): StoredRunEvent {
   return value;
 }
 
-export function mergeStoredRunEvent(
+export function mergeStoredRunEvents(
   current: StoredRunEvent[],
-  incoming: StoredRunEvent
+  incoming: StoredRunEvent[]
 ): StoredRunEvent[] {
-  return [...current.filter((entry) => entry.sequence !== incoming.sequence), incoming]
-    .sort((left, right) => left.sequence - right.sequence);
+  // Both HTTP history and SSE increments arrive in sequence order.
+  const merged: StoredRunEvent[] = [];
+  let currentIndex = 0;
+  let incomingIndex = 0;
+  while (currentIndex < current.length && incomingIndex < incoming.length) {
+    const existing = current[currentIndex]!;
+    const next = incoming[incomingIndex]!;
+    if (existing.sequence < next.sequence) {
+      merged.push(existing); currentIndex++;
+    } else {
+      merged.push(next); incomingIndex++;
+      if (existing.sequence === next.sequence) currentIndex++;
+    }
+  }
+  return [...merged, ...current.slice(currentIndex), ...incoming.slice(incomingIndex)];
 }
 
 export function latestScreenshotArtifactId(events: StoredRunEvent[]): string | undefined {

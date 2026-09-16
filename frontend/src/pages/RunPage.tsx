@@ -41,11 +41,12 @@ function RunExecution({ runId }: { runId: string }) {
       <h1>{plan.planning_context.test_case_content.name}</h1><p><StatusBadge status={run.verdict ?? run.status} /> <span className="mono">{run.id}</span></p></div>
       <div className="heading-actions"><Link to={"/cases/" + plan.test_case_id + "/plan"}><Button>查看最新计划</Button></Link>
         {finished ? <Link to={"/runs/" + runId + "/report"}><Button type="primary">查看执行记录</Button></Link> :
-          <Button danger icon={<StopOutlined />} disabled={cancelRequested} loading={cancel.isPending} onClick={() => cancel.mutate({ params: { path: { test_run_id: runId } } })}>{cancelRequested ? "等待取消生效" : "终止"}</Button>}
+          <Button danger icon={<StopOutlined />} disabled={cancelRequested || report.awaitingFinalResult} loading={cancel.isPending} onClick={() => cancel.mutate({ params: { path: { test_run_id: runId } } })}>{cancelRequested ? "等待取消生效" : "终止"}</Button>}
       </div>
     </header>
     {report.contractError && <Alert type="error" title="事件流违反 OpenAPI 契约，实时更新已停止" />}
-    {report.error && <Alert type="warning" title="运行详情刷新失败，保留最近一次读取的记录" action={<Button onClick={() => void report.refetch()}>重试</Button>} />}
+    {report.error && <Alert type="warning" title="运行详情刷新失败，保留最近一次读取的记录" action={<Button loading={report.isFetching} onClick={() => void report.refetch()}>重试</Button>} />}
+    {report.awaitingFinalResult && <Alert type="info" title="已收到结束通知，等待服务端最终结果" />}
     <div className="execution-layout">
       <aside className="task-queue"><div className="section-heading"><div><small>任务队列</small><h2>执行进度</h2></div><span>{passed}/{plan.content.tasks.length} 通过</span></div>
         <div className="queue-meta"><span>已用 <ElapsedTime startedAt={run.started_at} finishedAt={run.finished_at} active={!finished} /></span><span>{activeIndex >= 0 ? "当前第 " + (activeIndex + 1) + " 步" : finished ? "已结束" : "等待启动"}</span></div>
@@ -65,7 +66,7 @@ function RunExecution({ runId }: { runId: string }) {
         <div className="latest-screenshot">{screenshotId ? <Image src={artifactUrl(screenshotId)} alt="最新电视截图" /> : <Empty description={finished ? "本次运行没有截图" : "等待首次截图…"} />}</div>
         <div className="section-heading"><div><small>本次运行冻结的资源</small><h2>工具与模型</h2></div></div><RunResources report={report.data} />
       </section>
-      <section className="execution-events"><div className="section-heading"><div><small>持久化运行事实</small><h2>事件流</h2></div><span className={"connection " + report.connection}>{report.contractError ? "已停止" : ({ connecting: "连接中", connected: "实时连接", reconnecting: "正在重连", finished: "已结束" }[report.connection])}</span></div>
+      <section className="execution-events"><div className="section-heading"><div><small>持久化运行事实</small><h2>事件流</h2></div><span className={"connection " + report.connection}>{report.contractError ? "已停止" : ({ connecting: "连接中", connected: "实时连接", reconnecting: "正在重连", awaiting_result: "等待最终结果", finished: "已结束" }[report.connection])}</span></div>
         <EventTimeline events={report.events} controls /><footer className="event-footer">{report.events.length} 条事件 · 按保存顺序显示</footer>
       </section>
     </div>

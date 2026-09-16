@@ -13,7 +13,7 @@ from app.domain.planning import (
     draft_plan_content,
 )
 from app.llm import ModelProvider
-from app.persistence.test_repository import SqlAlchemyTestRepository
+from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.planning.graph import PlanningGraph
 
 
@@ -23,7 +23,7 @@ class PlanningService:
     def __init__(
         self,
         *,
-        repository: SqlAlchemyTestRepository,
+        repository: SqlAlchemyRunRepository,
         planning_graph: PlanningGraph,
         model_provider: ModelProvider,
     ) -> None:

@@ -6,13 +6,13 @@ import asyncio
 import base64
 import json
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pydantic import BaseModel, ConfigDict
 
 from app.artifacts import ArtifactStore
 from app.domain.execution import Artifact, ArtifactType, StoredRunEvent, TestRunDetail
-from app.persistence.test_repository import SqlAlchemyTestRepository
 
 
 class TestRunReport(BaseModel):
@@ -30,10 +30,10 @@ class ReportService:
 
     def __init__(
         self,
-        repository: SqlAlchemyTestRepository,
+        read_report: Callable[[str], Awaitable[TestRunReport]],
         artifacts: ArtifactStore,
     ) -> None:
-        self.repository = repository
+        self.read_report = read_report
         self.artifacts = artifacts
         self.templates = Environment(
             loader=FileSystemLoader(Path(__file__).resolve().parent / "templates"),
@@ -41,12 +41,7 @@ class ReportService:
         )
 
     async def build(self, test_run_id: str) -> TestRunReport:
-        detail = await self.repository.get_test_run_detail(test_run_id)
-        events, artifacts = await asyncio.gather(
-            self.repository.list_events(test_run_id),
-            self.repository.list_artifacts(test_run_id),
-        )
-        return TestRunReport(detail=detail, events=events, artifacts=artifacts)
+        return await self.read_report(test_run_id)
 
     async def export(self, test_run_id: str, export_format: str) -> Artifact:
         report = await self.build(test_run_id)

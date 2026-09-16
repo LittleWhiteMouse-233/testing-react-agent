@@ -8,9 +8,9 @@ from app.domain.activity import AgentActivity
 from app.domain.execution import TestRun, TestRunSnapshot, TestRunStatus
 from app.execution.executor import RunExecutor
 from app.llm import ModelProvider
-from app.persistence.test_repository import (
+from app.persistence.run_repository import (
     ActiveRunExists,
-    SqlAlchemyTestRepository,
+    SqlAlchemyRunRepository,
 )
 from app.prompts import PromptDefinition
 from app.tools import MCPToolProvider, snapshot_tools
@@ -52,7 +52,7 @@ class RunService:
     def __init__(
         self,
         *,
-        repository: SqlAlchemyTestRepository,
+        repository: SqlAlchemyRunRepository,
         executor: RunExecutor,
         model_provider: ModelProvider,
         app_version: str,

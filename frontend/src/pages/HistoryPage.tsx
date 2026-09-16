@@ -6,6 +6,7 @@ import { $api, apiErrorMessage } from "../api/client";
 import type { TestRunListResponse, TestRunStatisticsResponse, TestRunVerdict } from "../api/contracts";
 import { ElapsedTime, formatDuration, formatTime, runSummary, StatusBadge, statusLabels } from "../runPresentation";
 import ReportPage from "./ReportPage";
+import { isCalendarDate, parsePage } from "../pageParams";
 
 export function shanghaiToday() { return new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10); }
 export function addDays(date: string, count: number) { return new Date(Date.parse(date + "T00:00:00Z") + count * 86400000).toISOString().slice(0, 10); }
@@ -53,9 +54,9 @@ export default function HistoryPage() {
   const today = shanghaiToday();
   const from = params.get("from") ?? addDays(today, -29);
   const to = params.get("to") ?? today;
-  const validRange = /^\d{4}-\d{2}-\d{2}$/.test(from) && /^\d{4}-\d{2}-\d{2}$/.test(to) && Number.isFinite(Date.parse(from)) && Number.isFinite(Date.parse(to)) && from <= to;
-  const page = Math.max(1, Number(params.get("page")) || 1);
+  const validRange = isCalendarDate(from) && isCalendarDate(to) && from <= to && isCalendarDate(addDays(to, 1));
   const pageSize = [8, 20, 50].includes(Number(params.get("size"))) ? Number(params.get("size")) : 8;
+  const page = parsePage(params.get("page"), pageSize);
   const selectedVerdict = verdicts.find((value) => value === params.get("verdict"));
   const filters = { search: params.get("search") ?? "", test_case_id: params.get("case") || undefined,
     created_from: validRange ? from + "T00:00:00+08:00" : undefined,
@@ -70,7 +71,7 @@ export default function HistoryPage() {
   };
   const reportUrl = (id: string) => "/runs/" + id + "/report?" + params;
   return <>
-    <header className="page-heading"><div><h1>历史记录 <span className="pill blue">{runs.data?.total ?? "—"} 条</span></h1><p>所有运行条目 · 按时间倒序 · 点击查看执行详情</p></div><Button icon={<ReloadOutlined />} onClick={() => { void runs.refetch(); void statistics.refetch(); }}>刷新</Button></header>
+    <header className="page-heading"><div><h1>历史记录 <span className="pill blue">{runs.data?.total ?? "—"} 条</span></h1><p>所有运行条目 · 按时间倒序 · 点击查看执行详情</p></div><Button icon={<ReloadOutlined />} disabled={!validRange} onClick={() => { void runs.refetch(); void statistics.refetch(); }}>刷新</Button></header>
     <div className="history-content">
       {validRange ? <HistoryCharts statistics={statistics.data} from={from} to={to} /> : <Alert type="error" title="请选择有效的日期范围，开始日期不得晚于结束日期" />}
       {statistics.error && <Alert type="error" title={apiErrorMessage(statistics.error, "统计加载失败")} />}

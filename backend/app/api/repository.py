@@ -1,4 +1,4 @@
-"""Read-only API projections over existing persisted facts.
+"""Database operations for API consumers and report fact assembly.
 
 These joins and aggregates serve browser lists, not execution decisions. Public
 SQLAlchemy SELECT operations fill the API gap without changing repository writes
@@ -8,17 +8,23 @@ task/artifact joins. No projection is persisted.
 from __future__ import annotations
 
 from datetime import timezone
+from uuid import uuid4
 
 from sqlalchemy import Select, case, func, or_, select
+from sqlalchemy.orm import defer
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.schemas import (
     PageResponse, TestCaseListResponse, TestRunDailyStatistics, TestRunFilterQuery,
     TestRunListResponse, TestRunPageQuery, TestRunStatisticsResponse,
 )
-from app.domain.execution import ArtifactType, TaskRunStatus, TestRunStatus, TestRunVerdict
-from app.persistence.mappers import test_case_from_row, test_run_from_row
-from app.persistence.models import ArtifactRow, TaskRunRow, TestCaseRow, TestPlanRow, TestRunRow, TestTaskRow
+from app.domain.execution import StoredRunEvent, ArtifactType, TaskRunStatus, TestRunStatus, TestRunVerdict
+from app.domain.planning import TestCase, TestCaseContent, TestPlan
+from app.persistence.db import read_snapshot
+from app.persistence.run_repository import read_test_run_detail
+from app.persistence.mappers import artifact_from_row, stored_event_from_row, test_case_from_row, test_plan_from_rows, test_run_from_row
+from app.reporting import TestRunReport
+from app.persistence.models import ArtifactRow, RunEventRow, TaskRunRow, TestCaseRow, TestPlanRow, TestRunRow, TestTaskRow
 
 
 async def list_test_cases(
@@ -36,7 +42,7 @@ async def list_test_cases(
         select(func.max(TestPlanRow.version_number))
         .where(TestPlanRow.test_case_id == TestCaseRow.id).correlate(TestCaseRow).scalar_subquery()
     )
-    async with sessions() as session:
+    async with read_snapshot(sessions) as session:
         total = await session.scalar(select(func.count()).select_from(statement.subquery()))
         rows = (await session.execute(
             statement.add_columns(latest_version)
@@ -81,13 +87,16 @@ async def list_test_runs(
     sessions: async_sessionmaker[AsyncSession], filters: TestRunPageQuery,
 ) -> PageResponse[TestRunListResponse]:
     statement = filtered_test_runs(filters)
-    async with sessions() as session:
+    async with read_snapshot(sessions) as session:
         total = await session.scalar(select(func.count()).select_from(statement.subquery()))
         rows = (await session.execute(
-            statement.add_columns(TestCaseRow.id, TestCaseRow.name)
+            statement.options(defer(TestRunRow.snapshot_json, raiseload=True))
+            .add_columns(TestCaseRow.id, TestCaseRow.name)
             .order_by(TestRunRow.created_at.desc(), TestRunRow.id.desc())
             .limit(filters.limit).offset(filters.offset)
         )).all()
+        if not rows:
+            return PageResponse[TestRunListResponse](items=[], total=int(total or 0))
         run_ids = [run.id for run, _, _ in rows]
         plan_ids = [run.test_plan_id for run, _, _ in rows]
         planned_counts = dict((await session.execute(
@@ -126,7 +135,7 @@ async def test_run_statistics(
         (func.julianday(runs.c.finished_at) - func.julianday(runs.c.started_at)) * 86400.0,
     ), else_=None)
     day = func.date(runs.c.created_at, "+8 hours")
-    async with sessions() as session:
+    async with read_snapshot(sessions) as session:
         total, average = (await session.execute(select(func.count(), func.avg(duration)).select_from(runs))).one()
         counts = dict((await session.execute(
             select(runs.c.verdict, func.count()).where(runs.c.verdict.is_not(None)).group_by(runs.c.verdict)
@@ -142,3 +151,71 @@ async def test_run_statistics(
             average_duration_seconds=average_duration, total_duration_seconds=total_duration)
             for day_value, count, average_duration, total_duration in daily_rows],
     )
+
+
+async def create_test_case(sessions: async_sessionmaker[AsyncSession], content: TestCaseContent) -> TestCase:
+    row = TestCaseRow(
+        id=str(uuid4()), name=content.name, source_text=content.source_text
+    )
+    async with sessions() as session:
+        session.add(row)
+        await session.commit()
+    return test_case_from_row(row)
+
+
+async def list_test_plans(
+    sessions: async_sessionmaker[AsyncSession], test_case_id: str,
+) -> list[TestPlan]:
+    async with read_snapshot(sessions) as session:
+        if await session.get(TestCaseRow, test_case_id) is None:
+            raise LookupError("Test case not found")
+        plans = (await session.scalars(
+            select(TestPlanRow).where(TestPlanRow.test_case_id == test_case_id)
+            .order_by(TestPlanRow.version_number.desc())
+        )).all()
+        if not plans:
+            return []
+        tasks_by_plan: dict[str, list[TestTaskRow]] = {}
+        tasks = await session.scalars(
+            select(TestTaskRow).where(TestTaskRow.test_plan_id.in_([plan.id for plan in plans]))
+            .order_by(TestTaskRow.test_plan_id, TestTaskRow.position)
+        )
+        for task in tasks:
+            tasks_by_plan.setdefault(task.test_plan_id, []).append(task)
+        return [test_plan_from_rows(plan, tasks_by_plan.get(plan.id, [])) for plan in plans]
+
+
+async def read_run_events(
+    session: AsyncSession, test_run_id: str, *, after: int = 0,
+) -> list[StoredRunEvent]:
+    rows = await session.scalars(
+        select(RunEventRow).where(
+            RunEventRow.test_run_id == test_run_id, RunEventRow.sequence > after,
+        ).order_by(RunEventRow.sequence)
+    )
+    return [stored_event_from_row(row) for row in rows]
+
+
+async def list_events(
+    sessions: async_sessionmaker[AsyncSession], test_run_id: str, *, after: int = 0,
+) -> list[StoredRunEvent]:
+    async with read_snapshot(sessions) as session:
+        if await session.scalar(select(TestRunRow.id).where(TestRunRow.id == test_run_id)) is None:
+            raise LookupError("Test run not found")
+        return await read_run_events(session, test_run_id, after=after)
+
+
+async def read_test_run_report(
+    sessions: async_sessionmaker[AsyncSession], test_run_id: str,
+) -> TestRunReport:
+    async with read_snapshot(sessions) as session:
+        detail = await read_test_run_detail(session, test_run_id)
+        events = await read_run_events(session, test_run_id)
+        task_ids = select(TaskRunRow.id).where(TaskRunRow.test_run_id == test_run_id)
+        artifacts = await session.scalars(
+            select(ArtifactRow).where(
+                (ArtifactRow.test_run_id == test_run_id) | ArtifactRow.task_run_id.in_(task_ids)
+            ).order_by(ArtifactRow.created_at)
+        )
+        return TestRunReport(detail=detail, events=events,
+                             artifacts=[artifact_from_row(row) for row in artifacts])

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   latestScreenshotArtifactId,
-  mergeStoredRunEvent,
+  mergeStoredRunEvents,
   openRunEventStream,
   parseStoredRunEvent,
   type RunEventSource
@@ -199,6 +199,6 @@ describe("run event stream boundary", () => {
   it("replaces a duplicate sequence instead of duplicating the timeline", () => {
     const first = parseStoredRunEvent(JSON.stringify(lifecycleEvent("run.started")));
     const replacement = parseStoredRunEvent(JSON.stringify(lifecycleEvent("run.finished")));
-    expect(mergeStoredRunEvent([first], replacement)).toEqual([replacement]);
+    expect(mergeStoredRunEvents([first], [replacement])).toEqual([replacement]);
   });
 });

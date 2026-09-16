@@ -6,6 +6,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { $api, apiErrorMessage } from "../api/client";
 import type { TestCaseCreateRequest } from "../api/contracts";
 import PlanPage from "./PlanPage";
+import { parsePage } from "../pageParams";
 
 export default function CasesPage() {
   const { caseId } = useParams();
@@ -13,7 +14,7 @@ export default function CasesPage() {
   const queryClient = useQueryClient();
   const [params, setParams] = useSearchParams();
   const search = params.get("search") ?? "";
-  const page = Math.max(1, Number(params.get("page")) || 1);
+  const page = parsePage(params.get("page"), 12);
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm<TestCaseCreateRequest>();
   const cases = $api.useQuery("get", "/api/test-cases", { params: { query: { search, limit: 12, offset: (page - 1) * 12 } } });

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.api import repository as api_repository
+
 import ast
 import asyncio
 import json
@@ -57,9 +59,9 @@ from app.persistence.db import (
     build_session_factory,
     init_database,
 )
-from app.persistence.test_repository import (
+from app.persistence.run_repository import (
     ActiveRunExists,
-    SqlAlchemyTestRepository,
+    SqlAlchemyRunRepository,
 )
 from app.persistence.models import ArtifactRow
 
@@ -277,10 +279,10 @@ async def test_latest_plan_and_single_active_run_are_serialized() -> None:
         engine = build_engine(f"sqlite+aiosqlite:///{database.as_posix()}")
         await init_database(engine)
         sessions = build_session_factory(engine)
-        repository = SqlAlchemyTestRepository(
+        repository = SqlAlchemyRunRepository(
             sessions, EventWriter(sessions, EventBus())
         )
-        generated_case = await repository.create_test_case(
+        generated_case = await api_repository.create_test_case(repository.sessions,
             CaseContent(name="Concurrent generation", source_text="Check TV")
         )
         generated: list[object] = list(
@@ -305,7 +307,7 @@ async def test_latest_plan_and_single_active_run_are_serialized() -> None:
         assert generated_plans[0].origin == PlanOrigin.PLANNING
         assert sum(isinstance(item, ValueError) for item in generated) == 1
 
-        test_case = await repository.create_test_case(planning_context().test_case_content)
+        test_case = await api_repository.create_test_case(repository.sessions, planning_context().test_case_content)
         initial = await repository.create_plan(
             test_case_id=test_case.id,
             draft=plan_draft(),
@@ -360,10 +362,10 @@ async def test_task_result_evidence_must_belong_to_the_task_run() -> None:
         engine = build_engine(f"sqlite+aiosqlite:///{database.as_posix()}")
         await init_database(engine)
         sessions = build_session_factory(engine)
-        repository = SqlAlchemyTestRepository(
+        repository = SqlAlchemyRunRepository(
             sessions, EventWriter(sessions, EventBus())
         )
-        test_case = await repository.create_test_case(planning_context().test_case_content)
+        test_case = await api_repository.create_test_case(repository.sessions, planning_context().test_case_content)
         plan = await repository.create_plan(
             test_case_id=test_case.id,
             draft=plan_draft(task_count=2),
@@ -483,8 +485,8 @@ def test_process_boundaries_do_not_restore_obsolete_dependency_ownership() -> No
     assert "registry" not in signature(RunExecutor).parameters
     assert "registry" not in signature(TaskAgentFactory).parameters
     assert set(signature(PlanningGraph).parameters) == {"prompt_definition"}
-    assert not hasattr(SqlAlchemyTestRepository, "load_snapshot")
-    assert not hasattr(SqlAlchemyTestRepository, "get_report")
+    assert not hasattr(SqlAlchemyRunRepository, "load_snapshot")
+    assert not hasattr(SqlAlchemyRunRepository, "get_report")
 
 
 def test_graph_state_and_event_vocabulary_have_no_parallel_protocol() -> None:

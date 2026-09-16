@@ -64,6 +64,7 @@ function TestCasePlan({ caseId }: { caseId: string }) {
   const latest = plans.data?.items[0];
   const isLatest = !!plan && plan.version_number >= (latest?.version_number ?? 0);
   const busy = generate.isPending || revise.isPending || start.isPending;
+  const canEdit = !busy && isLatest;
   const valid = isPlanDraftValid(draft);
   const canGenerate = !busy && !dirty && (!plan || (isLatest && !!userInput.trim()));
   const generatePlan = () => { if (canGenerate) generate.mutate({ params: { path: { test_case_id: caseId } }, body: { user_input: userInput.trim() || null } }); };
@@ -108,7 +109,7 @@ function TestCasePlan({ caseId }: { caseId: string }) {
         <div className="prompt-actions"><span className="muted">{generate.isPending ? "规划中…" : "以目标和成功标准描述任务"}</span><Button type="primary" loading={generate.isPending} disabled={!canGenerate} onClick={generatePlan}>{plan ? "重新规划" : "生成计划"}</Button></div>
       </div>
     </section>
-    <aside className="plan-results"><div className="section-heading"><div><small>规划结果</small><h2>任务序列</h2></div>{plan && <Button icon={<EditOutlined />} disabled={busy || !isLatest} onClick={() => setEditing(true)}>编辑计划</Button>}</div>
+    <aside className="plan-results"><div className="section-heading"><div><small>规划结果</small><h2>任务序列</h2></div>{plan && <Button icon={<EditOutlined />} disabled={!canEdit} onClick={() => setEditing(true)}>编辑计划</Button>}</div>
       {plan && draft ? <>
         <div className="plan-task-list"><h3>{draft.title}</h3>{draft.tasks.map((task, index) => <article className="plan-task" key={index}><span className={"task-number " + task.type}>{index + 1}</span><div>
           <div className="task-title"><h3>{task.title}</h3><span className={"pill " + (task.type === "judge" ? "purple" : "blue")}>{task.type === "judge" ? "Judge" : "Act"}</span></div>
@@ -127,13 +128,13 @@ function TestCasePlan({ caseId }: { caseId: string }) {
       </div>
     </aside>
     <Modal title="编辑语义计划" open={editing} width={760} onCancel={() => setEditing(false)} footer={null} mask={{ closable: false }}>
-      {draft && <Form layout="vertical" disabled={busy || !isLatest}>
+      {draft && <Form layout="vertical" disabled={!canEdit}>
         <Form.Item label="计划标题"><Input value={draft.title} maxLength={200} onChange={(event) => updateDraft({ ...draft, title: event.target.value })} /></Form.Item>
         <Form.Item label="前置假设（每行一条）"><Input.TextArea value={draft.assumptions.join("\n")} onChange={(event) => updateDraft({ ...draft, assumptions: event.target.value ? event.target.value.split("\n") : [] })} /></Form.Item>
         <Form.Item label="准备步骤（每行一条）"><Input.TextArea value={draft.setup_steps.join("\n")} onChange={(event) => updateDraft({ ...draft, setup_steps: event.target.value ? event.target.value.split("\n") : [] })} /></Form.Item>
         {draft.tasks.map((task, index) => <section className="task-editor" key={index}><div className="task-editor-heading"><strong>任务 {index + 1}</strong><div>
-          <Button aria-label={"上移任务 " + (index + 1)} icon={<ArrowUpOutlined />} disabled={busy || index === 0} onClick={() => moveTask(index, -1)} />
-          <Button aria-label={"下移任务 " + (index + 1)} icon={<ArrowDownOutlined />} disabled={busy || index === draft.tasks.length - 1} onClick={() => moveTask(index, 1)} />
+          <Button aria-label={"上移任务 " + (index + 1)} icon={<ArrowUpOutlined />} disabled={!canEdit || index === 0} onClick={() => moveTask(index, -1)} />
+          <Button aria-label={"下移任务 " + (index + 1)} icon={<ArrowDownOutlined />} disabled={!canEdit || index === draft.tasks.length - 1} onClick={() => moveTask(index, 1)} />
           <Button aria-label={"删除任务 " + (index + 1)} danger icon={<DeleteOutlined />} onClick={() => updateDraft({ ...draft, tasks: draft.tasks.filter((_, position) => position !== index) })} /></div></div>
           <div className="task-editor-options"><Form.Item label="类型"><Radio.Group value={task.type} onChange={(event) => updateTask(index, { type: event.target.value })}><Radio.Button value="act">Act</Radio.Button><Radio.Button value="judge">Judge</Radio.Button></Radio.Group></Form.Item>
             <Form.Item label="最大循环数"><InputNumber min={1} max={100} value={task.max_cycles} onChange={(value) => updateTask(index, { max_cycles: value ?? 1 })} /></Form.Item></div>
@@ -144,7 +145,7 @@ function TestCasePlan({ caseId }: { caseId: string }) {
         <Button block icon={<PlusOutlined />} onClick={() => updateDraft({ ...draft, tasks: [...draft.tasks, emptyTask()] })}>新增任务</Button>
         {draft.setup_steps.map((step, index) => <Button key={index} type="link" onClick={() => updateDraft({ ...draft, tasks: [...draft.tasks, emptyTask(step)] })}>将准备步骤 {index + 1} 转为任务</Button>)}
         {!valid && <Alert type="warning" title="请补全计划标题、任务目标、成功标准与循环上限" />}
-        <div className="editor-footer"><Button disabled={busy} onClick={() => { if (plan) selectPlan(plan); }}>放弃修改</Button><Button type="primary" icon={<SaveOutlined />} disabled={busy || !dirty || !valid || !isLatest} loading={revise.isPending}
+        <div className="editor-footer"><Button disabled={busy} onClick={() => { if (plan) selectPlan(plan); }}>放弃修改</Button><Button type="primary" icon={<SaveOutlined />} disabled={!canEdit || !dirty || !valid} loading={revise.isPending}
           onClick={() => { if (plan) revise.mutate({ params: { path: { test_plan_id: plan.id } }, body: { content: draft } }); }}>保存新版本</Button></div>
       </Form>}
     </Modal>

@@ -7,11 +7,20 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import event
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api import repository as api_repository
+from app.api.schemas import TestRunFilterQuery as RunFilterQuery, TestRunPageQuery as RunPageQuery
+from app.artifacts import ArtifactStore
 from app.container import Container
-from app.domain.execution import TestRunStatus as RunStatus, TestRunVerdict as RunVerdict
+from app.domain.execution import ReasonCode, TaskRunResult, TaskRunStatus, TestRunStatus as RunStatus, TestRunVerdict as RunVerdict
+from app.domain.planning import TestPlanOrigin as PlanOrigin
+from app.event_stream import EventBus, EventWriter
+from app.persistence.db import build_engine, build_session_factory, init_database
+from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.persistence.models import TestRunRow as RunRow
 from mcp_support import build_client, create_plan, read_records, start_run, wait_for_run
+from test_structure import plan_draft, planning_context, run_snapshot
 
 
 def test_history_queries_join_existing_facts_without_writes(tmp_path: Path) -> None:
@@ -116,3 +125,131 @@ def test_case_search_is_literal_and_paginates_all_matches(tmp_path: Path) -> Non
         assert len({case["id"] for case in first["items"] + second["items"]}) == 3
         assert all(case["latest_plan_version"] is None for case in first["items"])
         assert client.get("/api/test-cases", params={"search": "输入信号"}).json()["total"] == 1
+
+
+@pytest.mark.parametrize("response_kind", ["report", "detail", "list", "statistics"])
+async def test_response_keeps_one_snapshot_during_committed_run_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, response_kind: str,
+) -> None:
+    engine = build_engine(f"sqlite+aiosqlite:///{(tmp_path / 'snapshot.db').as_posix()}")
+    await init_database(engine)
+    sessions = build_session_factory(engine)
+    repository = SqlAlchemyRunRepository(sessions, EventWriter(sessions, EventBus()))
+    case = await api_repository.create_test_case(sessions, planning_context().test_case_content)
+    plan = await repository.create_plan(test_case_id=case.id, draft=plan_draft(),
+        planning_context=planning_context(), origin=PlanOrigin.PLANNING)
+    run = await repository.create_test_run(test_plan_id=plan.id, snapshot=run_snapshot())
+    changed = False
+
+    async def commit_changes() -> None:
+        nonlocal changed
+        if changed:
+            return
+        changed = True
+        # Real independent writer sessions commit while the reader is open.
+        await repository.start_run(run.id)
+        task = await repository.start_task(run.id, plan.content.tasks[0])
+        await ArtifactStore(tmp_path / "artifacts", sessions).save_screenshot(
+            task_run_id=task.id, content=b"screenshot", mime_type="image/png")
+        await repository.finish_task(task.id, status=TaskRunStatus.CANCELLED, cycle_count=0,
+            result=TaskRunResult(reason_code=ReasonCode.USER_CANCELLED, summary="Cancelled", evidence_artifact_ids=[]))
+        await repository.finish_run(run.id, RunVerdict.CANCELLED)
+
+    original_task_rows = SqlAlchemyRunRepository._task_rows
+    original_execute = AsyncSession.execute
+
+    async def task_rows_with_writer(session, plan_id):
+        rows = await original_task_rows(session, plan_id)
+        await commit_changes()
+        return rows
+
+    async def execute_with_writer(session, statement, *args, **kwargs):
+        result = await original_execute(session, statement, *args, **kwargs)
+        if str(statement).lstrip().upper().startswith("SELECT"):
+            await commit_changes()
+        return result
+
+    try:
+        if response_kind in {"report", "detail"}:
+            monkeypatch.setattr(SqlAlchemyRunRepository, "_task_rows", staticmethod(task_rows_with_writer))
+        else:
+            monkeypatch.setattr(AsyncSession, "execute", execute_with_writer)
+        if response_kind == "report":
+            report = await api_repository.read_test_run_report(sessions, run.id)
+            assert report.detail.run.status == RunStatus.PENDING
+            assert report.detail.task_runs == report.events == report.artifacts == []
+        elif response_kind == "detail":
+            detail = await repository.get_test_run_detail(run.id)
+            assert detail.run.status == RunStatus.PENDING and detail.task_runs == []
+        elif response_kind == "list":
+            page = await api_repository.list_test_runs(sessions, RunPageQuery())
+            assert page.total == 1
+            assert page.items[0].status == RunStatus.PENDING
+            assert page.items[0].task_status_counts == {} and page.items[0].screenshot_count == 0
+        else:
+            statistics = await api_repository.test_run_statistics(sessions, RunFilterQuery())
+            assert statistics.run_count == 1
+            assert sum(statistics.verdict_counts.values()) == 0
+            assert statistics.average_duration_seconds is None
+            assert statistics.daily[0].average_duration_seconds is None
+        assert changed
+        current = await api_repository.read_test_run_report(sessions, run.id)
+        assert current.detail.run.verdict == RunVerdict.CANCELLED
+        assert len(current.artifacts) == len(current.detail.task_runs) == 1
+        assert current.events[-1].event.type == "run.cancelled"
+    finally:
+        await engine.dispose()
+
+
+def test_run_list_omits_snapshot_and_skips_empty_page_aggregates(tmp_path: Path) -> None:
+    with build_client(tmp_path) as client:
+        plan = create_plan(client)
+        run_id = start_run(client, plan)
+        wait_for_run(client, run_id)
+        container = cast(Container, cast(FastAPI, client.app).state.container)
+        statements: list[str] = []
+
+        def observe_sql(connection, cursor, statement, parameters, context, executemany):
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements.append(statement)
+
+        event.listen(container.engine.sync_engine, "before_cursor_execute", observe_sql)
+        try:
+            page = client.get("/api/runs").json()
+            assert page["items"][0]["id"] == run_id
+            assert len(statements) == 5
+            assert "test_runs.snapshot_json" not in statements[1]
+            statements.clear()
+            assert client.get("/api/runs", params={"offset": 100}).json() == {"items": [], "total": 1}
+            assert len(statements) == 2
+            statements.clear()
+            assert client.get("/api/runs", params={"status": "pending"}).json() == {"items": [], "total": 0}
+            assert len(statements) == 2
+        finally:
+            event.remove(container.engine.sync_engine, "before_cursor_execute", observe_sql)
+
+
+def test_plan_versions_batch_tasks_and_preserve_history(tmp_path: Path) -> None:
+    with build_client(tmp_path) as client:
+        plan = create_plan(client, task_count=2)
+        expected = client.get(f"/api/test-cases/{plan['test_case_id']}/plans").json()["items"]
+        for index in range(3):
+            content = {**plan["content"], "title": f"Revision {index}",
+                       "tasks": [task["definition"] for task in reversed(plan["content"]["tasks"])]}
+            plan = client.post(f"/api/test-plans/{plan['id']}/revisions", json={"content": content}).json()
+            expected.insert(0, plan)
+        container = cast(Container, cast(FastAPI, client.app).state.container)
+        statements: list[str] = []
+
+        def observe_sql(connection, cursor, statement, parameters, context, executemany):
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements.append(statement)
+
+        event.listen(container.engine.sync_engine, "before_cursor_execute", observe_sql)
+        try:
+            page = client.get(f"/api/test-cases/{plan['test_case_id']}/plans").json()
+            assert page == {"items": expected, "total": 5}
+            assert len(statements) == 3
+        finally:
+            event.remove(container.engine.sync_engine, "before_cursor_execute", observe_sql)
+        assert client.get(f"/api/test-cases/{uuid4()}/plans").status_code == 404

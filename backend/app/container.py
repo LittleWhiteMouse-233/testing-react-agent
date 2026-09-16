@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from functools import partial
+
+from app.api.repository import read_test_run_report
 from app.artifacts import ArtifactStore
 from app.llm import (
     ChatModelClient,
@@ -13,7 +16,7 @@ from app.execution.executor import RunExecutor
 from app.execution.run_service import RunService
 from app.execution.task_agent import TaskAgentFactory
 from app.persistence.db import build_engine, build_session_factory
-from app.persistence.test_repository import SqlAlchemyTestRepository
+from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.planning import PlanningGraph, PlanningService
 from app.prompts import load_prompt_catalog
 from app.reporting import ReportService
@@ -51,7 +54,7 @@ class Container:
             execution_model_id=settings.execution_model_id,
         )
         self.planning_graph = PlanningGraph(prompt_catalog.planner)
-        self.repository = SqlAlchemyTestRepository(self.sessions, self.events)
+        self.repository = SqlAlchemyRunRepository(self.sessions, self.events)
         self.planning = PlanningService(
             repository=self.repository,
             planning_graph=self.planning_graph,
@@ -82,4 +85,4 @@ class Container:
             tools=self.tools,
             screenshot_history_rounds=settings.screenshot_history_rounds,
         )
-        self.reports = ReportService(self.repository, self.artifacts)
+        self.reports = ReportService(partial(read_test_run_report, self.sessions), self.artifacts)

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from app.api import repository as api_repository
+from app.api.schemas import TestRunPageQuery as RunPageQuery
+
 import asyncio
 import base64
 import json
@@ -562,8 +565,8 @@ def test_slow_evidence_save_is_outside_tool_timeout_and_precedes_publication(
 
         async def save_screenshot(store: ArtifactStore, **kwargs):
             # The raw ToolNode result must not be published while storage waits.
-            runs, _ = await container.repository.list_test_runs(test_case_id=None, limit=1, offset=0)
-            events = await container.repository.list_events(runs[0].id)
+            runs = (await api_repository.list_test_runs(container.sessions, RunPageQuery(limit=1))).items
+            events = await api_repository.list_events(container.sessions, runs[0].id)
             observed_unsaved_events.extend(entry.event.model_dump(mode="json") for entry in events)
             await asyncio.sleep(2.1)
             return await original_save(store, **kwargs)

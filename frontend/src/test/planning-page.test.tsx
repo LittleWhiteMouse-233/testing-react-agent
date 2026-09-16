@@ -105,6 +105,7 @@ beforeEach(() => {
       const body = await request.json() as { content: TestPlanDraft };
       const previous = plans[0];
       if (!previous) throw new Error("Expected a saved parent plan");
+      if (!path.includes(previous.id)) return Response.json({ code: "test_plan_not_latest", message: "计划版本已变化" }, { status: 409 });
       const plan: TestPlan = {
         ...savedPlan(plans.length + 1), origin: "manual_revision",
         planning_context: previous.planning_context,
@@ -281,15 +282,49 @@ describe("planning page", () => {
 
   it("can discard a draft after another client saves a newer plan", async () => {
     plans = [savedPlan()];
+    plans[0]!.content.setup_steps = ["准备环境"];
+    plans[0]!.content.tasks.push({ test_task_id: "second-task", definition: { ...plans[0]!.content.tasks[0]!.definition, title: "第二任务" } });
     renderPlanPage();
     fireEvent.click(await screen.findByRole("button", { name: /编辑计划/ }));
     fireEvent.change(screen.getByDisplayValue("计划 1"), { target: { value: "未保存草稿" } });
+    expect(screen.getByRole("button", { name: "上移任务 2" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "下移任务 1" })).toBeEnabled();
     plans = [savedPlan(2), ...plans];
-    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["get", "/api/test-cases/{test_case_id}/plans"] }); });
+    fireEvent.click(screen.getByRole("button", { name: /保存新版本/ }));
+    await screen.findByText("计划版本已变化");
+    await waitFor(() => expect(screen.getByRole("button", { name: "上移任务 2" })).toBeDisabled());
+    for (const name of ["下移任务 1", "删除任务 1", "删除任务 2", "新增任务", "将准备步骤 1 转为任务"]) {
+      expect(screen.getByRole("button", { name: new RegExp(name) })).toBeDisabled();
+    }
+    expect(screen.getByDisplayValue("未保存草稿")).toBeDisabled();
+    expect(screen.getByDisplayValue("第二任务")).toBeDisabled();
     expect(screen.getByRole("button", { name: /保存新版本/ })).toBeDisabled();
     fireEvent.click(screen.getAllByRole("button", { name: "放弃修改" }).at(-1)!);
     await waitFor(() => expect(screen.getByRole("combobox", { name: "计划版本" })).not.toBeDisabled());
     expect(screen.queryByText("未保存草稿")).not.toBeInTheDocument();
+  });
+
+  it("keeps queue editing available on the latest plan and saves a new version", async () => {
+    const original = savedPlan();
+    original.content.setup_steps = ["准备环境"];
+    original.content.tasks.push({ test_task_id: "second-task", definition: { ...original.content.tasks[0]!.definition, title: "第二任务" } });
+    plans = [original];
+    renderPlanPage();
+    fireEvent.click(await screen.findByRole("button", { name: /编辑计划/ }));
+    fireEvent.click(screen.getByRole("button", { name: "上移任务 2" }));
+    expect(document.querySelector(".task-editor input[maxlength='200']")).toHaveValue("第二任务");
+    fireEvent.click(screen.getByRole("button", { name: "删除任务 2" }));
+    fireEvent.click(screen.getByRole("button", { name: /新增任务/ }));
+    expect(document.querySelectorAll(".task-editor")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "删除任务 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "将准备步骤 1 转为任务" }));
+    expect(document.querySelectorAll(".task-editor")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "删除任务 2" }));
+    fireEvent.click(screen.getByRole("button", { name: /保存新版本/ }));
+    await screen.findByText("版本 2 · manual_revision");
+    expect(plans[0]!.content.tasks.map((task) => task.definition.title)).toEqual(["第二任务"]);
+    expect(plans[0]!.content.tasks[0]!.test_task_id).not.toBe("second-task");
+    expect(original.content.tasks.map((task) => task.definition.title)).toEqual(["检查页面", "第二任务"]);
   });
 });
 

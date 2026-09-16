@@ -4,10 +4,10 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.domain.execution import Artifact, ArtifactType, ReasonCode
+from app.domain.execution import ArtifactType, ReasonCode
 from app.domain.errors import TestPlanNotLatest
 from app.domain.execution import (
     CycleStartedEvent,
@@ -37,7 +37,7 @@ from app.domain.planning import (
     TestTaskDefinition,
     identify_plan_content,
 )
-from app.domain.planning import TestCase, TestCaseContent
+from app.domain.planning import TestCase
 from app.persistence.adapters import (
     dump_planning_context,
     dump_string_list,
@@ -46,7 +46,6 @@ from app.persistence.adapters import (
     load_test_run_snapshot,
 )
 from app.persistence.mappers import (
-    artifact_from_row,
     task_run_from_row,
     test_case_from_row,
     test_plan_from_rows,
@@ -54,7 +53,6 @@ from app.persistence.mappers import (
 )
 from app.persistence.models import (
     ArtifactRow,
-    RunEventRow,
     TaskRunRow,
     TestCaseRow,
     TestPlanRow,
@@ -62,14 +60,14 @@ from app.persistence.models import (
     TestTaskRow,
 )
 from app.event_stream.writer import EventWriter
-from app.persistence.mappers import stored_event_from_row
+from app.persistence.db import read_snapshot
 
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class SqlAlchemyTestRepository:
+class SqlAlchemyRunRepository:
     """Canonical entity repository and execution transaction boundary."""
 
     def __init__(
@@ -80,38 +78,12 @@ class SqlAlchemyTestRepository:
         self.sessions = sessions
         self.events = events
 
-    async def create_test_case(self, content: TestCaseContent) -> TestCase:
-        row = TestCaseRow(
-            id=str(uuid4()), name=content.name, source_text=content.source_text
-        )
-        async with self.sessions() as session:
-            session.add(row)
-            await session.commit()
-        return test_case_from_row(row)
-
     async def get_test_case(self, test_case_id: str) -> TestCase:
         async with self.sessions() as session:
             row = await session.get(TestCaseRow, test_case_id)
         if row is None:
             raise LookupError("Test case not found")
         return test_case_from_row(row)
-
-    async def list_test_cases(
-        self, *, limit: int, offset: int
-    ) -> tuple[list[TestCase], int]:
-        async with self.sessions() as session:
-            total = await session.scalar(select(func.count()).select_from(TestCaseRow))
-            rows = list(
-                (
-                    await session.scalars(
-                        select(TestCaseRow)
-                        .order_by(TestCaseRow.created_at.desc())
-                        .limit(limit)
-                        .offset(offset)
-                    )
-                ).all()
-            )
-        return [test_case_from_row(row) for row in rows], int(total or 0)
 
     async def create_plan(
         self,
@@ -194,25 +166,6 @@ class SqlAlchemyTestRepository:
                 return None
             return test_plan_from_rows(row, await self._task_rows(session, row.id))
 
-    async def list_test_plans(self, test_case_id: str) -> list[TestPlan]:
-        async with self.sessions() as session:
-            if await session.get(TestCaseRow, test_case_id) is None:
-                raise LookupError("Test case not found")
-            rows = list(
-                (
-                    await session.scalars(
-                        select(TestPlanRow)
-                        .where(TestPlanRow.test_case_id == test_case_id)
-                        .order_by(TestPlanRow.version_number.desc())
-                    )
-                ).all()
-            )
-            plans = [
-                test_plan_from_rows(row, await self._task_rows(session, row.id))
-                for row in rows
-            ]
-        return plans
-
     async def create_test_run(
         self,
         *,
@@ -261,88 +214,9 @@ class SqlAlchemyTestRepository:
             raise LookupError("Test run not found")
         return test_run_from_row(row)
 
-    async def list_test_runs(
-        self,
-        *,
-        test_case_id: str | None,
-        limit: int,
-        offset: int,
-    ) -> tuple[list[TestRun], int]:
-        statement = select(TestRunRow)
-        count = select(func.count()).select_from(TestRunRow)
-        if test_case_id is not None:
-            statement = statement.join(TestPlanRow).where(
-                TestPlanRow.test_case_id == test_case_id
-            )
-            count = count.join(TestPlanRow).where(
-                TestPlanRow.test_case_id == test_case_id
-            )
-        async with self.sessions() as session:
-            total = await session.scalar(count)
-            rows = list(
-                (
-                    await session.scalars(
-                        statement.order_by(TestRunRow.created_at.desc())
-                        .limit(limit)
-                        .offset(offset)
-                    )
-                ).all()
-            )
-        return [test_run_from_row(row) for row in rows], int(total or 0)
-
     async def get_test_run_detail(self, test_run_id: str) -> TestRunDetail:
-        async with self.sessions() as session:
-            run_row = await session.get(TestRunRow, test_run_id)
-            if run_row is None:
-                raise LookupError("Test run not found")
-            plan_row = await session.get(TestPlanRow, run_row.test_plan_id)
-            if plan_row is None:
-                raise RuntimeError("Test run references a missing test plan")
-            plan_tasks = await self._task_rows(session, plan_row.id)
-            task_rows = await self._task_run_rows(session, test_run_id)
-        return TestRunDetail(
-            run=test_run_from_row(run_row),
-            test_plan=test_plan_from_rows(plan_row, plan_tasks),
-            snapshot=load_test_run_snapshot(run_row.snapshot_json),
-            task_runs=[task_run_from_row(row) for row in task_rows],
-        )
-
-    async def list_events(
-        self, test_run_id: str, *, after: int = 0
-    ) -> list[StoredRunEvent]:
-        async with self.sessions() as session:
-            if await session.get(TestRunRow, test_run_id) is None:
-                raise LookupError("Test run not found")
-            rows = list(
-                (
-                    await session.scalars(
-                        select(RunEventRow)
-                        .where(
-                            RunEventRow.test_run_id == test_run_id,
-                            RunEventRow.sequence > after,
-                        )
-                        .order_by(RunEventRow.sequence)
-                    )
-                ).all()
-            )
-        return [stored_event_from_row(row) for row in rows]
-
-    async def list_artifacts(self, test_run_id: str) -> list[Artifact]:
-        task_ids = select(TaskRunRow.id).where(TaskRunRow.test_run_id == test_run_id)
-        async with self.sessions() as session:
-            rows = list(
-                (
-                    await session.scalars(
-                        select(ArtifactRow)
-                        .where(
-                            (ArtifactRow.test_run_id == test_run_id)
-                            | (ArtifactRow.task_run_id.in_(task_ids))
-                        )
-                        .order_by(ArtifactRow.created_at)
-                    )
-                ).all()
-            )
-        return [artifact_from_row(row) for row in rows]
+        async with read_snapshot(self.sessions) as session:
+            return await read_test_run_detail(session, test_run_id)
 
     async def start_run(self, test_run_id: str) -> None:
         event = RunLifecycleEvent(
@@ -624,3 +498,20 @@ class ActiveRunExists(RuntimeError):
     def __init__(self, active_run_id: str) -> None:
         super().__init__(f"Run {active_run_id} is already active")
         self.active_run_id = active_run_id
+
+
+async def read_test_run_detail(session: AsyncSession, test_run_id: str) -> TestRunDetail:
+    run_row = await session.get(TestRunRow, test_run_id)
+    if run_row is None:
+        raise LookupError("Test run not found")
+    plan_row = await session.get(TestPlanRow, run_row.test_plan_id)
+    if plan_row is None:
+        raise RuntimeError("Test run references a missing test plan")
+    plan_tasks = await SqlAlchemyRunRepository._task_rows(session, plan_row.id)
+    task_rows = await SqlAlchemyRunRepository._task_run_rows(session, test_run_id)
+    return TestRunDetail(
+        run=test_run_from_row(run_row),
+        test_plan=test_plan_from_rows(plan_row, plan_tasks),
+        snapshot=load_test_run_snapshot(run_row.snapshot_json),
+        task_runs=[task_run_from_row(row) for row in task_rows],
+    )

@@ -7,7 +7,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
-from app.api import queries
+from app.api import repository
 
 from app.api.schemas import (
     ApiError,
@@ -64,7 +64,7 @@ def problem(status_code: int, code: str, message: str) -> HTTPException:
 async def create_test_case(
     payload: TestCaseCreateRequest, request: Request
 ) -> TestCase:
-    return await container(request).repository.create_test_case(payload)
+    return await repository.create_test_case(container(request).sessions, payload)
 
 
 @router.get("/test-cases", response_model=PageResponse[TestCaseListResponse])
@@ -74,7 +74,7 @@ async def list_test_cases(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> PageResponse[TestCaseListResponse]:
-    return await queries.list_test_cases(
+    return await repository.list_test_cases(
         container(request).sessions, search=search, limit=limit, offset=offset
     )
 
@@ -124,7 +124,7 @@ async def list_test_plans(
     test_case_id: TestCaseId, request: Request
 ) -> PageResponse[TestPlan]:
     try:
-        items = await container(request).repository.list_test_plans(test_case_id)
+        items = await repository.list_test_plans(container(request).sessions, test_case_id)
     except LookupError as exc:
         raise problem(404, "test_case_not_found", str(exc)) from exc
     return PageResponse[TestPlan](items=items, total=len(items))
@@ -180,7 +180,7 @@ async def list_test_runs(
     request: Request,
     filters: Annotated[TestRunPageQuery, Query()],
 ) -> PageResponse[TestRunListResponse]:
-    return await queries.list_test_runs(container(request).sessions, filters)
+    return await repository.list_test_runs(container(request).sessions, filters)
 
 
 @router.get("/runs/statistics", response_model=TestRunStatisticsResponse)
@@ -188,7 +188,7 @@ async def get_test_run_statistics(
     request: Request,
     filters: Annotated[TestRunFilterQuery, Query()],
 ) -> TestRunStatisticsResponse:
-    return await queries.test_run_statistics(container(request).sessions, filters)
+    return await repository.test_run_statistics(container(request).sessions, filters)
 
 
 @router.get(
@@ -252,15 +252,15 @@ async def stream_run_events(
             while True:
                 if await request.is_disconnected():
                     return
-                events = await app.repository.list_events(test_run_id, after=cursor)
+                events = await repository.list_events(app.sessions, test_run_id, after=cursor)
                 for stored in events:
                     cursor = stored.sequence
                     data = json.dumps(stored.model_dump(mode="json"), ensure_ascii=False)
                     yield f"id: {stored.sequence}\ndata: {data}\n\n"
                 run = await app.repository.get_test_run(test_run_id)
                 if run.status == TestRunStatus.FINISHED:
-                    trailing = await app.repository.list_events(
-                        test_run_id, after=cursor
+                    trailing = await repository.list_events(
+                        app.sessions, test_run_id, after=cursor
                     )
                     if trailing:
                         continue

@@ -42,7 +42,7 @@ from app.execution.signals import (
     ToolStartedSignal,
 )
 from app.execution.task_agent import TaskAgentFactory
-from app.persistence.test_repository import SqlAlchemyTestRepository
+from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.event_stream.projector import project_run_message
 
 
@@ -50,7 +50,7 @@ class RunExecutor:
     def __init__(
         self,
         *,
-        repository: SqlAlchemyTestRepository,
+        repository: SqlAlchemyRunRepository,
         agent_factory: TaskAgentFactory,
         checkpoint_path: str,
     ) -> None:

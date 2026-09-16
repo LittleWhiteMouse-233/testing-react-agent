@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.api import repository as api_repository
+
 import asyncio
 import json
 from contextlib import asynccontextmanager
@@ -162,7 +164,7 @@ def test_unreportable_failure_is_observed_once_without_terminal(
             assert container.run_service._work is None
             assert not [task for task in asyncio.all_tasks() if task.get_name().startswith("mcp-session-")]
             assert (await container.repository.get_test_run(run.id)).status.value != "finished"
-            events = await container.repository.list_events(run.id)
+            events = await api_repository.list_events(container.sessions, run.id)
             assert not any(entry.event.type in {"run.finished", "run.cancelled"} for entry in events)
             if report_stage == "terminal":
                 assert not any(entry.event.type == "execution.error" for entry in events)
@@ -230,7 +232,7 @@ def test_tool_cleanup_fault_blocks_and_locks_run_entry(
             assert finished.run.verdict is not None and finished.run.verdict.value == "BLOCKED"
             assert finished.task_runs[0].result is not None
             assert finished.task_runs[0].result.reason_code.value == "tool_failed"
-            events = await container.repository.list_events(run.id)
+            events = await api_repository.list_events(container.sessions, run.id)
             assert sum(entry.event.type == "execution.error" for entry in events) == 1
             assert not any(entry.event.type == "message.appended" and entry.event.message.role == "tool"
                            for entry in events)
@@ -346,7 +348,7 @@ def test_cancelled_start_after_commit_finishes_run_and_allows_next_run(tmp_path:
             cancelled = await container.repository.get_test_run(run_ids[0])
             assert cancelled.status.value == 'finished'
             assert cancelled.verdict is not None and cancelled.verdict.value == 'CANCELLED'
-            events = await container.repository.list_events(cancelled.id)
+            events = await api_repository.list_events(container.sessions, cancelled.id)
             terminals = [entry for entry in events if entry.event.type in {'run.finished', 'run.cancelled'}]
             assert terminals == [events[-1]] and terminals[0].event.type == 'run.cancelled'
             assert not any(entry.event.type == 'execution.error' for entry in events)
