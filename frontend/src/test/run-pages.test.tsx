@@ -17,7 +17,8 @@ vi.mock("../api/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("../api/client")>();
   const { default: createFetchClient } = await import("openapi-fetch");
   const { default: createQueryClient } = await import("openapi-react-query");
-  return { ...original, $api: createQueryClient(createFetchClient<import("../api/schema").paths>({ baseUrl: "http://localhost", fetch: (request) => fetch(request) })) };
+  const apiFetch = createFetchClient<import("../api/schema").paths>({ baseUrl: "http://localhost", fetch: (request) => fetch(request) });
+  return { ...original, apiFetch, $api: createQueryClient(apiFetch) };
 });
 
 let report: TestRunReport;
@@ -45,9 +46,13 @@ beforeEach(() => {
     if (url.pathname === "/api/test-cases") return Response.json({ items: [], total: 0 });
     if (url.pathname === "/api/runs/statistics") return Response.json({ run_count: 24, verdict_counts: { PASS: 20, FAIL: 2, BLOCKED: 1, CANCELLED: 1 }, average_duration_seconds: 36, daily: [] });
     if (url.pathname === "/api/runs") return Response.json({ items: [{ ...report.detail.run, test_case_id: caseId, test_case_name: "设置页面验证", task_count: 1, task_status_counts: { passed: 1 }, screenshot_count: 1 }], total: 24 });
-    return Response.json(report);
+    return reportResponse(url, report);
   }));
 });
+function reportResponse(url: URL, snapshot: TestRunReport): Response {
+  const after = Number(url.searchParams.get("events_after") ?? 0);
+  return Response.json({ ...snapshot, events: snapshot.events.filter((stored) => stored.sequence > after) });
+}
 afterEach(async () => {
   cleanup(); queryClient.clear();
   await act(async () => { message.destroy(); await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -147,6 +152,7 @@ it.each(["execution", "modal"])("retries the final report after a terminal refre
   let failReport = false;
   vi.mocked(fetch).mockImplementation(async (request) => {
     if (failReport && new URL((request as Request).url).pathname === `/api/runs/${runId}`) {
+      requests.push(new URL((request as Request).url));
       return Response.json({ code: "unavailable", message: "Temporary failure" }, { status: 503 });
     }
     return originalFetch(request);
@@ -167,6 +173,7 @@ it.each(["execution", "modal"])("retries the final report after a terminal refre
   expect(screen.getByText("截图前观察")).toBeInTheDocument();
   expect(sources).toHaveLength(1);
   expect(vi.mocked(fetch).mock.calls.filter(([request]) => (request as Request).method === "POST")).toHaveLength(0);
+  expect(requests.filter((url) => url.pathname === `/api/runs/${runId}`).map((url) => url.searchParams.get("events_after"))).toEqual(["0", "1", "1"]);
 });
 
 it("avoids the initial onopen refetch and preserves newer SSE events across older HTTP snapshots", async () => {
@@ -195,7 +202,7 @@ it("avoids the initial onopen refetch and preserves newer SSE events across olde
   });
   await waitFor(() => expect(reportRequests()).toBe(2));
   act(() => sources[0]!.onmessage?.(new MessageEvent("message", { data: JSON.stringify(newerCycle) })));
-  await act(async () => { respond(Response.json(olderSnapshot)); });
+  await act(async () => { respond(reportResponse(requests.at(-1)!, olderSnapshot)); });
   await waitFor(() => expect(result.current.isFetching).toBe(false));
   expect(result.current.data?.events.map((event) => event.sequence)).toEqual([1, 2]);
   expect(result.current.events.map((event) => event.sequence)).toEqual([1, 2, 3]);
@@ -205,6 +212,84 @@ it("avoids the initial onopen refetch and preserves newer SSE events across olde
   expect(result.current.events.map((event) => event.sequence)).toEqual([1, 2, 3]);
   act(() => sources[0]!.onmessage?.(new MessageEvent("message", { data: JSON.stringify(cycle) })));
   expect(result.current.events.map((event) => event.sequence)).toEqual([1, 2, 3]);
+  expect(requests.map((url) => url.searchParams.get("events_after"))).toEqual(["0", "1", "2"]);
+});
+
+it("fills missed events on reconnect even when SSE has delivered a newer sequence", async () => {
+  report = runReport(null);
+  const { result } = renderHook(() => useRunReport(runId), {
+    wrapper: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  });
+  await waitFor(() => expect(sources).toHaveLength(1));
+  const missed = runEvent(2, { type: "cycle.started", test_run_id: runId, task_run_id: taskRunId, cycle_count: 3 });
+  const received = runEvent(3, { type: "cycle.started", test_run_id: runId, task_run_id: taskRunId, cycle_count: 4 });
+  report.events.push(missed, received);
+  act(() => {
+    sources[0]!.onerror?.(new Event("error"));
+    sources[0]!.onmessage?.(new MessageEvent("message", { data: JSON.stringify(received) }));
+  });
+  expect(result.current.events.map((stored) => stored.sequence)).toEqual([1, 3]);
+  act(() => sources[0]!.onopen?.(new Event("open")));
+  await waitFor(() => expect(result.current.data?.events.map((stored) => stored.sequence)).toEqual([1, 2, 3]));
+  expect(result.current.events.map((stored) => stored.sequence)).toEqual([1, 2, 3]);
+  expect(requests.map((url) => url.searchParams.get("events_after"))).toEqual(["0", "1"]);
+});
+
+it("cancels an overlapping refresh and commits the newer report without advancing the cancelled cursor", async () => {
+  report = runReport(null);
+  const { result } = renderHook(() => useRunReport(runId), {
+    wrapper: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  });
+  await waitFor(() => expect(sources).toHaveLength(1));
+  const cycle = runEvent(2, { type: "cycle.started", test_run_id: runId, task_run_id: taskRunId, cycle_count: 3 });
+  report.events.push(cycle);
+  const cancelledRequests: Request[] = [];
+  vi.mocked(fetch).mockImplementationOnce(async (input) => {
+    const request = input as Request;
+    requests.push(new URL(request.url));
+    cancelledRequests.push(request);
+    return new Promise<Response>((_resolve, reject) => {
+      request.signal.addEventListener("abort", () => reject(request.signal.reason), { once: true });
+    });
+  });
+  act(() => { void result.current.refetch(); });
+  await waitFor(() => expect(cancelledRequests).toHaveLength(1));
+  report = runReport("FAIL");
+  report.events.push(cycle, runEvent(3, { type: "run.finished", test_run_id: runId, task_run_id: null }));
+  act(() => sources[0]!.onmessage?.(new MessageEvent("message", { data: JSON.stringify(report.events.at(-1)) })));
+  await waitFor(() => expect(result.current.data?.detail.run.verdict).toBe("FAIL"));
+  expect(cancelledRequests[0]!.signal.aborted).toBe(true);
+  expect(result.current.events.map((stored) => stored.sequence)).toEqual([1, 2, 3]);
+  expect(result.current.error).toBeNull();
+  expect(requests.map((url) => url.searchParams.get("events_after"))).toEqual(["0", "1", "1"]);
+});
+
+it("resumes cached HTTP history on remount and isolates reports by run", async () => {
+  report = runReport(null);
+  const wrapper = ({ children }: { children: React.ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  const first = renderHook(() => useRunReport(runId), { wrapper });
+  await waitFor(() => expect(sources).toHaveLength(1));
+  const cycle = runEvent(2, { type: "cycle.started", test_run_id: runId, task_run_id: taskRunId, cycle_count: 3 });
+  act(() => sources[0]!.onmessage?.(new MessageEvent("message", { data: JSON.stringify(cycle) })));
+  expect(first.result.current.events).toHaveLength(2);
+  first.unmount();
+  report.events.push(cycle);
+  const reopened = renderHook(() => useRunReport(runId), { wrapper });
+  await waitFor(() => expect(reopened.result.current.data?.events).toHaveLength(2));
+  expect(reopened.result.current.events.map((stored) => stored.sequence)).toEqual([1, 2]);
+  expect(requests.map((url) => url.searchParams.get("events_after"))).toEqual(["0", "1"]);
+  reopened.unmount();
+
+  const otherRunId = "55555555-5555-4555-8555-555555555555";
+  report = runReport();
+  report.detail.run.id = otherRunId;
+  report.detail.task_runs.forEach((task) => { task.test_run_id = otherRunId; });
+  report.events.forEach((stored) => { stored.event.test_run_id = otherRunId; });
+  const other = renderHook(() => useRunReport(otherRunId), { wrapper });
+  await waitFor(() => expect(other.result.current.data?.detail.run.id).toBe(otherRunId));
+  expect(other.result.current.events.map((stored) => stored.event.test_run_id)).toEqual([otherRunId]);
+  expect(requests.at(-1)?.searchParams.get("events_after")).toBe("0");
+  expect(queryClient.getQueryCache().getAll()).toHaveLength(2);
 });
 
 it.each(["1.5", "Infinity"])("uses a whole first page for invalid URL page %s on both lists", async (page) => {
@@ -222,8 +307,12 @@ it("refreshes only on lifecycle changes and reconnection for a multi-task event 
   const transmittedEventCounts: number[] = [];
   const originalFetch = vi.mocked(fetch).getMockImplementation()!;
   vi.mocked(fetch).mockImplementation(async (request) => {
-    if (new URL((request as Request).url).pathname === `/api/runs/${runId}`) transmittedEventCounts.push(report.events.length);
-    return originalFetch(request);
+    const response = await originalFetch(request);
+    if (new URL((request as Request).url).pathname === `/api/runs/${runId}`) {
+      const increment = await response.clone().json() as TestRunReport;
+      transmittedEventCounts.push(increment.events.length);
+    }
+    return response;
   });
   const { result } = renderHook(() => useRunReport(runId), {
     wrapper: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
@@ -246,10 +335,11 @@ it("refreshes only on lifecycle changes and reconnection for a multi-task event 
   emit(runEvent(22, { type: "task.started", test_run_id: runId, task_run_id: caseId }));
   await waitFor(() => expect(result.current.data?.events).toHaveLength(22));
   act(() => { sources[0]!.onerror?.(new Event("error")); sources[0]!.onopen?.(new Event("open")); });
-  await waitFor(() => expect(transmittedEventCounts).toEqual([1, 21, 22, 22]));
+  await waitFor(() => expect(transmittedEventCounts).toEqual([1, 20, 1, 0]));
+  await waitFor(() => expect(result.current.isFetching).toBe(false));
   expect(result.current.events.map((event) => event.sequence)).toEqual(Array.from({ length: 22 }, (_, index) => index + 1));
-  // Full reports remain the API contract: four reads transmit 66 event entries.
-  expect(transmittedEventCounts.reduce((total, count) => total + count, 0)).toBe(66);
+  expect(transmittedEventCounts.reduce((total, count) => total + count, 0)).toBe(22);
+  expect(requests.map((url) => url.searchParams.get("events_after"))).toEqual(["0", "1", "21", "22"]);
 });
 
 it.each(["2026-02-30", "2026-02-29"])("does not request an invalid URL date range starting %s", async (from) => {

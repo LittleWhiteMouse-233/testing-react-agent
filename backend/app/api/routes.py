@@ -196,9 +196,14 @@ async def get_test_run_statistics(
     response_model=TestRunReport,
     responses=NOT_FOUND_RESPONSE,
 )
-async def get_test_run(test_run_id: TestRunId, request: Request) -> TestRunReport:
+async def get_test_run(
+    test_run_id: TestRunId, request: Request,
+    events_after: int = Query(default=0, ge=0, description="Return events with sequence greater than this cursor; 0 returns all events."),
+) -> TestRunReport:
     try:
-        return await container(request).reports.build(test_run_id)
+        return await repository.read_test_run_report(
+            container(request).sessions, test_run_id, events_after=events_after,
+        )
     except LookupError as exc:
         raise problem(404, "test_run_not_found", str(exc)) from exc
 

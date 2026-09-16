@@ -206,11 +206,11 @@ async def list_events(
 
 
 async def read_test_run_report(
-    sessions: async_sessionmaker[AsyncSession], test_run_id: str,
+    sessions: async_sessionmaker[AsyncSession], test_run_id: str, *, events_after: int = 0,
 ) -> TestRunReport:
     async with read_snapshot(sessions) as session:
         detail = await read_test_run_detail(session, test_run_id)
-        events = await read_run_events(session, test_run_id)
+        events = await read_run_events(session, test_run_id, after=events_after)
         task_ids = select(TaskRunRow.id).where(TaskRunRow.test_run_id == test_run_id)
         artifacts = await session.scalars(
             select(ArtifactRow).where(

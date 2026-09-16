@@ -1,13 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { $api } from "./client";
-import type { StoredRunEvent } from "./contracts";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { $api, apiFetch } from "./client";
+import type { StoredRunEvent, TestRunReport } from "./contracts";
 import { mergeStoredRunEvents, openRunEventStream } from "./runEvents";
 
 export function useRunReport(runId: string) {
   const queryClient = useQueryClient();
-  const report = $api.useQuery("get", "/api/runs/{test_run_id}", {
+  const reportOptions = $api.queryOptions("get", "/api/runs/{test_run_id}", {
     params: { path: { test_run_id: runId } }
+  });
+  const report = useQuery({
+    ...reportOptions,
+    queryFn: async ({ signal }) => {
+      // Cache identity is the run, not the transport cursor. Only HTTP-confirmed
+      // history advances it; SSE may already contain newer events.
+      const history = queryClient.getQueryData<TestRunReport>(reportOptions.queryKey)?.events ?? [];
+      const { data, error } = await apiFetch.GET("/api/runs/{test_run_id}", {
+        params: { path: { test_run_id: runId }, query: { events_after: history.at(-1)?.sequence ?? 0 } },
+        signal
+      });
+      if (error) throw error;
+      return { ...data, events: mergeStoredRunEvents(history, data.events) };
+    }
   });
   const [received, setReceived] = useState<StoredRunEvent[]>([]);
   const [connection, setConnection] = useState("connecting");

@@ -837,7 +837,10 @@ export interface components {
         };
         /**
          * TestRunReport
-         * @description 导出边界的完整报告组合；canonical detail 中的事实不会在顶层复制。
+         * @description 报告事实组合；canonical detail 中的事实不会在顶层复制。
+         *
+         *     在线读取的 events 为请求游标之后的历史；默认读取及导出包含完整历史。
+         *     detail 与 artifacts 始终完整，并与返回的 events 来自同一读取快照。
          */
         TestRunReport: {
             /** Artifacts */
@@ -1209,7 +1212,10 @@ export interface operations {
     };
     get_test_run_api_runs__test_run_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Return events with sequence greater than this cursor; 0 returns all events. */
+                events_after?: number;
+            };
             header?: never;
             path: {
                 test_run_id: string;

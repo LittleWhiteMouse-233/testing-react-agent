@@ -212,6 +212,12 @@ def test_complete_message_first_run_and_exports() -> None:
             assert screenshot_download.status_code == 200
             assert screenshot_download.headers["content-type"] == "image/png"
 
+            increment = client.get(
+                f"/api/runs/{detail['run']['id']}",
+                params={"events_after": events[-1]["sequence"]},
+            ).json()
+            assert increment == {**report, "events": []}
+
             for export_format in ("json", "html"):
                 export = client.post(
                     f"/api/runs/{detail['run']['id']}/exports",
@@ -229,6 +235,8 @@ def test_complete_message_first_run_and_exports() -> None:
                     assert download.headers["content-type"].startswith("text/html")
                     assert "data:image/png;base64," in download.text
                     assert "检查版本号完整显示" in download.text
+                    for stored_event in events:
+                        assert f"{stored_event['sequence']} · {stored_event['event']['type']}" in download.text
 
 
 def test_only_latest_plan_can_start() -> None:

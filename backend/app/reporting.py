@@ -16,7 +16,11 @@ from app.domain.execution import Artifact, ArtifactType, StoredRunEvent, TestRun
 
 
 class TestRunReport(BaseModel):
-    """导出边界的完整报告组合；canonical detail 中的事实不会在顶层复制。"""
+    """报告事实组合；canonical detail 中的事实不会在顶层复制。
+
+    在线读取的 events 为请求游标之后的历史；默认读取及导出包含完整历史。
+    detail 与 artifacts 始终完整，并与返回的 events 来自同一读取快照。
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

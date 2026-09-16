@@ -1753,7 +1753,7 @@
       },
       "TestRunReport": {
         "additionalProperties": false,
-        "description": "导出边界的完整报告组合；canonical detail 中的事实不会在顶层复制。",
+        "description": "报告事实组合；canonical detail 中的事实不会在顶层复制。\n\n在线读取的 events 为请求游标之后的历史；默认读取及导出包含完整历史。\ndetail 与 artifacts 始终完整，并与返回的 events 来自同一读取快照。",
         "properties": {
           "artifacts": {
             "items": {
@@ -2572,6 +2572,19 @@
               "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
               "title": "Test Run Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "Return events with sequence greater than this cursor; 0 returns all events.",
+            "in": "query",
+            "name": "events_after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Return events with sequence greater than this cursor; 0 returns all events.",
+              "minimum": 0,
+              "title": "Events After",
+              "type": "integer"
             }
           }
         ],

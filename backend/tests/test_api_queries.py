@@ -127,7 +127,48 @@ def test_case_search_is_literal_and_paginates_all_matches(tmp_path: Path) -> Non
         assert client.get("/api/test-cases", params={"search": "输入信号"}).json()["total"] == 1
 
 
-@pytest.mark.parametrize("response_kind", ["report", "detail", "list", "statistics"])
+def test_run_report_event_cursor_filters_sql_and_preserves_report_facts(tmp_path: Path) -> None:
+    with build_client(tmp_path) as client:
+        run_id = start_run(client, create_plan(client))
+        wait_for_run(client, run_id)
+        endpoint = f"/api/runs/{run_id}"
+        report = client.get(endpoint).json()
+        assert len(report["events"]) > 2
+        assert client.get(endpoint, params={"events_after": 0}).json() == report
+        cursor_sequence = report["events"][1]["sequence"]
+        container = cast(Container, cast(FastAPI, client.app).state.container)
+        event_queries: list[tuple[str, object]] = []
+
+        def observe_sql(connection, cursor, statement, parameters, context, executemany):
+            if "FROM run_events" in statement:
+                event_queries.append((statement, parameters))
+
+        event.listen(container.engine.sync_engine, "before_cursor_execute", observe_sql)
+        try:
+            increment = client.get(endpoint, params={"events_after": cursor_sequence}).json()
+        finally:
+            event.remove(container.engine.sync_engine, "before_cursor_execute", observe_sql)
+        assert increment == {**report, "events": report["events"][2:]}
+        assert len(event_queries) == 1
+        statement, parameters = event_queries[0]
+        assert "run_events.sequence > ?" in statement
+        assert "ORDER BY run_events.sequence" in statement
+        assert parameters == (run_id, cursor_sequence)
+        last_sequence = report["events"][-1]["sequence"]
+        for cursor_sequence in (last_sequence, last_sequence + 100):
+            assert client.get(endpoint, params={"events_after": cursor_sequence}).json() == {
+                **report, "events": [],
+            }
+        for invalid_cursor in (-1, "invalid", "1.5"):
+            response = client.get(endpoint, params={"events_after": invalid_cursor})
+            assert response.status_code == 422
+            assert response.json()["code"] == "validation_error"
+        response = client.get(f"/api/runs/{uuid4()}", params={"events_after": 1})
+        assert response.status_code == 404
+        assert response.json()["code"] == "test_run_not_found"
+
+
+@pytest.mark.parametrize("response_kind", ["report", "report_increment", "detail", "list", "statistics"])
 async def test_response_keeps_one_snapshot_during_committed_run_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, response_kind: str,
 ) -> None:
@@ -139,6 +180,11 @@ async def test_response_keeps_one_snapshot_during_committed_run_changes(
     plan = await repository.create_plan(test_case_id=case.id, draft=plan_draft(),
         planning_context=planning_context(), origin=PlanOrigin.PLANNING)
     run = await repository.create_test_run(test_plan_id=plan.id, snapshot=run_snapshot())
+    events_after = 0
+    if response_kind == "report_increment":
+        await repository.start_run(run.id)
+        initial_report = await api_repository.read_test_run_report(sessions, run.id)
+        events_after = initial_report.events[-1].sequence
     changed = False
 
     async def commit_changes() -> None:
@@ -147,7 +193,8 @@ async def test_response_keeps_one_snapshot_during_committed_run_changes(
             return
         changed = True
         # Real independent writer sessions commit while the reader is open.
-        await repository.start_run(run.id)
+        if response_kind != "report_increment":
+            await repository.start_run(run.id)
         task = await repository.start_task(run.id, plan.content.tasks[0])
         await ArtifactStore(tmp_path / "artifacts", sessions).save_screenshot(
             task_run_id=task.id, content=b"screenshot", mime_type="image/png")
@@ -170,13 +217,13 @@ async def test_response_keeps_one_snapshot_during_committed_run_changes(
         return result
 
     try:
-        if response_kind in {"report", "detail"}:
+        if response_kind in {"report", "report_increment", "detail"}:
             monkeypatch.setattr(SqlAlchemyRunRepository, "_task_rows", staticmethod(task_rows_with_writer))
         else:
             monkeypatch.setattr(AsyncSession, "execute", execute_with_writer)
-        if response_kind == "report":
-            report = await api_repository.read_test_run_report(sessions, run.id)
-            assert report.detail.run.status == RunStatus.PENDING
+        if response_kind in {"report", "report_increment"}:
+            report = await api_repository.read_test_run_report(sessions, run.id, events_after=events_after)
+            assert report.detail.run.status == (RunStatus.RUNNING if events_after else RunStatus.PENDING)
             assert report.detail.task_runs == report.events == report.artifacts == []
         elif response_kind == "detail":
             detail = await repository.get_test_run_detail(run.id)

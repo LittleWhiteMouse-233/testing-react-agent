@@ -13,13 +13,11 @@ vi.mock("../api/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("../api/client")>();
   const { default: createFetchClient } = await import("openapi-fetch");
   const { default: createQueryClient } = await import("openapi-react-query");
-  return {
-    ...original,
-    $api: createQueryClient(createFetchClient<import("../api/schema").paths>({
-      baseUrl: "http://localhost",
-      fetch: (request) => fetch(request)
-    }))
-  };
+  const apiFetch = createFetchClient<import("../api/schema").paths>({
+    baseUrl: "http://localhost",
+    fetch: (request) => fetch(request)
+  });
+  return { ...original, apiFetch, $api: createQueryClient(apiFetch) };
 });
 
 const testCase: TestCase = {

@@ -143,6 +143,7 @@ RunService 用一个工作状态管理准备、执行和清理阶段；准备阶
 - 设备查询 API 和 device 字段已删除；运行保存一个 `execution_model` 和实际工具目录。
 - 计划修订创建新版本，只允许 latest 启动；相同运行的事件只追加，重复导出创建新文件。
 - `GET /api/runs/{id}` 统一返回 `TestRunReport`（`detail`、`events`、`artifacts`），供执行页和历史详情使用。独立 `/report` 和 `/events` 查询已删除；`/stream` 从 `after` 或 `Last-Event-ID` 游标重放同源持久事件，`/api/artifacts/{id}` 读取证据与导出文件。
+- 运行详情支持非负整数 `events_after`（默认 `0`）：只返回序号大于该值的事件，按序号升序；无新增事件返回空数组，详情和附件仍完整且来自同一次读取快照。页面首次全量读取，后续使用已成功缓存的 HTTP 历史末尾序号补齐增量，不以 SSE 最大序号推进游标。JSON／HTML 导出始终包含完整事件历史。
 - `GET /api/test-cases` 支持 `search`、`limit`、`offset`；返回最新计划版本或 `null`。搜索按 ID、名称、正文作字面子串匹配。
 - `GET /api/runs` 支持 `search`、`test_case_id`、重复的 `status` 参数、`verdict`、`created_from`、`created_before`、`limit`、`offset`，返回关联用例、计划任务数、任务状态计数及去重截图数。`GET /api/runs/statistics` 使用同一筛选字段，返回分页前的运行数、结果分布、平均时长与每日趋势。
 - 时间参数必须携带时区，区间左闭右开；每日统计采用 `Asia/Shanghai`，平均时长只计算有开始和结束时间的已结束运行。没有有效耗时样本返回 `null`。查询只读取现有事实，不连接 MCP、不写库；原领域模型、业务命令及 JSON／HTML 导出内容不变。
