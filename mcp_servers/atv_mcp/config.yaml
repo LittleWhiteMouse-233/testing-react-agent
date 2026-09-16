@@ -1,5 +1,5 @@
 adb_path: adb
-serial: ""
+serial: "192.168.31.102"
 queue_max_operations: 16
 queue_timeout_seconds: 60
 operation_timeout_seconds: 15

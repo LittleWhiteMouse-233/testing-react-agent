@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.output_parsers import PydanticOutputParser
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langsmith import tracing_context
 
@@ -42,8 +43,7 @@ class PlanningGraph:
             attempt = state.get("attempt", 0) + 1
             model = model_client.create_model().with_structured_output(
                 PlanDraft,
-                method="json_schema",
-                strict=True,
+                method="json_mode",
             )
             try:
                 value = await asyncio.wait_for(
@@ -93,7 +93,11 @@ class PlanningGraph:
         """以本 Graph 的固定 prompt 和本次唯一解析的客户端生成草稿。"""
 
         initial_messages: list[BaseMessage] = [
-            SystemMessage(content=self.prompt_definition.text),
+            SystemMessage(
+                content=self.prompt_definition.text
+                + "\n"
+                + PydanticOutputParser(pydantic_object=PlanDraft).get_format_instructions()
+            ),
             HumanMessage(content=request.model_dump_json()),
         ]
         if previous_plan is not None:

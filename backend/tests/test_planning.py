@@ -3,19 +3,25 @@ from __future__ import annotations
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 from threading import Event
 from typing import cast
 
 import pytest
+import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 
+from app.config import LLMProfileSettings
 from app.container import Container
+from app.domain.errors import PlanningFailure
 from app.domain.planning import TestCaseContent as CaseContent
-from app.llm import ChatModelClient, ScriptedChatModelClient
-from app.planning.graph import PlanDraft
+from app.llm import ChatModelClient, RealChatModelClient, ScriptedChatModelClient
+from app.planning.graph import PlanDraft, PlanningGraph
+from app.prompts import load_prompt
 from mcp_support import build_client
 
 
@@ -171,3 +177,54 @@ def test_planning_retry_keeps_current_context_and_failure_creates_no_version(tmp
             assert messages[3].content == "细化任务"
             assert isinstance(messages[2], AIMessage)
         assert client.get(url).json()["items"] == [first]
+
+
+@pytest.mark.parametrize("invalid_attempts", [0, 1, 3])
+async def test_real_planning_json_mode_validates_responses(
+    monkeypatch: pytest.MonkeyPatch, invalid_attempts: int,
+) -> None:
+    case = CaseContent(name="设置", source_text="进入设置并检查标题")
+    expected_plan = await PlanningGraph(load_prompt("planner")).generate(
+        case, model_client=ScriptedChatModelClient(),
+    )
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        payload = json.loads(request.content)
+        assert payload["response_format"] == {"type": "json_object"}
+        assert "tools" not in payload
+        system_prompt = payload["messages"][0]["content"]
+        assert "JSON" in system_prompt
+        assert '"success_criteria"' in system_prompt
+        assert '"max_cycles"' in system_prompt
+        content = (
+            '{"title":"缺少任务"}'
+            if len(requests) <= invalid_attempts
+            else expected_plan.model_dump_json()
+        )
+        return httpx.Response(200, json={
+            "id": "planning-response", "object": "chat.completion",
+            "created": 0, "model": "deepseek-chat",
+            "choices": [{
+                "index": 0, "finish_reason": "stop",
+                "message": {"role": "assistant", "content": content},
+            }],
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
+        monkeypatch.setattr(
+            "app.llm.client.ChatOpenAI",
+            partial(ChatOpenAI, http_async_client=http_client),
+        )
+        model = RealChatModelClient(LLMProfileSettings(
+            id="planner", mode="real", model="deepseek-chat",
+            base_url="https://model.invalid/v1", api_key="test-key",
+        ))
+        graph = PlanningGraph(load_prompt("planner"))
+        if invalid_attempts == 3:
+            with pytest.raises(PlanningFailure, match="Planning failed after 3 attempts"):
+                await graph.generate(case, model_client=model)
+        else:
+            assert await graph.generate(case, model_client=model) == expected_plan
+    assert len(requests) == min(invalid_attempts + 1, 3)

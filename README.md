@@ -68,6 +68,8 @@ npm.cmd run dev
 
 模型参数统一放在 `models.toml` 的有序 `[[profiles]]` 中，每个 profile 独立填写 `api_key`、`base_url`、`model`、`mode` 和所需预算参数；省略的参数采用代码默认值，完整示例见 `models.example.toml`。真实模型必须设置 `mode = "real"`，并按服务实际能力填写上下文窗口与输出上限。
 
+规划模型需支持 JSON 模式（`response_format.type = "json_object"`）。宿主通过 LangChain `json_mode` 请求 JSON，在系统提示中提供计划 schema，并由 Pydantic 校验结果；不要求服务支持原生 `json_schema` 严格输出。无效计划仍最多尝试三次，持续无效时不保存计划版本。
+
 `.env` 不再使用 `LLM_PROFILES`，模型选择示例：
 
 ```dotenv
