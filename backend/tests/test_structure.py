@@ -24,7 +24,7 @@ from app.domain.execution import (
     TaskRunResult,
     TaskRunStatus,
     TestRun as DomainTestRun,
-    TestRunSnapshot as RunSnapshot,
+    TestRunEnvironmentSnapshot as RunEnvironmentSnapshot,
 )
 from app.domain.planning import (
     TestCaseContent as CaseContent,
@@ -46,13 +46,13 @@ from app.persistence.adapters import (
     dump_planning_context,
     dump_string_list,
     dump_task_run_result,
-    dump_test_run_snapshot,
+    dump_test_run_environment_snapshot,
     dump_run_event,
     load_planning_context,
     load_run_event,
     load_string_list,
     load_task_run_result,
-    load_test_run_snapshot,
+    load_test_run_environment_snapshot,
 )
 from app.persistence.db import (
     build_engine,
@@ -87,8 +87,8 @@ def model_snapshot() -> LLMProfileSnapshot:
     )
 
 
-def run_snapshot() -> RunSnapshot:
-    return RunSnapshot(
+def run_environment_snapshot() -> RunEnvironmentSnapshot:
+    return RunEnvironmentSnapshot(
         tool_catalog=ToolCatalogSnapshot(tools=[]),
         execution_model=model_snapshot(),
         act_prompt_version="act-v1",
@@ -129,8 +129,8 @@ def test_every_business_json_uses_the_central_adapter() -> None:
     assert load_planning_context(dump_planning_context(context)) == context
     strings = ["first", "second"]
     assert load_string_list(dump_string_list(strings)) == strings
-    snapshot = run_snapshot()
-    assert load_test_run_snapshot(dump_test_run_snapshot(snapshot)) == snapshot
+    snapshot = run_environment_snapshot()
+    assert load_test_run_environment_snapshot(dump_test_run_environment_snapshot(snapshot)) == snapshot
     result = TaskRunResult(
         reason_code=ReasonCode.COMPLETED,
         summary="done",
@@ -138,7 +138,7 @@ def test_every_business_json_uses_the_central_adapter() -> None:
     )
     assert load_task_run_result(dump_task_run_result(result)) == result
     with pytest.raises(ValidationError):
-        load_test_run_snapshot({"device_environment": {}})
+        load_test_run_environment_snapshot({"device_environment": {}})
 
     event = MessageAppendedEvent(
         test_run_id=RUN_ID,
@@ -170,10 +170,10 @@ def test_every_business_json_uses_the_central_adapter() -> None:
             payload={"test_run_id": "66666666-6666-4666-8666-666666666666"},
         )
 
-    invalid_snapshot = dump_test_run_snapshot(snapshot)
+    invalid_snapshot = dump_test_run_environment_snapshot(snapshot)
     invalid_snapshot["execution_protocol_version"] = "1"
     with pytest.raises(ValidationError):
-        load_test_run_snapshot(invalid_snapshot)
+        load_test_run_environment_snapshot(invalid_snapshot)
 
 
 def test_public_message_projection_never_serializes_image_base64() -> None:
@@ -341,7 +341,7 @@ async def test_latest_plan_and_single_active_run_are_serialized() -> None:
                 *(
                     repository.create_test_run(
                         test_plan_id=created[0].id,
-                        snapshot=run_snapshot(),
+                        environment=run_environment_snapshot(),
                     )
                     for _ in range(2)
                 ),
@@ -374,7 +374,7 @@ async def test_task_result_evidence_must_belong_to_the_task_run() -> None:
         )
         run = await repository.create_test_run(
             test_plan_id=plan.id,
-            snapshot=run_snapshot(),
+            environment=run_environment_snapshot(),
         )
         await repository.start_run(run.id)
         first = await repository.start_task(run.id, plan.content.tasks[0])

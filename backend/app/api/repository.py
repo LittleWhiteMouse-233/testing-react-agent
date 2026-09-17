@@ -27,9 +27,7 @@ from app.reporting import TestRunReport
 from app.persistence.models import ArtifactRow, RunEventRow, TaskRunRow, TestCaseRow, TestPlanRow, TestRunRow, TestTaskRow
 
 
-async def list_test_cases(
-    sessions: async_sessionmaker[AsyncSession], *, search: str, limit: int, offset: int,
-) -> PageResponse[TestCaseListResponse]:
+def searched_test_cases(search: str) -> Select[tuple[TestCaseRow]]:
     statement = select(TestCaseRow)
     if search.strip():
         term = search.strip()
@@ -38,6 +36,13 @@ async def list_test_cases(
             TestCaseRow.name.icontains(term, autoescape=True),
             TestCaseRow.source_text.icontains(term, autoescape=True),
         ))
+    return statement
+
+
+async def list_test_cases(
+    sessions: async_sessionmaker[AsyncSession], *, search: str, limit: int, offset: int,
+) -> PageResponse[TestCaseListResponse]:
+    statement = searched_test_cases(search).where(TestCaseRow.is_archived.is_(False))
     latest_version = (
         select(func.max(TestPlanRow.version_number))
         .where(TestPlanRow.test_case_id == TestCaseRow.id).correlate(TestCaseRow).scalar_subquery()
@@ -53,6 +58,22 @@ async def list_test_cases(
             **test_case_from_row(row).model_dump(), "latest_plan_version": version,
         }) for row, version in rows
     ], total=int(total or 0))
+
+
+async def list_test_cases_with_runs(
+    sessions: async_sessionmaker[AsyncSession], *, search: str, limit: int, offset: int,
+) -> PageResponse[TestCase]:
+    # History owns this read path: archive state must not hide previous runs.
+    has_runs = select(TestRunRow.id).join(TestPlanRow).where(
+        TestPlanRow.test_case_id == TestCaseRow.id,
+    ).exists()
+    statement = searched_test_cases(search).where(has_runs)
+    async with read_snapshot(sessions) as session:
+        total = await session.scalar(select(func.count()).select_from(statement.subquery()))
+        rows = await session.scalars(statement.order_by(
+            TestCaseRow.created_at.desc(), TestCaseRow.id.desc(),
+        ).limit(limit).offset(offset))
+        return PageResponse[TestCase](items=[test_case_from_row(row) for row in rows], total=int(total or 0))
 
 
 def filtered_test_runs(filters: TestRunFilterQuery) -> Select[tuple[TestRunRow]]:
@@ -90,15 +111,15 @@ async def list_test_runs(
     async with read_snapshot(sessions) as session:
         total = await session.scalar(select(func.count()).select_from(statement.subquery()))
         rows = (await session.execute(
-            statement.options(defer(TestRunRow.snapshot_json, raiseload=True))
-            .add_columns(TestCaseRow.id, TestCaseRow.name)
+            statement.options(defer(TestRunRow.environment_json, raiseload=True))
+            .add_columns(TestCaseRow.id, TestCaseRow.name, TestCaseRow.is_archived)
             .order_by(TestRunRow.created_at.desc(), TestRunRow.id.desc())
             .limit(filters.limit).offset(filters.offset)
         )).all()
         if not rows:
             return PageResponse[TestRunListResponse](items=[], total=int(total or 0))
-        run_ids = [run.id for run, _, _ in rows]
-        plan_ids = [run.test_plan_id for run, _, _ in rows]
+        run_ids = [run.id for run, _, _, _ in rows]
+        plan_ids = [run.test_plan_id for run, _, _, _ in rows]
         planned_counts = dict((await session.execute(
             select(TestTaskRow.test_plan_id, func.count()).where(TestTaskRow.test_plan_id.in_(plan_ids))
             .group_by(TestTaskRow.test_plan_id)
@@ -118,10 +139,11 @@ async def list_test_runs(
         TestRunListResponse.model_validate({
             **test_run_from_row(run).model_dump(),
             "test_case_id": case_id, "test_case_name": case_name,
+            "test_case_archived": archived,
             "task_count": planned_counts.get(run.test_plan_id, 0),
             "task_status_counts": task_counts.get(run.id, {}),
             "screenshot_count": screenshot_counts.get(run.id, 0),
-        }) for run, case_id, case_name in rows
+        }) for run, case_id, case_name, archived in rows
     ], total=int(total or 0))
 
 
@@ -167,8 +189,10 @@ async def list_test_plans(
     sessions: async_sessionmaker[AsyncSession], test_case_id: str,
 ) -> list[TestPlan]:
     async with read_snapshot(sessions) as session:
-        if await session.get(TestCaseRow, test_case_id) is None:
-            raise LookupError("Test case not found")
+        if await session.scalar(select(TestCaseRow.id).where(
+            TestCaseRow.id == test_case_id, TestCaseRow.is_archived.is_(False),
+        )) is None:
+            raise LookupError("用例不存在或已归档")
         plans = (await session.scalars(
             select(TestPlanRow).where(TestPlanRow.test_case_id == test_case_id)
             .order_by(TestPlanRow.version_number.desc())
@@ -210,6 +234,10 @@ async def read_test_run_report(
 ) -> TestRunReport:
     async with read_snapshot(sessions) as session:
         detail = await read_test_run_detail(session, test_run_id)
+        archived = await session.scalar(select(TestCaseRow.is_archived).where(
+            TestCaseRow.id == detail.test_plan.test_case_id,
+        ))
+        assert archived is not None
         events = await read_run_events(session, test_run_id, after=events_after)
         task_ids = select(TaskRunRow.id).where(TaskRunRow.test_run_id == test_run_id)
         artifacts = await session.scalars(
@@ -217,5 +245,5 @@ async def read_test_run_report(
                 (ArtifactRow.test_run_id == test_run_id) | ArtifactRow.task_run_id.in_(task_ids)
             ).order_by(ArtifactRow.created_at)
         )
-        return TestRunReport(detail=detail, events=events,
+        return TestRunReport(detail=detail, events=events, test_case_archived=archived,
                              artifacts=[artifact_from_row(row) for row in artifacts])

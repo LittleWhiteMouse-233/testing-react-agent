@@ -79,7 +79,7 @@ class TaskRunResult(BaseModel):
         return self
 
 
-class TestRunSnapshot(BaseModel):
+class TestRunEnvironmentSnapshot(BaseModel):
     """RunService 在 TestRun 创建时冻结且执行器必须遵守的环境事实。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -184,7 +184,7 @@ class TestRunDetail(BaseModel):
 
     run: TestRun
     test_plan: TestPlan
-    snapshot: TestRunSnapshot
+    environment: TestRunEnvironmentSnapshot
     task_runs: list[TaskRun]
 
 

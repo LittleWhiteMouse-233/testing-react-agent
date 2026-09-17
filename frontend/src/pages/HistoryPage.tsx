@@ -63,7 +63,7 @@ export default function HistoryPage() {
     created_before: validRange ? addDays(to, 1) + "T00:00:00+08:00" : undefined };
   const runs = $api.useQuery("get", "/api/runs", { params: { query: { ...filters, verdict: selectedVerdict, limit: pageSize, offset: (page - 1) * pageSize } } }, { enabled: validRange });
   const statistics = $api.useQuery("get", "/api/runs/statistics", { params: { query: filters } }, { enabled: validRange });
-  const cases = $api.useQuery("get", "/api/test-cases", { params: { query: { search: caseSearch, limit: 200 } } });
+  const cases = $api.useQuery("get", "/api/runs/test-cases", { params: { query: { search: caseSearch, limit: 200 } } });
   const update = (changes: Record<string, string | undefined>) => {
     const next = new URLSearchParams(params); next.delete("page");
     for (const [key, value] of Object.entries(changes)) { if (value) next.set(key, value); else next.delete(key); }
@@ -79,7 +79,7 @@ export default function HistoryPage() {
         {verdicts.map((verdict) => <button key={verdict} className={selectedVerdict === verdict ? "selected" : ""} onClick={() => update({ verdict })}>{statusLabels[verdict]} · {statistics.data?.verdict_counts[verdict] ?? "—"}</button>)}</div>
         <div className="filter-controls"><Input.Search key={filters.search} aria-label="搜索历史运行" placeholder="运行编号或用例关键字" defaultValue={filters.search} allowClear onSearch={(search) => update({ search })} />
           <Select aria-label="筛选用例" placeholder="所有用例" allowClear value={filters.test_case_id} showSearch={{ filterOption: false, onSearch: setCaseSearch }}
-            onChange={(id) => update({ case: id })} options={cases.data?.items.map((entry) => ({ value: entry.id, label: entry.content.name }))} loading={cases.isLoading} />
+            onChange={(id) => update({ case: id })} options={cases.data?.items.map((entry) => ({ value: entry.id, label: entry.content.name + (entry.is_archived ? " · 已归档" : "") }))} loading={cases.isLoading} />
           <label>从 <input aria-label="开始日期" type="date" value={from} onChange={(event) => update({ from: event.target.value })} /></label>
           <label>至 <input aria-label="结束日期" type="date" value={to} onChange={(event) => update({ to: event.target.value })} /></label>
           <Button onClick={() => setParams({})}>重置</Button>
@@ -91,7 +91,7 @@ export default function HistoryPage() {
         pagination={{ current: page, pageSize, total: runs.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [8, 20, 50], showTotal: (total) => "共 " + total + " 条", onChange: (next, size) => update({ page: String(size === pageSize ? next : 1), size: String(size) }) }}
         columns={[
           { title: "Run ID", width: 125, render: (_, run) => <Link className="mono" to={reportUrl(run.id)} title={run.id} onClick={(event) => event.stopPropagation()}>{run.id.slice(0, 8)}</Link> },
-          { title: "用例", width: 240, render: (_, run) => <div><small className="mono muted">{run.test_case_id.slice(0, 8)}</small><strong className="table-case-name">{run.test_case_name}</strong></div> },
+          { title: "用例", width: 240, render: (_, run) => <div><small className="mono muted">{run.test_case_id.slice(0, 8)}</small><strong className="table-case-name">{run.test_case_name}</strong>{run.test_case_archived && <span className="pill archived">已归档</span>}</div> },
           { title: "开始时间", width: 155, render: (_, run) => formatTime(run.started_at) },
           { title: "时长", width: 90, render: (_, run) => <ElapsedTime startedAt={run.started_at} finishedAt={run.finished_at} active={run.status === "running"} /> },
           { title: "状态", width: 105, render: (_, run) => <StatusBadge status={run.verdict ?? run.status} /> },

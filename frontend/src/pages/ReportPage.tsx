@@ -34,7 +34,7 @@ export function RunReportContent({ runId }: { runId: string }) {
   const messageCount = report.events.filter((stored) => stored.event.type === "message.appended").length;
   const completed = taskRuns.filter((task) => task.status === "passed" || task.status === "failed" || task.status === "blocked" || task.status === "cancelled").length;
   return <div className="run-report">
-    <header className="report-heading"><div className="eyebrow">执行记录 <span className="mono">{runId}</span></div><h2>{plan.planning_context.test_case_content.name}</h2></header>
+    <header className="report-heading"><div className="eyebrow">执行记录 <span className="mono">{runId}</span></div><h2>{plan.planning_context.test_case_content.name}</h2>{report.data.test_case_archived && <span className="pill archived">用例已归档</span>}</header>
     {report.contractError && <Alert type="warning" title="实时更新已停止：事件契约错误" />}
     {report.error && <Alert type="warning" title="运行详情刷新失败，保留最近一次读取的记录" action={<Button loading={report.isFetching} onClick={() => void report.refetch()}>重试</Button>} />}
     {report.awaitingFinalResult && <Alert type="info" title="已收到结束通知，等待服务端最终结果" />}
@@ -72,7 +72,7 @@ export function RunReportContent({ runId }: { runId: string }) {
     })}
     <footer className="report-footer"><span className="mono">Run ID {runId}</span><div>
       {(["json", "html"] as const).map((format) => <Button key={format} icon={<DownloadOutlined />} disabled={!finished} loading={exportReport.isPending} onClick={() => exportReport.mutate({ params: { path: { test_run_id: runId } }, body: { format } })}>{format.toUpperCase()} 报告</Button>)}
-      <Link to={"/cases/" + plan.test_case_id + "/plan"}><Button type="primary" icon={<ReloadOutlined />}>重新执行 · 确认最新计划</Button></Link>
+      {report.data.test_case_archived ? <Button disabled icon={<ReloadOutlined />}>用例已归档，无法重新执行</Button> : <Link to={"/cases/" + plan.test_case_id + "/plan"}><Button type="primary" icon={<ReloadOutlined />}>重新执行 · 确认最新计划</Button></Link>}
     </div></footer>
   </div>;
 }

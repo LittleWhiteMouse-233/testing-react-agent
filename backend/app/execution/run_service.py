@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass, field
 
 from app.domain.activity import AgentActivity
-from app.domain.execution import TestRun, TestRunSnapshot, TestRunStatus
+from app.domain.execution import TestRun, TestRunEnvironmentSnapshot, TestRunStatus
 from app.execution.executor import RunExecutor
 from app.llm import ModelProvider
 from app.persistence.run_repository import (
@@ -14,6 +14,7 @@ from app.persistence.run_repository import (
 )
 from app.prompts import PromptDefinition
 from app.tools import MCPToolProvider, snapshot_tools
+from app.test_case_lock import TestCaseLock
 
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ class RunResourcesUnavailable(RuntimeError):
 class _RunWork:
     """One slot from preparation through MCP cleanup; ID exists only after creation."""
 
+    test_case_id: str
     task: asyncio.Task[None] | None = None
     test_run_id: str | None = None
     cancellation: asyncio.Event = field(default_factory=asyncio.Event)
@@ -53,6 +55,7 @@ class RunService:
         self,
         *,
         repository: SqlAlchemyRunRepository,
+        test_case_lock: TestCaseLock,
         executor: RunExecutor,
         model_provider: ModelProvider,
         app_version: str,
@@ -62,6 +65,7 @@ class RunService:
         screenshot_history_rounds: int = 3,
     ) -> None:
         self.repository = repository
+        self.test_case_lock = test_case_lock
         self.executor = executor
         self.model_provider = model_provider
         self.app_version = app_version
@@ -91,8 +95,12 @@ class RunService:
             active_run_id = self._work.test_run_id if self._work is not None else None
             if active_run_id is not None:
                 raise RunConflict(active_run_id)
+            # Accepting start reserves this case before MCP preparation. Archive
+            # shares this command boundary and cannot overtake an accepted start.
+            plan = await self.repository.get_test_plan(test_plan_id)
+            self.test_case_lock.acquire(plan.test_case_id, "running")
             prepared_run: asyncio.Future[TestRun] = asyncio.get_running_loop().create_future()
-            work = _RunWork()
+            work = _RunWork(test_case_id=plan.test_case_id)
             self._work = work
             work.task = asyncio.create_task(
                 self._prepare_and_execute(test_plan_id, prepared_run, work),
@@ -115,6 +123,7 @@ class RunService:
                     prepared_run.cancel()
                 if self._work is work and work.cleanup_failure is None:
                     self._work = None
+                    self.test_case_lock.release(work.test_case_id, "running")
 
             work.task.add_done_callback(release_work)
             try:
@@ -135,7 +144,7 @@ class RunService:
         run: TestRun | None = None
         try:
             async with self.tools.connect(on_cleanup_failure=work.mark_resources_unavailable) as tools:
-                snapshot = TestRunSnapshot(
+                environment = TestRunEnvironmentSnapshot(
                     tool_catalog=snapshot_tools(tools),
                     execution_model=self.model_provider.client_for_activity(
                         AgentActivity.EXECUTION
@@ -148,7 +157,7 @@ class RunService:
                 )
                 try:
                     creation = asyncio.create_task(self.repository.create_test_run(
-                        test_plan_id=test_plan_id, snapshot=snapshot,
+                        test_plan_id=test_plan_id, environment=environment,
                     ))
                     try:
                         run = await asyncio.shield(creation)

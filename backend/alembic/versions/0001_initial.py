@@ -25,6 +25,7 @@ def upgrade() -> None:
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("name", sa.String(200), nullable=False),
         sa.Column("source_text", sa.Text(), nullable=False),
+        sa.Column("is_archived", sa.Boolean(), nullable=False, server_default=sa.text("0")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_table(
@@ -106,7 +107,7 @@ def upgrade() -> None:
                 "test_run_verdict", "PASS", "FAIL", "BLOCKED", "CANCELLED"
             ),
         ),
-        sa.Column("snapshot_json", sa.JSON(), nullable=False),
+        sa.Column("environment_json", sa.JSON(), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True)),
         sa.Column("finished_at", sa.DateTime(timezone=True)),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),

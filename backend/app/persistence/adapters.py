@@ -5,12 +5,12 @@ from typing import Any, cast
 from pydantic import TypeAdapter
 
 from app.domain.execution import RUN_EVENT_ADAPTER, RunEvent
-from app.domain.execution import TaskRunResult, TestRunSnapshot
+from app.domain.execution import TaskRunResult, TestRunEnvironmentSnapshot
 from app.domain.planning import TestPlanPlanningContext
 
 
 PLANNING_CONTEXT_ADAPTER = TypeAdapter(TestPlanPlanningContext)
-TEST_RUN_SNAPSHOT_ADAPTER = TypeAdapter(TestRunSnapshot)
+TEST_RUN_ENVIRONMENT_SNAPSHOT_ADAPTER = TypeAdapter(TestRunEnvironmentSnapshot)
 TASK_RUN_RESULT_ADAPTER = TypeAdapter(TaskRunResult)
 STRING_LIST_ADAPTER = TypeAdapter(list[str])
 
@@ -27,8 +27,8 @@ def dump_planning_context(value: TestPlanPlanningContext) -> dict[str, Any]:
     )
 
 
-def dump_test_run_snapshot(value: TestRunSnapshot) -> dict[str, Any]:
-    return _object_json(TEST_RUN_SNAPSHOT_ADAPTER.dump_python(value, mode="json"))
+def dump_test_run_environment_snapshot(value: TestRunEnvironmentSnapshot) -> dict[str, Any]:
+    return _object_json(TEST_RUN_ENVIRONMENT_SNAPSHOT_ADAPTER.dump_python(value, mode="json"))
 
 
 def dump_task_run_result(value: TaskRunResult) -> dict[str, Any]:
@@ -47,8 +47,8 @@ def load_planning_context(value: object) -> TestPlanPlanningContext:
     return PLANNING_CONTEXT_ADAPTER.validate_python(value)
 
 
-def load_test_run_snapshot(value: object) -> TestRunSnapshot:
-    return TEST_RUN_SNAPSHOT_ADAPTER.validate_python(value)
+def load_test_run_environment_snapshot(value: object) -> TestRunEnvironmentSnapshot:
+    return TEST_RUN_ENVIRONMENT_SNAPSHOT_ADAPTER.validate_python(value)
 
 
 def load_task_run_result(value: object) -> TaskRunResult:

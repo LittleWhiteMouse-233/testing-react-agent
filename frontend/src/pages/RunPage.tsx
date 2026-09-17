@@ -37,9 +37,9 @@ function RunExecution({ runId }: { runId: string }) {
   const passed = taskRuns.filter((task) => task.status === "passed").length;
   const screenshotId = latestScreenshotArtifactId(report.events);
   return <>
-    <header className="page-heading"><div><div className="eyebrow"><Link to={"/cases/" + plan.test_case_id + "/plan"}>用例库</Link> / <span className="mono">{plan.test_case_id.slice(0, 8)}</span> / 执行</div>
+    <header className="page-heading"><div><div className="eyebrow"><Link to={report.data.test_case_archived ? "/" : "/cases/" + plan.test_case_id + "/plan"}>用例库</Link> / <span className="mono">{plan.test_case_id.slice(0, 8)}</span> / 执行</div>
       <h1>{plan.planning_context.test_case_content.name}</h1><p><StatusBadge status={run.verdict ?? run.status} /> <span className="mono">{run.id}</span></p></div>
-      <div className="heading-actions"><Link to={"/cases/" + plan.test_case_id + "/plan"}><Button>查看最新计划</Button></Link>
+      <div className="heading-actions">{report.data.test_case_archived ? <Button disabled>用例已归档</Button> : <Link to={"/cases/" + plan.test_case_id + "/plan"}><Button>查看最新计划</Button></Link>}
         {finished ? <Link to={"/runs/" + runId + "/report"}><Button type="primary">查看执行记录</Button></Link> :
           <Button danger icon={<StopOutlined />} disabled={cancelRequested || report.awaitingFinalResult} loading={cancel.isPending} onClick={() => cancel.mutate({ params: { path: { test_run_id: runId } } })}>{cancelRequested ? "等待取消生效" : "终止"}</Button>}
       </div>

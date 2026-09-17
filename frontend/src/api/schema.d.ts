@@ -56,6 +56,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/test-cases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Test Cases With Runs */
+        get: operations["list_test_cases_with_runs_api_runs_test_cases_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{test_run_id}": {
         parameters: {
             query?: never;
@@ -153,6 +170,24 @@ export interface paths {
         get: operations["get_test_case_api_test_cases__test_case_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Test Case */
+        patch: operations["update_test_case_api_test_cases__test_case_id__patch"];
+        trace?: never;
+    };
+    "/api/test-cases/{test_case_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive Test Case */
+        post: operations["archive_test_case_api_test_cases__test_case_id__archive_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -357,6 +392,13 @@ export interface components {
         PageResponse_TestCaseListResponse_: {
             /** Items */
             items: components["schemas"]["TestCaseListResponse"][];
+            /** Total */
+            total: number;
+        };
+        /** PageResponse[TestCase] */
+        PageResponse_TestCase_: {
+            /** Items */
+            items: components["schemas"]["TestCase"][];
             /** Total */
             total: number;
         };
@@ -633,6 +675,8 @@ export interface components {
             created_at: string;
             /** Id */
             id: string;
+            /** Is Archived */
+            is_archived: boolean;
         };
         /**
          * TestCaseContent
@@ -667,6 +711,8 @@ export interface components {
             created_at: string;
             /** Id */
             id: string;
+            /** Is Archived */
+            is_archived: boolean;
             /** Latest Plan Version */
             latest_plan_version: number | null;
         };
@@ -793,11 +839,35 @@ export interface components {
          * @description 执行信息家族的完整查询组合，由 repository 装配并供执行/API 消费。
          */
         TestRunDetail: {
+            environment: components["schemas"]["TestRunEnvironmentSnapshot"];
             run: components["schemas"]["TestRun"];
-            snapshot: components["schemas"]["TestRunSnapshot"];
             /** Task Runs */
             task_runs: components["schemas"]["TaskRun"][];
             test_plan: components["schemas"]["TestPlan"];
+        };
+        /**
+         * TestRunEnvironmentSnapshot
+         * @description RunService 在 TestRun 创建时冻结且执行器必须遵守的环境事实。
+         */
+        TestRunEnvironmentSnapshot: {
+            /** Act Prompt Version */
+            act_prompt_version: string;
+            /** App Version */
+            app_version: string;
+            execution_model: components["schemas"]["LLMProfileSnapshot"];
+            /**
+             * Execution Protocol Version
+             * @constant
+             */
+            execution_protocol_version: "3";
+            /** Judge Prompt Version */
+            judge_prompt_version: string;
+            /**
+             * Screenshot History Rounds
+             * @default 3
+             */
+            screenshot_history_rounds: number;
+            tool_catalog: components["schemas"]["ToolCatalogSnapshot"];
         };
         /**
          * TestRunListResponse
@@ -827,6 +897,8 @@ export interface components {
             task_status_counts: {
                 [key: string]: number;
             };
+            /** Test Case Archived */
+            test_case_archived: boolean;
             /** Test Case Id */
             test_case_id: string;
             /** Test Case Name */
@@ -848,30 +920,8 @@ export interface components {
             detail: components["schemas"]["TestRunDetail"];
             /** Events */
             events: components["schemas"]["StoredRunEvent"][];
-        };
-        /**
-         * TestRunSnapshot
-         * @description RunService 在 TestRun 创建时冻结且执行器必须遵守的环境事实。
-         */
-        TestRunSnapshot: {
-            /** Act Prompt Version */
-            act_prompt_version: string;
-            /** App Version */
-            app_version: string;
-            execution_model: components["schemas"]["LLMProfileSnapshot"];
-            /**
-             * Execution Protocol Version
-             * @constant
-             */
-            execution_protocol_version: "3";
-            /** Judge Prompt Version */
-            judge_prompt_version: string;
-            /**
-             * Screenshot History Rounds
-             * @default 3
-             */
-            screenshot_history_rounds: number;
-            tool_catalog: components["schemas"]["ToolCatalogSnapshot"];
+            /** Test Case Archived */
+            test_case_archived: boolean;
         };
         /**
          * TestRunStatisticsResponse
@@ -1188,6 +1238,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TestRunStatisticsResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    list_test_cases_with_runs_api_runs_test_cases_get: {
+        parameters: {
+            query?: {
+                search?: string;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PageResponse_TestCase_"];
                 };
             };
             /** @description Unprocessable Entity */
@@ -1528,6 +1620,133 @@ export interface operations {
                     "application/json": components["schemas"]["ApiError"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    update_test_case_api_test_cases__test_case_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                test_case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestCaseContent"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestCase"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    archive_test_case_api_test_cases__test_case_id__archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                test_case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
             /** @description Unprocessable Entity */
             422: {
                 headers: {
@@ -1570,6 +1789,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

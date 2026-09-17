@@ -36,8 +36,8 @@ def test_generic_tools_complete_deterministic_verdicts(tmp_path: Path, status: s
         if status != "passed":
             assert detail["task_runs"][1]["status"] == "skipped"
         assert "device_id" not in detail["run"]
-        assert "device_environment" not in detail["snapshot"]
-        assert "execution_model" in detail["snapshot"]
+        assert "device_environment" not in detail["environment"]
+        assert "execution_model" in detail["environment"]
 
 
 def test_act_and_judge_share_tools_and_model(tmp_path: Path) -> None:
@@ -481,7 +481,7 @@ def test_custom_schema_structured_result_and_history_without_online_mcp(tmp_path
         run_id = start_run(client, create_plan(client))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "PASS"
-        assert detail["snapshot"]["tool_catalog"]["tools"][0]["input_schema"]["required"] == ["document", "pages"]
+        assert detail["environment"]["tool_catalog"]["tools"][0]["input_schema"]["required"] == ["document", "pages"]
         report = client.get(f"/api/runs/{run_id}").json()
         returned = next(entry["event"]["message"] for entry in report["events"]
                         if entry["event"]["type"] == "message.appended" and entry["event"]["message"].get("name") == turn.tool_calls[0]["name"])

@@ -20,7 +20,7 @@ from app.persistence.db import build_engine, build_session_factory, init_databas
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.persistence.models import TestRunRow as RunRow
 from mcp_support import build_client, create_plan, read_records, start_run, wait_for_run
-from test_structure import plan_draft, planning_context, run_snapshot
+from test_structure import plan_draft, planning_context, run_environment_snapshot
 
 
 def test_history_queries_join_existing_facts_without_writes(tmp_path: Path) -> None:
@@ -82,7 +82,7 @@ def test_run_filter_statistics_are_unpaginated_and_use_half_open_utc_range(tmp_p
                     created = midnight + timedelta(hours=index)
                     started = None if index >= 3 else created
                     session.add(RunRow(
-                        id=ids[index], test_plan_id=plan["id"], snapshot_json=original.snapshot_json,
+                        id=ids[index], test_plan_id=plan["id"], environment_json=original.environment_json,
                         status=RunStatus.PENDING if verdict is None else RunStatus.FINISHED, verdict=verdict,
                         created_at=created, started_at=started,
                         finished_at=None if verdict is None else created + timedelta(seconds=30 * (index + 1)),
@@ -179,7 +179,7 @@ async def test_response_keeps_one_snapshot_during_committed_run_changes(
     case = await api_repository.create_test_case(sessions, planning_context().test_case_content)
     plan = await repository.create_plan(test_case_id=case.id, draft=plan_draft(),
         planning_context=planning_context(), origin=PlanOrigin.PLANNING)
-    run = await repository.create_test_run(test_plan_id=plan.id, snapshot=run_snapshot())
+    run = await repository.create_test_run(test_plan_id=plan.id, environment=run_environment_snapshot())
     events_after = 0
     if response_kind == "report_increment":
         await repository.start_run(run.id)
@@ -248,7 +248,7 @@ async def test_response_keeps_one_snapshot_during_committed_run_changes(
         await engine.dispose()
 
 
-def test_run_list_omits_snapshot_and_skips_empty_page_aggregates(tmp_path: Path) -> None:
+def test_run_list_omits_environment_and_skips_empty_page_aggregates(tmp_path: Path) -> None:
     with build_client(tmp_path) as client:
         plan = create_plan(client)
         run_id = start_run(client, plan)
@@ -265,7 +265,7 @@ def test_run_list_omits_snapshot_and_skips_empty_page_aggregates(tmp_path: Path)
             page = client.get("/api/runs").json()
             assert page["items"][0]["id"] == run_id
             assert len(statements) == 5
-            assert "test_runs.snapshot_json" not in statements[1]
+            assert "test_runs.environment_json" not in statements[1]
             statements.clear()
             assert client.get("/api/runs", params={"offset": 100}).json() == {"items": [], "total": 1}
             assert len(statements) == 2

@@ -43,8 +43,20 @@ class TestPlanNotLatest(ValueError):
     """计划创建事务发现本次参考版本已不是最新版本。"""
 
 
+class TestCasePlanning(RuntimeError):
+    """用例仍在生成计划，暂不允许修改或归档。"""
+
+
+class TestCaseBusy(RuntimeError):
+    """用例已被不兼容的操作占用，调用者应等待该操作结束。"""
+
+
+class TestCaseHasActiveRun(RuntimeError):
+    """用例关联待执行或运行中的记录，暂不允许归档。"""
+
+
 class PromptVersionMismatch(RuntimeError):
-    """由执行 factory 在可用 prompt 与 TestRun snapshot 不一致时产生。"""
+    """由执行 factory 在可用 prompt 与 TestRun environment snapshot 不一致时产生。"""
 
     def __init__(self, *, prompt_name: str, expected: str, actual: str) -> None:
         super().__init__(
@@ -53,7 +65,7 @@ class PromptVersionMismatch(RuntimeError):
 
 
 class ModelProfileMismatch(RuntimeError):
-    """由执行 factory 在 profile ID 对应配置与 TestRun snapshot 漂移时产生。"""
+    """由执行 factory 在 profile ID 对应配置与 TestRun environment snapshot 漂移时产生。"""
 
 
 class ModelContextBudgetExceeded(RuntimeError):

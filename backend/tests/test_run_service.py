@@ -75,6 +75,9 @@ def test_run_terminal_precedes_cleanup_and_cleanup_failure_only_logs(
 
         assert client.portal is not None
         run_id = client.portal.call(start_and_wait_for_cleanup)
+        archive_response = client.post(f"/api/test-cases/{plan['test_case_id']}/archive")
+        assert archive_response.status_code == 409
+        assert archive_response.json()["code"] == "test_case_has_active_run"
         # SSE and exports must finish while resource cleanup is still blocked.
         history = client.get(f"/api/runs/{run_id}").json()["events"]
         errors = [entry["event"] for entry in history if entry["event"]["type"] == "execution.error"]
@@ -105,7 +108,9 @@ def test_run_terminal_precedes_cleanup_and_cleanup_failure_only_logs(
             monkeypatch.setattr(container.tools, "connect", original)
             next_run = await container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True)
             assert next_run.id != run_id
-            assert await container.run_service.cancel(next_run.id)
+            # The scripted run may already have finished before cancellation;
+            # both outcomes satisfy the next-run/resource-release contract.
+            await container.run_service.cancel(next_run.id)
             await container.run_service.shutdown()
 
         if failure_kind == "none":

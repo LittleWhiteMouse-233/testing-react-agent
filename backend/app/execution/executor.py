@@ -91,15 +91,15 @@ class RunExecutor:
                             task_run=active_task,
                             test_task=test_task,
                             tools=tools,
-                            screenshot_history_rounds=detail.snapshot.screenshot_history_rounds,
+                            screenshot_history_rounds=detail.environment.screenshot_history_rounds,
                             previous_task_runs=completed,
                             expected_model_profile=(
-                                detail.snapshot.execution_model
+                                detail.environment.execution_model
                             ),
                             expected_prompt_version=(
-                                detail.snapshot.act_prompt_version
+                                detail.environment.act_prompt_version
                                 if test_task.definition.type.value == "act"
-                                else detail.snapshot.judge_prompt_version
+                                else detail.environment.judge_prompt_version
                             ),
                             run_cancellation_event=run_cancellation_event,
                             checkpointer=checkpointer,

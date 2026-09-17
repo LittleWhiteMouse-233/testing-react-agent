@@ -73,6 +73,7 @@ class TestRunListResponse(TestRun):
 
     test_case_id: TestCaseId
     test_case_name: str
+    test_case_archived: bool
     task_count: int = Field(ge=0)
     task_status_counts: dict[TaskRunStatus, int]
     screenshot_count: int = Field(ge=0)

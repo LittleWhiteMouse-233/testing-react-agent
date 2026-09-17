@@ -8,7 +8,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.execution import ArtifactType, ReasonCode
-from app.domain.errors import TestPlanNotLatest
+from app.domain.errors import TestCaseHasActiveRun, TestPlanNotLatest
 from app.domain.execution import (
     CycleStartedEvent,
     ExecutionErrorEvent,
@@ -24,7 +24,7 @@ from app.domain.execution import (
     TaskRunStatus,
     TestRun,
     TestRunDetail,
-    TestRunSnapshot,
+    TestRunEnvironmentSnapshot,
     TestRunStatus,
     TestRunVerdict,
 )
@@ -37,13 +37,13 @@ from app.domain.planning import (
     TestTaskDefinition,
     identify_plan_content,
 )
-from app.domain.planning import TestCase
+from app.domain.planning import TestCase, TestCaseContent
 from app.persistence.adapters import (
     dump_planning_context,
     dump_string_list,
     dump_task_run_result,
-    dump_test_run_snapshot,
-    load_test_run_snapshot,
+    dump_test_run_environment_snapshot,
+    load_test_run_environment_snapshot,
 )
 from app.persistence.mappers import (
     task_run_from_row,
@@ -80,10 +80,41 @@ class SqlAlchemyRunRepository:
 
     async def get_test_case(self, test_case_id: str) -> TestCase:
         async with self.sessions() as session:
-            row = await session.get(TestCaseRow, test_case_id)
-        if row is None:
-            raise LookupError("Test case not found")
+            row = await self._require_available_test_case(session, test_case_id)
         return test_case_from_row(row)
+
+    @staticmethod
+    async def _require_available_test_case(session: AsyncSession, test_case_id: str) -> TestCaseRow:
+        row = await session.scalar(select(TestCaseRow).where(
+            TestCaseRow.id == test_case_id, TestCaseRow.is_archived.is_(False),
+        ))
+        if row is None:
+            raise LookupError("用例不存在或已归档")
+        return row
+
+    async def update_test_case(self, test_case_id: str, content: TestCaseContent) -> TestCase:
+        async with self.sessions() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            row = await self._require_available_test_case(session, test_case_id)
+            row.name = content.name
+            row.source_text = content.source_text
+            await session.commit()
+        return test_case_from_row(row)
+
+    async def archive_test_case(self, test_case_id: str) -> None:
+        async with self.sessions() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            row = await self._require_available_test_case(session, test_case_id)
+            active_run_id = await session.scalar(
+                select(TestRunRow.id).join(TestPlanRow).where(
+                    TestPlanRow.test_case_id == test_case_id,
+                    TestRunRow.status.in_([TestRunStatus.PENDING, TestRunStatus.RUNNING]),
+                ).limit(1)
+            )
+            if active_run_id is not None:
+                raise TestCaseHasActiveRun("用例存在待执行或运行中的任务，请先取消并等待结束")
+            row.is_archived = True
+            await session.commit()
 
     async def create_plan(
         self,
@@ -100,8 +131,7 @@ class SqlAlchemyRunRepository:
             # deferred transaction would otherwise allow concurrent writers to
             # select the same version or the same manual-revision parent.
             await session.execute(text("BEGIN IMMEDIATE"))
-            if await session.get(TestCaseRow, test_case_id) is None:
-                raise LookupError("Test case not found")
+            await self._require_available_test_case(session, test_case_id)
             latest = await session.scalar(
                 select(TestPlanRow)
                 .where(TestPlanRow.test_case_id == test_case_id)
@@ -151,11 +181,13 @@ class SqlAlchemyRunRepository:
             row = await session.get(TestPlanRow, test_plan_id)
             if row is None:
                 raise LookupError("Test plan not found")
+            await self._require_available_test_case(session, row.test_case_id)
             tasks = await self._task_rows(session, test_plan_id)
         return test_plan_from_rows(row, tasks)
 
     async def get_latest_test_plan(self, test_case_id: str) -> TestPlan | None:
         async with self.sessions() as session:
+            await self._require_available_test_case(session, test_case_id)
             row = await session.scalar(
                 select(TestPlanRow)
                 .where(TestPlanRow.test_case_id == test_case_id)
@@ -170,7 +202,7 @@ class SqlAlchemyRunRepository:
         self,
         *,
         test_plan_id: str,
-        snapshot: TestRunSnapshot,
+        environment: TestRunEnvironmentSnapshot,
     ) -> TestRun:
         async with self.sessions() as session:
             # The partial unique index is the final invariant; the immediate
@@ -180,6 +212,7 @@ class SqlAlchemyRunRepository:
             plan = await session.get(TestPlanRow, test_plan_id)
             if plan is None:
                 raise LookupError("Test plan not found")
+            await self._require_available_test_case(session, plan.test_case_id)
             latest_id = await session.scalar(
                 select(TestPlanRow.id)
                 .where(TestPlanRow.test_case_id == plan.test_case_id)
@@ -201,7 +234,7 @@ class SqlAlchemyRunRepository:
                 id=str(uuid4()),
                 test_plan_id=test_plan_id,
                 status=TestRunStatus.PENDING,
-                snapshot_json=dump_test_run_snapshot(snapshot),
+                environment_json=dump_test_run_environment_snapshot(environment),
             )
             session.add(row)
             await session.commit()
@@ -512,6 +545,6 @@ async def read_test_run_detail(session: AsyncSession, test_run_id: str) -> TestR
     return TestRunDetail(
         run=test_run_from_row(run_row),
         test_plan=test_plan_from_rows(plan_row, plan_tasks),
-        snapshot=load_test_run_snapshot(run_row.snapshot_json),
+        environment=load_test_run_environment_snapshot(run_row.environment_json),
         task_runs=[task_run_from_row(row) for row in task_rows],
     )

@@ -120,7 +120,7 @@ def test_replanning_uses_latest_revision_and_only_current_input(tmp_path: Path) 
 
 
 @pytest.mark.parametrize("existing_plan", [False, True])
-def test_generation_conflict_does_not_save_or_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_plan: bool) -> None:
+def test_generation_rejects_concurrent_plan_writes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_plan: bool) -> None:
     with build_client(tmp_path) as client:
         model = ScriptedChatModelClient()
         container = install_model(client, model)
@@ -148,17 +148,17 @@ def test_generation_conflict_does_not_save_or_retry(tmp_path: Path, monkeypatch:
                 assert generated.wait(10)
                 if first:
                     content = {**first["content"], "tasks": [task["definition"] for task in first["content"]["tasks"]]}
-                    winner_response = client.post(f"/api/test-plans/{first['id']}/revisions", json={"content": content})
+                    rejected = client.post(f"/api/test-plans/{first['id']}/revisions", json={"content": content})
                 else:
-                    winner_response = client.post(url)
-                assert winner_response.status_code == 201, winner_response.text
+                    rejected = client.post(url)
+                assert rejected.status_code == 409, rejected.text
+                assert rejected.json()["code"] == "test_case_busy"
             finally:
                 release.set()
-            rejected = pending.result(timeout=10)
-        assert rejected.status_code == 409, rejected.text
-        assert rejected.json()["code"] == "test_plan_not_latest"
-        assert len(model.invocations) == 2
-        assert client.get(url).json()["items"] == ([winner_response.json(), first] if first else [winner_response.json()])
+            completed = pending.result(timeout=10)
+        assert completed.status_code == 201, completed.text
+        assert len(model.invocations) == (2 if first else 1)
+        assert client.get(url).json()["items"] == ([completed.json(), first] if first else [completed.json()])
 
 
 def test_planning_retry_keeps_current_context_and_failure_creates_no_version(tmp_path: Path) -> None:

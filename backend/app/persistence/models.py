@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -45,6 +46,7 @@ class TestCaseRow(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     source_text: Mapped[str] = mapped_column(Text)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -120,7 +122,7 @@ class TestRunRow(Base):
     verdict: Mapped[TestRunVerdict | None] = mapped_column(
         enum_column(TestRunVerdict, "test_run_verdict"), nullable=True
     )
-    snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    environment_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -23,7 +23,7 @@
     <p>计划版本：{{ report.detail.test_plan.version_number }}</p>
     <p>规划额外输入：</p>
     <pre>{{ report.detail.test_plan.planning_context.user_input or '无' }}</pre>
-    <p>执行模型：{{ report.detail.snapshot.execution_model.profile_id }}</p>
+    <p>执行模型：{{ report.detail.environment.execution_model.profile_id }}</p>
   </section>
   <section>
     <h2>任务结果</h2>

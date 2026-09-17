@@ -408,6 +408,29 @@
         "title": "PageResponse[TestCaseListResponse]",
         "type": "object"
       },
+      "PageResponse_TestCase_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TestCase"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "PageResponse[TestCase]",
+        "type": "object"
+      },
       "PageResponse_TestPlan_": {
         "additionalProperties": false,
         "properties": {
@@ -1192,11 +1215,16 @@
             "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
             "title": "Id",
             "type": "string"
+          },
+          "is_archived": {
+            "title": "Is Archived",
+            "type": "boolean"
           }
         },
         "required": [
           "id",
           "content",
+          "is_archived",
           "created_at"
         ],
         "title": "TestCase",
@@ -1265,6 +1293,10 @@
             "title": "Id",
             "type": "string"
           },
+          "is_archived": {
+            "title": "Is Archived",
+            "type": "boolean"
+          },
           "latest_plan_version": {
             "anyOf": [
               {
@@ -1280,6 +1312,7 @@
         "required": [
           "id",
           "content",
+          "is_archived",
           "created_at",
           "latest_plan_version"
         ],
@@ -1622,11 +1655,11 @@
         "additionalProperties": false,
         "description": "执行信息家族的完整查询组合，由 repository 装配并供执行/API 消费。",
         "properties": {
+          "environment": {
+            "$ref": "#/components/schemas/TestRunEnvironmentSnapshot"
+          },
           "run": {
             "$ref": "#/components/schemas/TestRun"
-          },
-          "snapshot": {
-            "$ref": "#/components/schemas/TestRunSnapshot"
           },
           "task_runs": {
             "items": {
@@ -1642,10 +1675,58 @@
         "required": [
           "run",
           "test_plan",
-          "snapshot",
+          "environment",
           "task_runs"
         ],
         "title": "TestRunDetail",
+        "type": "object"
+      },
+      "TestRunEnvironmentSnapshot": {
+        "additionalProperties": false,
+        "description": "RunService 在 TestRun 创建时冻结且执行器必须遵守的环境事实。",
+        "properties": {
+          "act_prompt_version": {
+            "minLength": 1,
+            "title": "Act Prompt Version",
+            "type": "string"
+          },
+          "app_version": {
+            "minLength": 1,
+            "title": "App Version",
+            "type": "string"
+          },
+          "execution_model": {
+            "$ref": "#/components/schemas/LLMProfileSnapshot"
+          },
+          "execution_protocol_version": {
+            "const": "3",
+            "title": "Execution Protocol Version",
+            "type": "string"
+          },
+          "judge_prompt_version": {
+            "minLength": 1,
+            "title": "Judge Prompt Version",
+            "type": "string"
+          },
+          "screenshot_history_rounds": {
+            "default": 3,
+            "minimum": 1.0,
+            "title": "Screenshot History Rounds",
+            "type": "integer"
+          },
+          "tool_catalog": {
+            "$ref": "#/components/schemas/ToolCatalogSnapshot"
+          }
+        },
+        "required": [
+          "tool_catalog",
+          "execution_model",
+          "act_prompt_version",
+          "judge_prompt_version",
+          "app_version",
+          "execution_protocol_version"
+        ],
+        "title": "TestRunEnvironmentSnapshot",
         "type": "object"
       },
       "TestRunListResponse": {
@@ -1709,6 +1790,10 @@
             "title": "Task Status Counts",
             "type": "object"
           },
+          "test_case_archived": {
+            "title": "Test Case Archived",
+            "type": "boolean"
+          },
           "test_case_id": {
             "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
             "title": "Test Case Id",
@@ -1744,6 +1829,7 @@
           "created_at",
           "test_case_id",
           "test_case_name",
+          "test_case_archived",
           "task_count",
           "task_status_counts",
           "screenshot_count"
@@ -1771,62 +1857,19 @@
             },
             "title": "Events",
             "type": "array"
+          },
+          "test_case_archived": {
+            "title": "Test Case Archived",
+            "type": "boolean"
           }
         },
         "required": [
           "detail",
           "events",
-          "artifacts"
+          "artifacts",
+          "test_case_archived"
         ],
         "title": "TestRunReport",
-        "type": "object"
-      },
-      "TestRunSnapshot": {
-        "additionalProperties": false,
-        "description": "RunService 在 TestRun 创建时冻结且执行器必须遵守的环境事实。",
-        "properties": {
-          "act_prompt_version": {
-            "minLength": 1,
-            "title": "Act Prompt Version",
-            "type": "string"
-          },
-          "app_version": {
-            "minLength": 1,
-            "title": "App Version",
-            "type": "string"
-          },
-          "execution_model": {
-            "$ref": "#/components/schemas/LLMProfileSnapshot"
-          },
-          "execution_protocol_version": {
-            "const": "3",
-            "title": "Execution Protocol Version",
-            "type": "string"
-          },
-          "judge_prompt_version": {
-            "minLength": 1,
-            "title": "Judge Prompt Version",
-            "type": "string"
-          },
-          "screenshot_history_rounds": {
-            "default": 3,
-            "minimum": 1.0,
-            "title": "Screenshot History Rounds",
-            "type": "integer"
-          },
-          "tool_catalog": {
-            "$ref": "#/components/schemas/ToolCatalogSnapshot"
-          }
-        },
-        "required": [
-          "tool_catalog",
-          "execution_model",
-          "act_prompt_version",
-          "judge_prompt_version",
-          "app_version",
-          "execution_protocol_version"
-        ],
-        "title": "TestRunSnapshot",
         "type": "object"
       },
       "TestRunStatisticsResponse": {
@@ -2560,6 +2603,79 @@
         "summary": "Get Test Run Statistics"
       }
     },
+    "/api/runs/test-cases": {
+      "get": {
+        "operationId": "list_test_cases_with_runs_api_runs_test_cases_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Search",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageResponse_TestCase_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Test Cases With Runs"
+      }
+    },
     "/api/runs/{test_run_id}": {
       "get": {
         "operationId": "get_test_run_api_runs__test_run_id__get",
@@ -2999,6 +3115,16 @@
             },
             "description": "Not Found"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3021,6 +3147,147 @@
           }
         },
         "summary": "Get Test Case"
+      },
+      "patch": {
+        "operationId": "update_test_case_api_test_cases__test_case_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "test_case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+              "title": "Test Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestCaseContent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestCase"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Update Test Case"
+      }
+    },
+    "/api/test-cases/{test_case_id}/archive": {
+      "post": {
+        "operationId": "archive_test_case_api_test_cases__test_case_id__archive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "test_case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+              "title": "Test Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Archive Test Case"
       }
     },
     "/api/test-cases/{test_case_id}/plans": {
@@ -3058,6 +3325,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {

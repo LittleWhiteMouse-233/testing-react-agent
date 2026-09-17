@@ -43,9 +43,9 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (request: Request) => {
     const url = new URL(request.url); requests.push(url);
     if (request.method === "POST" && url.pathname.endsWith("/cancel")) return new Response(null, { status: 202 });
-    if (url.pathname === "/api/test-cases") return Response.json({ items: [], total: 0 });
+    if (url.pathname === "/api/test-cases" || url.pathname === "/api/runs/test-cases") return Response.json({ items: [], total: 0 });
     if (url.pathname === "/api/runs/statistics") return Response.json({ run_count: 24, verdict_counts: { PASS: 20, FAIL: 2, BLOCKED: 1, CANCELLED: 1 }, average_duration_seconds: 36, daily: [] });
-    if (url.pathname === "/api/runs") return Response.json({ items: [{ ...report.detail.run, test_case_id: caseId, test_case_name: "设置页面验证", task_count: 1, task_status_counts: { passed: 1 }, screenshot_count: 1 }], total: 24 });
+    if (url.pathname === "/api/runs") return Response.json({ items: [{ ...report.detail.run, test_case_id: caseId, test_case_name: "设置页面验证", test_case_archived: report.test_case_archived, task_count: 1, task_status_counts: { passed: 1 }, screenshot_count: 1 }], total: 24 });
     return reportResponse(url, report);
   }));
 });
@@ -79,6 +79,35 @@ it.each<TestRunVerdict>(["PASS", "FAIL", "BLOCKED", "CANCELLED"])("shows the aut
   expect(screen.getByText("截图后观察")).toBeInTheDocument();
   expect(screen.getByText("判定证据")).toBeInTheDocument();
   expect(sources).toHaveLength(0);
+});
+
+it("keeps archived reports readable and exportable but disables rerun", async () => {
+  report.test_case_archived = true;
+  renderPage(`/runs/${runId}/report`);
+  await screen.findByText("用例已归档");
+  expect(screen.getByText("判定证据")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /无法重新执行/ })).toBeDisabled();
+  expect(screen.queryByRole("link", { name: /重新执行/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /JSON 报告/ })).toBeEnabled();
+});
+
+it("uses the history case query to filter archived runs", async () => {
+  report.test_case_archived = true;
+  const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (request) => {
+    const url = new URL((request as Request).url);
+    if (url.pathname === "/api/runs/test-cases") {
+      requests.push(url);
+      return Response.json({ items: [{ id: caseId, content: { name: "设置页面验证", source_text: "原始描述" }, is_archived: true, created_at: report.detail.run.created_at }], total: 1 });
+    }
+    return originalFetch(request);
+  });
+  renderPage("/runs", true);
+  await screen.findByText("已归档");
+  fireEvent.mouseDown(screen.getByRole("combobox", { name: "筛选用例" }));
+  fireEvent.click(await screen.findByText("设置页面验证 · 已归档"));
+  await waitFor(() => expect(requests.some((url) => url.pathname === "/api/runs" && url.searchParams.get("test_case_id") === caseId)).toBe(true));
+  expect(requests.some((url) => url.pathname === "/api/test-cases")).toBe(false);
 });
 
 it("keeps cancelled unstarted tasks distinct from fail-fast skipped tasks", async () => {
@@ -346,6 +375,6 @@ it.each(["2026-02-30", "2026-02-29"])("does not request an invalid URL date rang
   renderPage(`/runs?from=${from}&to=2026-03-01`);
   expect(await screen.findByText("请选择有效的日期范围，开始日期不得晚于结束日期")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /刷新/ })).toBeDisabled();
-  await waitFor(() => expect(requests.some((url) => url.pathname === "/api/test-cases")).toBe(true));
-  expect(requests.some((url) => url.pathname.startsWith("/api/runs"))).toBe(false);
+  await waitFor(() => expect(requests.some((url) => url.pathname === "/api/runs/test-cases")).toBe(true));
+  expect(requests.some((url) => url.pathname === "/api/runs" || url.pathname === "/api/runs/statistics")).toBe(false);
 });

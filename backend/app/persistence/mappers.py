@@ -45,6 +45,7 @@ def test_case_from_row(row: TestCaseRow) -> TestCase:
     return TestCase(
         id=row.id,
         content=TestCaseContent(name=row.name, source_text=row.source_text),
+        is_archived=row.is_archived,
         created_at=_utc_required(row.created_at),
     )
 

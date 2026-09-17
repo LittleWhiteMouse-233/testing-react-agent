@@ -113,7 +113,7 @@ class TaskAgentFactory:
         except LookupError as exc:
             raise ModelProfileMismatch(str(exc)) from exc
         if model_client.profile_snapshot != expected_model_profile:
-            raise ModelProfileMismatch("Resolved model does not match the TestRun snapshot")
+            raise ModelProfileMismatch("Resolved model does not match the TestRun environment snapshot")
         prompt = self.prompts_by_task_type[task.definition.type]
         if prompt.version != expected_prompt_version:
             raise PromptVersionMismatch(expected=expected_prompt_version, actual=prompt.version, prompt_name=prompt.name)

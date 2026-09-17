@@ -4,16 +4,16 @@ import { Alert, Button, Checkbox, Empty, Form, Input, InputNumber, Modal, Radio,
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage } from "../api/client";
-import type { TestPlan, TestPlanDraft, TestTaskDefinition } from "../api/contracts";
+import type { TestCaseContent, TestPlan, TestPlanDraft, TestTaskDefinition } from "../api/contracts";
 import { emptyTask, isPlanDraftValid, toPlanDraft } from "../planDraft";
 import { formatTime, runSummary, StatusBadge } from "../runPresentation";
 
-export default function PlanPage() {
+export default function PlanPage({ archiving = false }: { archiving?: boolean }) {
   const { caseId = "" } = useParams();
-  return <TestCasePlan key={caseId} caseId={caseId} />;
+  return <TestCasePlan key={caseId} caseId={caseId} archiving={archiving} />;
 }
 
-function TestCasePlan({ caseId }: { caseId: string }) {
+function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolean }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [plan, setPlan] = useState<TestPlan | null>(null);
@@ -22,22 +22,42 @@ function TestCasePlan({ caseId }: { caseId: string }) {
   const [confirmed, setConfirmed] = useState(false);
   const [userInput, setUserInput] = useState("");
   const [editing, setEditing] = useState(false);
+  const [caseDraft, setCaseDraft] = useState<TestCaseContent | null>(null);
+  const [caseUpdated, setCaseUpdated] = useState(false);
   const testCase = $api.useQuery("get", "/api/test-cases/{test_case_id}", { params: { path: { test_case_id: caseId } } });
   const plans = $api.useQuery("get", "/api/test-cases/{test_case_id}/plans", { params: { path: { test_case_id: caseId } } });
   const runs = $api.useQuery("get", "/api/runs", { params: { query: { test_case_id: caseId, limit: 5 } } });
+  const updateCase = $api.useMutation("patch", "/api/test-cases/{test_case_id}", {
+    meta: { testCaseId: caseId },
+    onSuccess: (value) => {
+      queryClient.setQueryData($api.queryOptions("get", "/api/test-cases/{test_case_id}", { params: { path: { test_case_id: caseId } } }).queryKey, value);
+      for (const path of ["/api/test-cases", "/api/runs", "/api/runs/test-cases"]) {
+        void queryClient.invalidateQueries({ queryKey: ["get", path] });
+      }
+      setCaseDraft(null); setConfirmed(false); setCaseUpdated(true);
+      message.success("用例已更新，请检查计划或重新规划");
+    },
+    onError: (error) => {
+      message.error(apiErrorMessage(error, "保存用例失败"));
+      if (error.code === "test_case_not_found") void testCase.refetch();
+    }
+  });
   const selectPlan = (value: TestPlan) => {
     setPlan(value); setDraft(toPlanDraft(value)); setConfirmed(false); setDirty(false); setEditing(false);
   };
   useEffect(() => { if (!plan && plans.data?.items[0]) selectPlan(plans.data.items[0]); }, [plans.data, plan]);
   const acceptPlan = (value: TestPlan) => {
     selectPlan(value);
+    setCaseUpdated(false);
     void queryClient.invalidateQueries({ queryKey: ["get", "/api/test-cases/{test_case_id}/plans"] });
     void queryClient.invalidateQueries({ queryKey: ["get", "/api/test-cases"] });
   };
   const generate = $api.useMutation("post", "/api/test-cases/{test_case_id}/plans", {
+    meta: { testCaseId: caseId },
     onSuccess: (value) => { acceptPlan(value); setUserInput(""); message.success("计划已生成"); },
     onError: async (error) => {
       message.error(apiErrorMessage(error, "计划生成失败"));
+      if (error.code === "planning_input_not_found") void testCase.refetch();
       if (error.code === "test_plan_not_latest") {
         const latest = (await plans.refetch()).data?.items[0];
         if (latest) selectPlan(latest);
@@ -45,25 +65,29 @@ function TestCasePlan({ caseId }: { caseId: string }) {
     }
   });
   const revise = $api.useMutation("post", "/api/test-plans/{test_plan_id}/revisions", {
+    meta: { testCaseId: caseId },
     onSuccess: (value) => { acceptPlan(value); message.success("已保存为计划版本 " + value.version_number); },
     onError: (error) => {
       message.error(apiErrorMessage(error, "保存失败"));
+      if (error.code === "test_plan_not_found") void testCase.refetch();
       if (error.code === "test_plan_not_latest") void plans.refetch();
     }
   });
   const start = $api.useMutation("post", "/api/runs", {
+    meta: { testCaseId: caseId },
     onSuccess: (run) => {
       void queryClient.invalidateQueries({ queryKey: ["get", "/api/runs"] });
       navigate("/runs/" + run.id);
     },
     onError: (error) => {
       message.error(apiErrorMessage(error, "启动失败"));
+      if (error.code === "run_input_not_found") void testCase.refetch();
       if (error.code === "test_plan_not_startable") { setConfirmed(false); void plans.refetch(); }
     }
   });
   const latest = plans.data?.items[0];
-  const isLatest = !!plan && plan.version_number >= (latest?.version_number ?? 0);
-  const busy = generate.isPending || revise.isPending || start.isPending;
+  const isLatest = !!plan && plan.id === latest?.id;
+  const busy = archiving || generate.isPending || revise.isPending || start.isPending || caseDraft !== null || updateCase.isPending;
   const canEdit = !busy && isLatest;
   const valid = isPlanDraftValid(draft);
   const canGenerate = !busy && !dirty && (!plan || (isLatest && !!userInput.trim()));
@@ -80,17 +104,24 @@ function TestCasePlan({ caseId }: { caseId: string }) {
     tasks[index] = other; tasks[index + direction] = current; updateDraft({ ...draft, tasks });
   };
   if (testCase.isLoading || plans.isLoading) return <div className="planning-welcome"><Spin /></div>;
-  if (testCase.error || plans.error || !testCase.data) return <div className="planning-welcome"><Alert type="error" title={apiErrorMessage(testCase.error ?? plans.error, "用例加载失败")} action={<Button onClick={() => { void testCase.refetch(); void plans.refetch(); }}>重试</Button>} /></div>;
+  if (testCase.error || plans.error || !testCase.data) return <div className="planning-welcome"><Alert type="error" title={apiErrorMessage(testCase.error ?? plans.error, "用例加载失败")} action={<Button onClick={() => { void testCase.refetch(); void plans.refetch(); }}>重试</Button>} /><Link to="/">返回用例列表</Link></div>;
 
   return <>
     <section className="plan-context">
       <div className="context-heading"><div className="eyebrow">用例库 / <span className="mono" title={caseId}>{caseId.slice(0, 8)}</span></div><h2>{testCase.data.content.name}</h2>
-        {plan && <div className="version-strip"><span className="pill blue">版本 {plan.version_number} · {plan.origin}</span>
-          <Select aria-label="计划版本" value={plan.id} disabled={busy || dirty} onChange={(id) => { const selected = plans.data?.items.find((entry) => entry.id === id); if (selected) selectPlan(selected); }}
-            options={plans.data?.items.map((entry) => ({ value: entry.id, label: "v" + entry.version_number + (entry.id === latest?.id ? " · 最新" : " · 只读") }))} />
-        </div>}
       </div>
-      <div className="context-scroll"><section className="case-description"><div className="section-label">用例描述 <span>{testCase.data.content.source_text.length} 字</span></div><p>{testCase.data.content.source_text}</p>
+      <div className="context-scroll"><section className="case-description"><div className="section-label">用例描述 <span>{testCase.data.content.source_text.length} 字</span>
+        {!caseDraft && <Button size="small" icon={<EditOutlined />} disabled={busy || dirty || editing} onClick={() => setCaseDraft({ ...testCase.data.content })}>编辑用例</Button>}</div>
+        {caseDraft ? <Form layout="vertical" disabled={updateCase.isPending || archiving} onFinish={() => { if (!archiving && caseDraft.name.trim() && caseDraft.name.length <= 200 && caseDraft.source_text.trim()) updateCase.mutate({ params: { path: { test_case_id: caseId } }, body: caseDraft }); }}>
+          <Form.Item label="用例名称" required validateStatus={!caseDraft.name.trim() ? "error" : undefined} help={!caseDraft.name.trim() ? "名称不能为空" : undefined}>
+            <Input aria-label="用例名称" maxLength={200} value={caseDraft.name} onChange={(event) => setCaseDraft({ ...caseDraft, name: event.target.value })} />
+          </Form.Item>
+          <Form.Item label="用例描述" required validateStatus={!caseDraft.source_text.trim() ? "error" : undefined} help={!caseDraft.source_text.trim() ? "描述不能为空" : undefined}>
+            <Input.TextArea aria-label="用例描述" rows={7} value={caseDraft.source_text} onChange={(event) => setCaseDraft({ ...caseDraft, source_text: event.target.value })} />
+          </Form.Item>
+          <div className="editor-footer"><Button onClick={() => setCaseDraft(null)}>取消</Button><Button type="primary" htmlType="submit" loading={updateCase.isPending} disabled={!caseDraft.name.trim() || caseDraft.name.length > 200 || !caseDraft.source_text.trim()}>保存用例</Button></div>
+        </Form> : <p>{testCase.data.content.source_text}</p>}
+        {caseUpdated && <Alert type="info" title="用例已更新，请检查计划或重新规划" />}
         {plan && <>
           <h3>准备步骤</h3>{plan.content.setup_steps.length ? <ol className="setup-list">{plan.content.setup_steps.map((step, index) => <li key={index}>{step}</li>)}</ol> : <p className="muted">无准备步骤</p>}
           <h3>前置假设</h3>{plan.content.assumptions.length ? <ul>{plan.content.assumptions.map((assumption, index) => <li key={index}>{assumption}</li>)}</ul> : <p className="muted">无前置假设</p>}
@@ -110,6 +141,10 @@ function TestCasePlan({ caseId }: { caseId: string }) {
       </div>
     </section>
     <aside className="plan-results"><div className="section-heading"><div><small>规划结果</small><h2>任务序列</h2></div>{plan && <Button icon={<EditOutlined />} disabled={!canEdit} onClick={() => setEditing(true)}>编辑计划</Button>}</div>
+      {plan && <div className="version-strip"><span className={"pill " + (isLatest ? "blue" : "")}>版本 {plan.version_number} · {isLatest ? "最新" : "历史只读"}</span>
+        <Select aria-label="计划版本" value={plan.id} disabled={busy || dirty} onChange={(id) => { const selected = plans.data?.items.find((entry) => entry.id === id); if (selected) selectPlan(selected); }}
+          options={plans.data?.items.map((entry) => ({ value: entry.id, label: "v" + entry.version_number + (entry.id === latest?.id ? " · 最新" : " · 只读") }))} />
+      </div>}
       {plan && draft ? <>
         <div className="plan-task-list"><h3>{draft.title}</h3>{draft.tasks.map((task, index) => <article className="plan-task" key={index}><span className={"task-number " + task.type}>{index + 1}</span><div>
           <div className="task-title"><h3>{task.title}</h3><span className={"pill " + (task.type === "judge" ? "purple" : "blue")}>{task.type === "judge" ? "Judge" : "Act"}</span></div>

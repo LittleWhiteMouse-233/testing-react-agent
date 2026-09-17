@@ -27,6 +27,8 @@ class TestRunReport(BaseModel):
     detail: TestRunDetail
     events: list[StoredRunEvent]
     artifacts: list[Artifact]
+    # Current TestCase state, joined at read time; never part of the run environment snapshot.
+    test_case_archived: bool
 
 
 class ReportService:

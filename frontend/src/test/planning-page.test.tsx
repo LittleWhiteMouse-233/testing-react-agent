@@ -6,6 +6,7 @@ import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TestCase, TestPlan, TestPlanDraft, TestRunReport } from "../api/contracts";
 import PlanPage from "../pages/PlanPage";
+import CasesPage from "../pages/CasesPage";
 import ReportPage from "../pages/ReportPage";
 
 // Keep the real OpenAPI and React Query lifecycle; only the HTTP boundary is fake.
@@ -21,6 +22,7 @@ vi.mock("../api/client", async (importOriginal) => {
 });
 
 const testCase: TestCase = {
+  is_archived: false,
   id: "22222222-2222-4222-8222-222222222222",
   content: { name: "设置页面用例", source_text: "检查原始设置页面" },
   created_at: "2026-01-01T00:00:00Z"
@@ -61,11 +63,18 @@ let plans: TestPlan[];
 let requests: Request[];
 let generateResponse: ((request: Request) => Promise<Response>) | undefined;
 let queryClient: QueryClient;
+let currentCase: TestCase;
+let archived: boolean;
+let updateResponse: ((request: Request) => Promise<Response>) | undefined;
+let archiveResponse: (() => Promise<Response>) | undefined;
+let startResponse: (() => Promise<Response>) | undefined;
 
 beforeEach(() => {
   plans = [];
   requests = [];
   generateResponse = undefined;
+  updateResponse = undefined; archiveResponse = undefined; startResponse = undefined;
+  currentCase = { ...testCase, content: { ...testCase.content } }; archived = false;
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   // Node's Request requires its native signal, whereas jsdom replaces AbortController.
   vi.stubGlobal("AbortController", class {
@@ -87,10 +96,22 @@ beforeEach(() => {
     const path = new URL(request.url).pathname;
     if (request.method === "GET") {
       if (path === "/api/runs") return Response.json({ items: [], total: 0 });
+      if (path === "/api/test-cases") return Response.json({ items: archived ? [] : [{ ...currentCase, latest_plan_version: plans[0]?.version_number ?? null }], total: archived ? 0 : 1 });
+      if (archived && path.startsWith(`/api/test-cases/${testCase.id}`)) return Response.json({ code: "test_case_not_found", message: "用例不存在或已归档" }, { status: 404 });
       if (path === "/api/test-cases/another-case/plans") return Response.json({ items: [], total: 0 });
       if (path === "/api/test-cases/another-case") return Response.json({ ...testCase, id: "another-case", content: { name: "另一用例", source_text: "另一个原始目标" } });
       if (path.endsWith("/plans")) return Response.json({ items: plans, total: plans.length });
-      return Response.json(testCase);
+      return Response.json(currentCase);
+    }
+    if (request.method === "PATCH") {
+      if (updateResponse) return updateResponse(request);
+      currentCase = { ...currentCase, content: await request.json() as TestCase["content"] };
+      return Response.json(currentCase);
+    }
+    if (path.endsWith("/archive")) {
+      if (archiveResponse) return archiveResponse();
+      archived = true;
+      return new Response(null, { status: 204 });
     }
     if (path.endsWith("/plans")) {
       if (generateResponse) return generateResponse(request);
@@ -114,7 +135,7 @@ beforeEach(() => {
       plans = [plan, ...plans];
       return Response.json(plan, { status: 201 });
     }
-    if (path === "/api/runs") return Response.json({ id: "created-run" }, { status: 201 });
+    if (path === "/api/runs") return startResponse ? startResponse() : Response.json({ id: "created-run" }, { status: 201 });
     throw new Error(`Unexpected request: ${request.method} ${path}`);
   }));
 });
@@ -145,6 +166,52 @@ const startButton = () => screen.getByRole("button", { name: /启动运行/ });
 const planningPosts = () => requests.filter((request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/plans"));
 
 describe("planning page", () => {
+  it("edits both case fields atomically, validates blanks and requires confirmation again", async () => {
+    plans = [savedPlan()];
+    const originalPlan = structuredClone(plans[0]);
+    renderPlanPage();
+    fireEvent.click(await screen.findByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /编辑用例/ }));
+    expect(startButton()).toBeDisabled();
+    expect(screen.getByRole("button", { name: /编辑计划/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重新规划" })).toBeDisabled();
+    const name = screen.getByRole("textbox", { name: "用例名称" });
+    const description = screen.getByRole("textbox", { name: "用例描述" });
+    expect(name).toHaveAttribute("maxlength", "200");
+    fireEvent.change(name, { target: { value: "   " } });
+    expect(screen.getByRole("button", { name: "保存用例" })).toBeDisabled();
+    fireEvent.change(name, { target: { value: "新的名称" } });
+    fireEvent.change(description, { target: { value: "\n " } });
+    expect(screen.getByRole("button", { name: "保存用例" })).toBeDisabled();
+    fireEvent.change(description, { target: { value: "新的描述" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存用例" }));
+    await screen.findByRole("heading", { name: "新的名称" });
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
+    expect(startButton()).toBeDisabled();
+    expect(screen.getAllByText("用例已更新，请检查计划或重新规划").length).toBeGreaterThan(0);
+    const updates = requests.filter((request) => request.method === "PATCH");
+    expect(updates).toHaveLength(1);
+    expect(await updates[0]!.json()).toEqual({ name: "新的名称", source_text: "新的描述" });
+    expect(plans[0]).toEqual(originalPlan);
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(startButton()).toBeEnabled();
+  });
+
+  it("cancels local case changes without a request and preserves input on failure", async () => {
+    renderPlanPage();
+    fireEvent.click(await screen.findByRole("button", { name: /编辑用例/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "用例名称" }), { target: { value: "放弃的修改" } });
+    fireEvent.click(screen.getByRole("button", { name: /取\s*消/ }));
+    expect(requests.filter((request) => request.method === "PATCH")).toHaveLength(0);
+    expect(screen.getByRole("heading", { name: testCase.content.name })).toBeInTheDocument();
+    updateResponse = async () => Response.json({ code: "test_case_planning", message: "用例正在生成计划" }, { status: 409 });
+    fireEvent.click(screen.getByRole("button", { name: /编辑用例/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "用例描述" }), { target: { value: "保留编辑内容" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存用例" }));
+    await screen.findByText("用例正在生成计划");
+    expect(screen.getByRole("textbox", { name: "用例描述" })).toHaveValue("保留编辑内容");
+  });
+
   it.each(["", "本轮补充要求"])("allows initial generation with optional input: %s", async (userInput) => {
     renderPlanPage();
     const generate = await screen.findByRole("button", { name: "生成计划" });
@@ -172,7 +239,7 @@ describe("planning page", () => {
     expect(startButton()).toBeEnabled();
     fireEvent.change(planningInput(), { target: { value: "细化成功标准" } });
     fireEvent.click(replan);
-    await screen.findByText("版本 2 · replanning");
+    await screen.findByText("版本 2 · 最新");
     expect(planningInput()).toHaveValue("");
     expect(screen.getByRole("checkbox")).not.toBeChecked();
     expect(startButton()).toBeDisabled();
@@ -190,7 +257,7 @@ describe("planning page", () => {
     fireEvent.change(planningInput(), { target: { value: "保留本轮输入" } });
     fireEvent.click(replan);
     await screen.findByText("本次规划未保存");
-    if (status === 409) await screen.findByText("版本 2 · replanning");
+    if (status === 409) await screen.findByText("版本 2 · 最新");
     await waitFor(() => expect(replan).toBeEnabled());
     expect(planningInput()).toHaveValue("保留本轮输入");
     expect(planningPosts()).toHaveLength(1);
@@ -208,7 +275,7 @@ describe("planning page", () => {
     expect(startButton()).toBeDisabled();
     expect(screen.getByRole("checkbox")).not.toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: /保存新版本/ }));
-    await screen.findByText("版本 2 · manual_revision");
+    await screen.findByText("版本 2 · 最新");
     expect(replan).toBeEnabled();
     expect(planningInput()).toHaveValue("补充要求");
   });
@@ -234,7 +301,7 @@ describe("planning page", () => {
     const next = savedPlan(2, "细化计划");
     plans = [next, ...plans];
     finishGeneration(Response.json(next, { status: 201 }));
-    await screen.findByText("版本 2 · replanning");
+    await screen.findByText("版本 2 · 最新");
   });
 
   it("uses the checkbox only as a UI guard and sends one existing start request", async () => {
@@ -269,10 +336,11 @@ describe("planning page", () => {
   it("allows historical versions only for reading", async () => {
     plans = [savedPlan(2), savedPlan(1)];
     renderPlanPage();
-    await screen.findByText("版本 2 · replanning");
+    await screen.findByText("版本 2 · 最新");
+    expect(screen.getByRole("combobox", { name: "计划版本" }).closest(".plan-results")).not.toBeNull();
     fireEvent.mouseDown(screen.getByRole("combobox", { name: "计划版本" }));
     fireEvent.click(await screen.findByText("v1 · 只读"));
-    await screen.findByText("版本 1 · planning");
+    await screen.findByText("版本 1 · 历史只读");
     expect(screen.getByRole("button", { name: /编辑计划/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "重新规划" })).toBeDisabled();
     expect(startButton()).toBeDisabled();
@@ -319,20 +387,86 @@ describe("planning page", () => {
     expect(document.querySelectorAll(".task-editor")).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name: "删除任务 2" }));
     fireEvent.click(screen.getByRole("button", { name: /保存新版本/ }));
-    await screen.findByText("版本 2 · manual_revision");
+    await screen.findByText("版本 2 · 最新");
     expect(plans[0]!.content.tasks.map((task) => task.definition.title)).toEqual(["第二任务"]);
     expect(plans[0]!.content.tasks[0]!.test_task_id).not.toBe("second-task");
     expect(original.content.tasks.map((task) => task.definition.title)).toEqual(["检查页面", "第二任务"]);
   });
 });
 
+function renderCasesPage() {
+  render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={[`/cases/${testCase.id}/plan?search=设置`]}>
+    <Routes><Route path="/" element={<CasesPage />} /><Route path="/cases/:caseId/plan" element={<CasesPage />} /><Route path="/runs/:runId" element={<div>运行已创建</div>} /></Routes>
+  </MemoryRouter></QueryClientProvider>);
+}
+
+it("archives from a separate inbox button, retains history wording and clears planning caches", async () => {
+  plans = [savedPlan()];
+  renderCasesPage();
+  const archive = await screen.findByRole("button", { name: "归档用例：" + testCase.content.name });
+  expect(archive.closest("a")).toBeNull();
+  expect(archive.querySelector("[aria-label='inbox']")).toBeInTheDocument();
+  fireEvent.click(archive);
+  await screen.findByRole("dialog");
+  expect(screen.getByText("归档后从规划页移除，历史运行与证据保留。")).toBeInTheDocument();
+  expect(startButton()).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: /取\s*消/ }));
+  expect(requests.some((request) => new URL(request.url).pathname.endsWith("/archive"))).toBe(false);
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  fireEvent.click(archive);
+  fireEvent.click(await screen.findByRole("button", { name: "归档用例" }));
+  await screen.findByText("从测试意图开始");
+  await waitFor(() => expect(screen.queryByRole("button", { name: "归档用例：" + testCase.content.name })).not.toBeInTheDocument());
+  expect(screen.getByRole("searchbox", { name: "搜索用例" })).toHaveValue("设置");
+  // React Query may register an empty query during the navigation render;
+  // the archived plan content must no longer remain cached.
+  expect(queryClient.getQueriesData({ queryKey: ["get", "/api/test-cases/{test_case_id}/plans"] }).every(([, value]) => value === undefined)).toBe(true);
+});
+
+it("disables archive as soon as start is submitted and releases it on startup failure", async () => {
+  plans = [savedPlan()];
+  let completeStart!: (response: Response) => void;
+  startResponse = () => new Promise((resolve) => { completeStart = resolve; });
+  renderCasesPage();
+  fireEvent.click(await screen.findByRole("checkbox"));
+  fireEvent.click(startButton());
+  const archive = screen.getByRole("button", { name: "归档用例：" + testCase.content.name });
+  await waitFor(() => expect(archive).toBeDisabled());
+  await waitFor(() => expect(completeStart).toBeDefined());
+  completeStart(Response.json({ code: "mcp_unavailable", message: "MCP 连接失败" }, { status: 502 }));
+  await screen.findByText("MCP 连接失败");
+  await waitFor(() => expect(archive).toBeEnabled());
+});
+
+it("keeps the case and dialog when archive is rejected", async () => {
+  archiveResponse = async () => Response.json({ code: "test_case_has_active_run", message: "用例正在运行" }, { status: 409 });
+  renderCasesPage();
+  fireEvent.click(await screen.findByRole("button", { name: "归档用例：" + testCase.content.name }));
+  fireEvent.click(await screen.findByRole("button", { name: "归档用例" }));
+  await screen.findByText("用例正在运行");
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+  expect(archived).toBe(false);
+});
+
+it("hides cached planning operations when an archived case is refetched", async () => {
+  plans = [savedPlan()];
+  renderPlanPage();
+  await screen.findByRole("button", { name: /编辑计划/ });
+  archived = true;
+  await act(async () => { await queryClient.invalidateQueries({ queryKey: ["get", "/api/test-cases/{test_case_id}"] }); });
+  await screen.findByText("用例不存在或已归档");
+  expect(screen.queryByRole("button", { name: /启动运行/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "返回用例列表" })).toBeInTheDocument();
+});
+
 it("shows the saved planning input in the online report", async () => {
   const plan = savedPlan(1, "报告保留的规划输入");
   const report: TestRunReport = {
+    test_case_archived: false,
     detail: { test_plan: plan, run: {
       id: "run", test_plan_id: plan.id, status: "finished", verdict: "PASS",
       created_at: plan.created_at, started_at: plan.created_at, finished_at: plan.created_at
-    }, snapshot: { execution_model: plan.planning_context.planning_model, tool_catalog: { tools: [] },
+    }, environment: { execution_model: plan.planning_context.planning_model, tool_catalog: { tools: [] },
       act_prompt_version: "act-v1", judge_prompt_version: "judge-v1", app_version: "0.1.0", execution_protocol_version: "3", screenshot_history_rounds: 3
     }, task_runs: [] },
     artifacts: [], events: []

@@ -26,8 +26,8 @@ from app.api.schemas import (
 from app.container import Container
 from app.domain.execution import Artifact, TestRun, TestRunStatus
 from app.domain.ids import ArtifactId, TestCaseId, TestPlanId, TestRunId
-from app.domain.errors import PlanningUserInputRequired, TestPlanNotLatest
-from app.domain.planning import TestCase, TestPlan
+from app.domain.errors import PlanningUserInputRequired, TestCaseBusy, TestCaseHasActiveRun, TestCasePlanning, TestPlanNotLatest
+from app.domain.planning import TestCase, TestCaseContent, TestPlan
 from app.reporting import TestRunReport
 from app.execution.run_service import RunConflict, RunResourcesUnavailable
 from app.tools import MCPConnectionError
@@ -79,16 +79,58 @@ async def list_test_cases(
     )
 
 
+@router.patch(
+    "/test-cases/{test_case_id}", response_model=TestCase,
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+async def update_test_case(
+    test_case_id: TestCaseId, payload: TestCaseContent, request: Request,
+) -> TestCase:
+    try:
+        app = container(request)
+        with app.test_case_lock.hold(test_case_id, "editing"):
+            return await app.repository.update_test_case(test_case_id, payload)
+    except LookupError as exc:
+        raise problem(404, "test_case_not_found", str(exc)) from exc
+    except TestCasePlanning as exc:
+        raise problem(409, "test_case_planning", str(exc)) from exc
+    except TestCaseBusy as exc:
+        raise problem(409, "test_case_busy", str(exc)) from exc
+
+
+@router.post(
+    "/test-cases/{test_case_id}/archive", status_code=204, response_class=Response,
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+async def archive_test_case(test_case_id: TestCaseId, request: Request) -> Response:
+    try:
+        app = container(request)
+        with app.test_case_lock.hold(test_case_id, "archiving"):
+            await app.repository.archive_test_case(test_case_id)
+    except LookupError as exc:
+        raise problem(404, "test_case_not_found", str(exc)) from exc
+    except TestCasePlanning as exc:
+        raise problem(409, "test_case_planning", str(exc)) from exc
+    except TestCaseHasActiveRun as exc:
+        raise problem(409, "test_case_has_active_run", str(exc)) from exc
+    except TestCaseBusy as exc:
+        raise problem(409, "test_case_busy", str(exc)) from exc
+    return Response(status_code=204)
+
+
 @router.get(
     "/test-cases/{test_case_id}",
     response_model=TestCase,
-    responses=NOT_FOUND_RESPONSE,
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
 async def get_test_case(test_case_id: TestCaseId, request: Request) -> TestCase:
     try:
+        container(request).test_case_lock.ensure_available(test_case_id, "reading")
         return await container(request).repository.get_test_case(test_case_id)
     except LookupError as exc:
         raise problem(404, "test_case_not_found", str(exc)) from exc
+    except TestCaseBusy as exc:
+        raise problem(409, "test_case_busy", str(exc)) from exc
 
 
 @router.post(
@@ -111,6 +153,8 @@ async def generate_plan(
         raise problem(409, "test_plan_not_latest", str(exc)) from exc
     except LookupError as exc:
         raise problem(404, "planning_input_not_found", str(exc)) from exc
+    except TestCaseBusy as exc:
+        raise problem(409, "test_case_busy", str(exc)) from exc
     except Exception as exc:
         raise problem(502, "planning_failed", str(exc)) from exc
 
@@ -118,15 +162,18 @@ async def generate_plan(
 @router.get(
     "/test-cases/{test_case_id}/plans",
     response_model=PageResponse[TestPlan],
-    responses=NOT_FOUND_RESPONSE,
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
 async def list_test_plans(
     test_case_id: TestCaseId, request: Request
 ) -> PageResponse[TestPlan]:
     try:
+        container(request).test_case_lock.ensure_available(test_case_id, "reading")
         items = await repository.list_test_plans(container(request).sessions, test_case_id)
     except LookupError as exc:
         raise problem(404, "test_case_not_found", str(exc)) from exc
+    except TestCaseBusy as exc:
+        raise problem(409, "test_case_busy", str(exc)) from exc
     return PageResponse[TestPlan](items=items, total=len(items))
 
 
@@ -145,6 +192,8 @@ async def revise_test_plan(
         )
     except LookupError as exc:
         raise problem(404, "test_plan_not_found", str(exc)) from exc
+    except TestCaseBusy as exc:
+        raise problem(409, "test_case_busy", str(exc)) from exc
     except ValueError as exc:
         raise problem(409, "test_plan_not_latest", str(exc)) from exc
 
@@ -171,6 +220,8 @@ async def create_test_run(
         raise problem(409, "run_resources_unavailable", str(exc)) from exc
     except LookupError as exc:
         raise problem(404, "run_input_not_found", str(exc)) from exc
+    except TestCaseBusy as exc:
+        raise problem(409, "test_case_busy", str(exc)) from exc
     except ValueError as exc:
         raise problem(409, "test_plan_not_startable", str(exc)) from exc
 
@@ -189,6 +240,16 @@ async def get_test_run_statistics(
     filters: Annotated[TestRunFilterQuery, Query()],
 ) -> TestRunStatisticsResponse:
     return await repository.test_run_statistics(container(request).sessions, filters)
+
+
+@router.get("/runs/test-cases", response_model=PageResponse[TestCase])
+async def list_test_cases_with_runs(
+    request: Request, search: str = "",
+    limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0),
+) -> PageResponse[TestCase]:
+    return await repository.list_test_cases_with_runs(
+        container(request).sessions, search=search, limit=limit, offset=offset,
+    )
 
 
 @router.get(

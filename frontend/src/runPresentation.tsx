@@ -117,17 +117,17 @@ export function EventTimeline({ events, controls = false }: { events: StoredRunE
 }
 
 export function RunResources({ report }: { report: TestRunReport }) {
-  const { snapshot, test_plan: plan } = report.detail;
+  const { environment, test_plan: plan } = report.detail;
   return <div className="resource-grid">
-    <section className="resource-card"><h3>工具目录 <span>{snapshot.tool_catalog.tools.length} 个</span></h3>
-      <div className="resource-tools">{snapshot.tool_catalog.tools.map((tool) => <details key={tool.name}><summary>{tool.name}<small>{tool.source}</small></summary>
+    <section className="resource-card"><h3>工具目录 <span>{environment.tool_catalog.tools.length} 个</span></h3>
+      <div className="resource-tools">{environment.tool_catalog.tools.map((tool) => <details key={tool.name}><summary>{tool.name}<small>{tool.source}</small></summary>
         <p>{tool.description}</p><pre>{JSON.stringify(tool.input_schema, null, 2)}</pre>
       </details>)}</div>
     </section>
     <section className="resource-card"><h3>模型与提示词</h3><dl>
-      <dt>执行模型</dt><dd>{snapshot.execution_model.model}</dd>
-      <dt>配置</dt><dd>{snapshot.execution_model.profile_id}</dd>
-      <dt>Act</dt><dd>{snapshot.act_prompt_version}</dd><dt>Judge</dt><dd>{snapshot.judge_prompt_version}</dd>
+      <dt>执行模型</dt><dd>{environment.execution_model.model}</dd>
+      <dt>配置</dt><dd>{environment.execution_model.profile_id}</dd>
+      <dt>Act</dt><dd>{environment.act_prompt_version}</dd><dt>Judge</dt><dd>{environment.judge_prompt_version}</dd>
       <dt>规划</dt><dd>{plan.planning_context.planning_prompt_version}</dd>
     </dl></section>
   </div>;

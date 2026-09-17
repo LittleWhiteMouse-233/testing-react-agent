@@ -21,6 +21,7 @@ from app.planning import PlanningGraph, PlanningService
 from app.prompts import load_prompt_catalog
 from app.reporting import ReportService
 from app.tools import MCPToolProvider
+from app.test_case_lock import TestCaseLock
 
 
 class Container:
@@ -55,7 +56,9 @@ class Container:
         )
         self.planning_graph = PlanningGraph(prompt_catalog.planner)
         self.repository = SqlAlchemyRunRepository(self.sessions, self.events)
+        self.test_case_lock = TestCaseLock()
         self.planning = PlanningService(
+            test_case_lock=self.test_case_lock,
             repository=self.repository,
             planning_graph=self.planning_graph,
             model_provider=self.model_provider,
@@ -76,6 +79,7 @@ class Container:
             checkpoint_path=str(settings.checkpoints),
         )
         self.run_service = RunService(
+            test_case_lock=self.test_case_lock,
             repository=self.repository,
             executor=self.executor,
             model_provider=self.model_provider,

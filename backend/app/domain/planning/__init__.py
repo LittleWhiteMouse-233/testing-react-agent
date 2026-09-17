@@ -54,6 +54,7 @@ class TestCase(BaseModel):
 
     id: TestCaseId
     content: TestCaseContent
+    is_archived: bool
     created_at: datetime
 
 
