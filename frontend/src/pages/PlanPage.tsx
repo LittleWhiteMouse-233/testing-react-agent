@@ -1,5 +1,5 @@
 import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, EditOutlined, PlusOutlined, RocketOutlined, SaveOutlined } from "@ant-design/icons";
-import { useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Checkbox, Empty, Form, Input, InputNumber, Modal, Radio, Select, Spin, message } from "antd";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -16,6 +16,7 @@ export default function PlanPage({ archiving = false }: { archiving?: boolean })
 function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolean }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const caseRequestPending = useIsMutating({ predicate: (mutation) => mutation.options.meta?.testCaseId === caseId }) > 0;
   const [plan, setPlan] = useState<TestPlan | null>(null);
   const [draft, setDraft] = useState<TestPlanDraft | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -87,7 +88,7 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   });
   const latest = plans.data?.items[0];
   const isLatest = !!plan && plan.id === latest?.id;
-  const busy = archiving || generate.isPending || revise.isPending || start.isPending || caseDraft !== null || updateCase.isPending;
+  const busy = archiving || caseRequestPending || caseDraft !== null;
   const canEdit = !busy && isLatest;
   const valid = isPlanDraftValid(draft);
   const canGenerate = !busy && !dirty && (!plan || (isLatest && !!userInput.trim()));

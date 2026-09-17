@@ -152,6 +152,7 @@ function renderPlanPage() {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/cases/${testCase.id}/plan`]}>
         <Link to="/cases/another-case/plan">切换用例</Link>
+        <Link to={`/cases/${testCase.id}/plan`}>返回原用例</Link>
         <Routes>
           <Route path="/cases/:caseId/plan" element={<PlanPage />} />
           <Route path="/runs/:runId" element={<div>运行已创建</div>} />
@@ -166,6 +167,31 @@ const startButton = () => screen.getByRole("button", { name: /启动运行/ });
 const planningPosts = () => requests.filter((request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/plans"));
 
 describe("planning page", () => {
+  it("keeps conflicting actions disabled after returning to a case with pending planning", async () => {
+    plans = [savedPlan()];
+    let completePlanning!: (response: Response) => void;
+    generateResponse = () => new Promise((resolve) => { completePlanning = resolve; });
+    renderPlanPage();
+    fireEvent.change(await screen.findByRole("textbox", { name: "规划额外输入" }), { target: { value: "调整计划" } });
+    fireEvent.click(screen.getByRole("button", { name: "重新规划" }));
+    await waitFor(() => expect(completePlanning).toBeDefined());
+
+    fireEvent.click(screen.getByRole("link", { name: "切换用例" }));
+    expect(await screen.findByRole("button", { name: "生成计划" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("link", { name: "返回原用例" }));
+    expect(await screen.findByRole("button", { name: /编辑用例/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /编辑计划/ })).toBeDisabled();
+    expect(planningInput()).toBeDisabled();
+    expect(screen.getByRole("checkbox")).toBeDisabled();
+    expect(startButton()).toBeDisabled();
+    expect(planningPosts()).toHaveLength(1);
+
+    plans = [savedPlan(2, "调整计划"), ...plans];
+    await act(async () => { completePlanning(Response.json(plans[0], { status: 201 })); });
+    await waitFor(() => expect(screen.getByRole("button", { name: /编辑用例/ })).toBeEnabled());
+    expect(screen.getByRole("combobox", { name: "计划版本" })).toBeEnabled();
+  });
+
   it("edits both case fields atomically, validates blanks and requires confirmation again", async () => {
     plans = [savedPlan()];
     const originalPlan = structuredClone(plans[0]);
