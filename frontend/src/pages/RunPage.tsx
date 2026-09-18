@@ -8,7 +8,11 @@ import { useRunReport } from "../api/useRunReport";
 import { ElapsedTime, EventTimeline, RunResources, StatusBadge, taskCycleCount, taskStatus } from "../runPresentation";
 
 export function ActiveRunPage() {
-  const runs = $api.useQuery("get", "/api/runs", { params: { query: { status: ["pending", "running"], limit: 1 } } }, { refetchInterval: 3000 });
+  const runs = $api.useQuery("get", "/api/runs", { params: { query: { status: ["pending", "running"], limit: 1 } } }, {
+    // Discover runs started in another window while keeping idle traffic low.
+    refetchInterval: (query) => query.state.data?.items.length ? 3000 : 30000,
+    refetchOnWindowFocus: true
+  });
   if (runs.isLoading) return <div className="page-empty"><Spin /></div>;
   if (runs.error) return <div className="page-empty"><Alert type="error" title={apiErrorMessage(runs.error, "运行加载失败")} /></div>;
   const run = runs.data?.items[0];

@@ -21,7 +21,11 @@ export default function CasesPage() {
   const cases = $api.useQuery("get", "/api/test-cases", { params: { query: { search, limit: 12, offset: (page - 1) * 12 } } });
   // Case-consuming mutations opt into this shared UI guard through their meta.
   const occupiedCases = useMutationState({ filters: { status: "pending" }, select: (mutation) => mutation.options.meta?.testCaseId });
-  const activeRuns = $api.useQuery("get", "/api/runs", { params: { query: { status: ["pending", "running"], limit: 1 } } }, { refetchInterval: 3000 });
+  const activeRuns = $api.useQuery("get", "/api/runs", { params: { query: { status: ["pending", "running"], limit: 1 } } }, {
+    // Keep cross-window status fresh without polling idle sessions every three seconds.
+    refetchInterval: (query) => query.state.data?.items.length ? 3000 : 30000,
+    refetchOnWindowFocus: true
+  });
   const cannotArchive = (id: string) => occupiedCases.includes(id) || !!activeRuns.data?.items.some((run) => run.test_case_id === id);
   useEffect(() => {
     if (!cases.data) return;
