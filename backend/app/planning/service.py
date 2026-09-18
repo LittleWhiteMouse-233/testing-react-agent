@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pydantic import TypeAdapter
-
 from app.domain.activity import AgentActivity
 from app.domain.errors import PlanningUserInputRequired
 from app.domain.planning import (
@@ -15,7 +13,7 @@ from app.domain.planning import (
     draft_plan_content,
 )
 from app.llm import ModelProvider
-from app.domain.planning.events import PlanningEvent, PlanningFailedEvent, PlanningStageEvent
+from app.domain.planning.events import PLANNING_EVENT_ADAPTER, PlanningEvent, PlanningFailedEvent, PlanningStageEvent
 from app.event_stream import EventBus
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.planning.graph import PlanningAttemptProgress, PlanningGraph
@@ -54,7 +52,7 @@ class PlanningService:
 
         async def attempt_progress(progress: PlanningAttemptProgress) -> None:
             # Semantic boundary: Graph owns attempt facts, service owns request identity.
-            await publish(TypeAdapter(PlanningEvent).validate_python({
+            await publish(PLANNING_EVENT_ADAPTER.validate_python({
                 **progress, "test_case_id": test_case_id, "planning_request_id": planning_request_id,
             }))
 

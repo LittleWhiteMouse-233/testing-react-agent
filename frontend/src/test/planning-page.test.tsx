@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { transferableAbortController } from "node:util";
 import { message } from "antd";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -169,6 +169,7 @@ afterEach(async () => {
   cleanup();
   vi.useRealTimers();
   queryClient.clear();
+  onlineManager.setOnline(true);
   await act(async () => { message.destroy(); await new Promise((resolve) => setTimeout(resolve, 0)); });
   vi.unstubAllGlobals();
 });
@@ -195,17 +196,24 @@ const startButton = () => screen.getByRole("button", { name: /启动运行/ });
 const planningPosts = () => requests.filter((request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/plans"));
 
 describe("planning page", () => {
-  it("cleans a pending subscription on unmount under StrictMode without submitting", async () => {
+  it.each([true, false])("cleans a pending subscription on unmount without submitting when online=%s", async (online) => {
     PlanningEventSource.autoReady = false;
     renderPlanPage();
-    fireEvent.click(await screen.findByRole("button", { name: "生成计划" }));
+    const generateButton = await screen.findByRole("button", { name: "生成计划" });
+    onlineManager.setOnline(online);
+    fireEvent.click(generateButton);
     await screen.findByRole("dialog", { name: "规划进度" });
     expect(PlanningEventSource.instances).toHaveLength(1);
     const stream = PlanningEventSource.instances[0]!;
     await act(async () => cleanup());
     expect(stream.close).toHaveBeenCalledOnce();
     expect(stream.onmessage).toBeNull();
-    act(() => stream.dispatchEvent(new Event("ready")));
+    await act(async () => {
+      onlineManager.setOnline(true);
+      await queryClient.resumePausedMutations();
+      stream.dispatchEvent(new Event("ready"));
+    });
+    expect(PlanningEventSource.instances).toHaveLength(1);
     expect(planningPosts()).toHaveLength(0);
   });
 
@@ -244,12 +252,16 @@ describe("planning page", () => {
     expect(stream.close).toHaveBeenCalled();
   });
 
-  it("times out before POST and clears failed logs before the next attempt", async () => {
+  it.each([true, false])("times out before POST and clears failed logs when online=%s", async (online) => {
     PlanningEventSource.autoReady = false;
     renderPlanPage();
     const generateButton = await screen.findByRole("button", { name: "生成计划" });
+    onlineManager.setOnline(online);
     vi.useFakeTimers();
     await act(async () => { fireEvent.click(generateButton); });
+    expect(screen.getByRole("dialog", { name: "规划进度" })).toHaveAttribute("aria-busy", "true");
+    await act(async () => { fireEvent.click(screen.getByRole("link", { name: "切换用例" })); });
+    expect(screen.getByRole("dialog", { name: "规划进度" })).toBeInTheDocument();
     await act(async () => { await vi.advanceTimersByTimeAsync(10_001); });
     expect(screen.getByRole("log")).toHaveTextContent("日志连接超时");
     expect(planningPosts()).toHaveLength(0);
@@ -259,13 +271,24 @@ describe("planning page", () => {
     expect(screen.getByRole("log")).toBeEmptyDOMElement();
   });
 
-  it("retains the panel after request network failure and cleans the stream on unmount", async () => {
+  it.each([true, false])("reports request network failure without queueing or retrying when online=%s", async (online) => {
+    PlanningEventSource.autoReady = false;
     generateResponse = async () => { throw new TypeError("fetch failed"); };
     renderPlanPage();
     fireEvent.click(await screen.findByRole("button", { name: "生成计划" }));
+    await screen.findByRole("dialog", { name: "规划进度" });
+    act(() => {
+      onlineManager.setOnline(online);
+      PlanningEventSource.instances[0]!.dispatchEvent(new Event("ready"));
+    });
     expect(await screen.findByText(/规划结果未确认/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "关闭" })).toBeEnabled();
     expect(PlanningEventSource.instances[0]!.close).toHaveBeenCalled();
+    await act(async () => {
+      onlineManager.setOnline(true);
+      await queryClient.resumePausedMutations();
+    });
+    expect(planningPosts()).toHaveLength(1);
     cleanup();
     expect(PlanningEventSource.instances[0]!.onmessage).toBeNull();
   });

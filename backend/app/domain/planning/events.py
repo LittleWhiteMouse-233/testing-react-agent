@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from app.domain.ids import PlanningRequestId, TestCaseId
 
@@ -50,3 +50,5 @@ type PlanningEvent = Annotated[
     PlanningStageEvent | PlanningAttemptEvent | PlanningAttemptFailedEvent | PlanningFailedEvent,
     Field(discriminator="type"),
 ]
+
+PLANNING_EVENT_ADAPTER = TypeAdapter(PlanningEvent)

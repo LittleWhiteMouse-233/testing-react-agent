@@ -27,6 +27,8 @@ export function usePlanningProgress(testCaseId: string) {
 
   const operation = useMutation({
     meta: { testCaseId },
+    // Subscription setup and its timeout must also run while the browser is offline.
+    networkMode: "always",
     mutationFn: (submit: (requestId: string) => Promise<unknown>) => new Promise<void>((resolve) => {
       if (activeRequest.current) { resolve(); return; }
       const requestId = crypto.randomUUID();
