@@ -15,7 +15,7 @@ from app.artifacts import ArtifactStore
 from app.container import Container
 from app.domain.execution import ReasonCode, TaskRunResult, TaskRunStatus, TestRunStatus as RunStatus, TestRunVerdict as RunVerdict
 from app.domain.planning import TestPlanOrigin as PlanOrigin
-from app.event_stream import EventBus, EventWriter
+from app.event_stream import EventBus, RunEventWriter
 from app.persistence.db import build_engine, build_session_factory, init_database
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.persistence.models import TestRunRow as RunRow
@@ -175,7 +175,7 @@ async def test_response_keeps_one_snapshot_during_committed_run_changes(
     engine = build_engine(f"sqlite+aiosqlite:///{(tmp_path / 'snapshot.db').as_posix()}")
     await init_database(engine)
     sessions = build_session_factory(engine)
-    repository = SqlAlchemyRunRepository(sessions, EventWriter(sessions, EventBus()))
+    repository = SqlAlchemyRunRepository(sessions, RunEventWriter(sessions, EventBus()))
     case = await api_repository.create_test_case(sessions, planning_context().test_case_content)
     plan = await repository.create_plan(test_case_id=case.id, draft=plan_draft(),
         planning_context=planning_context(), origin=PlanOrigin.PLANNING)

@@ -59,7 +59,7 @@ from app.persistence.models import (
     TestRunRow,
     TestTaskRow,
 )
-from app.event_stream.writer import EventWriter
+from app.event_stream.writer import RunEventWriter
 from app.persistence.db import read_snapshot
 
 
@@ -73,10 +73,10 @@ class SqlAlchemyRunRepository:
     def __init__(
         self,
         sessions: async_sessionmaker[AsyncSession],
-        events: EventWriter,
+        run_event_writer: RunEventWriter,
     ) -> None:
         self.sessions = sessions
-        self.events = events
+        self.run_event_writer = run_event_writer
 
     async def get_test_case(self, test_case_id: str) -> TestCase:
         async with self.sessions() as session:
@@ -261,7 +261,7 @@ class SqlAlchemyRunRepository:
             row.status = TestRunStatus.RUNNING
             row.started_at = now()
 
-        await self.events.commit(
+        await self.run_event_writer.commit(
             event, mutation, dedup_key=f"{test_run_id}:run.started"
         )
 
@@ -286,7 +286,7 @@ class SqlAlchemyRunRepository:
             await session.flush()
             return row
 
-        row, _ = await self.events.commit(
+        row, _ = await self.run_event_writer.commit(
             event,
             mutation,
             dedup_key=f"{test_run_id}:{task_run_id}:task.started",
@@ -307,7 +307,7 @@ class SqlAlchemyRunRepository:
             row = await self._require_task_run(session, task_run_id)
             row.cycle_count = cycle_count
 
-        await self.events.commit(
+        await self.run_event_writer.commit(
             event,
             mutation,
             dedup_key=f"{test_run_id}:{task_run_id}:{cycle_count}:cycle.started",
@@ -363,7 +363,7 @@ class SqlAlchemyRunRepository:
             row.cycle_count = cycle_count
             row.finished_at = now()
 
-        await self.events.commit(
+        await self.run_event_writer.commit(
             event,
             mutation,
             dedup_key=f"{test_run_id}:{task_run_id}:task.finished",
@@ -402,7 +402,7 @@ class SqlAlchemyRunRepository:
             await session.flush()
             return rows
 
-        persisted, _ = await self.events.commit(
+        persisted, _ = await self.run_event_writer.commit(
             event,
             mutation,
             dedup_key=f"{test_run_id}:tasks.skipped",
@@ -428,19 +428,19 @@ class SqlAlchemyRunRepository:
             row.verdict = verdict
             row.finished_at = now()
 
-        await self.events.commit(
+        await self.run_event_writer.commit(
             event, mutation, dedup_key=f"{test_run_id}:{event_type}"
         )
 
     async def append_event(
         self, event: RunEvent, *, dedup_key: str | None = None
     ) -> StoredRunEvent | None:
-        return await self.events.append(event, dedup_key=dedup_key)
+        return await self.run_event_writer.append(event, dedup_key=dedup_key)
 
     async def append_events(
         self, events: Sequence[tuple[RunEvent, str | None]]
     ) -> list[StoredRunEvent]:
-        return await self.events.append_many(events)
+        return await self.run_event_writer.append_many(events)
 
     async def reconcile_orphaned(self) -> list[str]:
         async with self.sessions() as session:

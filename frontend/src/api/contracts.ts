@@ -4,6 +4,7 @@ type Schemas = components["schemas"];
 
 export type ApiError = Schemas["ApiError"];
 export type StoredRunEvent = Schemas["StoredRunEvent"];
+export type PlanningEvent = Schemas["PlanningEvent"];
 export type TestCase = Schemas["TestCase"];
 export type TestCaseContent = Schemas["TestCaseContent"];
 export type TestCaseCreateRequest = Schemas["TestCaseCreateRequest"];

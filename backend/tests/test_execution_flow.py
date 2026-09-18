@@ -190,7 +190,7 @@ def test_timeout_rebuilds_after_cleanup_or_blocks_cleanup_failure(tmp_path: Path
 def test_timeout_budget_priority_and_no_unneeded_rebuild(tmp_path: Path, with_image: bool, max_cycles: int) -> None:
     initial = replay_call(content=[image_block()] if with_image else [text_block()])
     with build_client(tmp_path, calls=[initial, replay_call(delay=10)], turns=[tool_turn(1), tool_turn(2)],
-                      tool_call_timeout_seconds=2, model_response_max_attempts=1) as client:
+                      tool_call_timeout_seconds=2, execution_model_response_max_attempts=1) as client:
         detail = wait_for_run(client, start_run(client, create_plan(client, max_cycles=max_cycles)))
         reason = 'cycle_limit' if max_cycles == 2 else 'tool_failed'
         assert detail['task_runs'][0]['result']['reason_code'] == reason
@@ -400,7 +400,7 @@ def test_visual_retention_reaches_state_and_terminal_checkpoint(
     monkeypatch.setattr(_TaskRuntime, "after_tools", observe_after_tools)
     with build_client(tmp_path, calls=[replay_call(), replay_call(error=exit_kind == "tool_error")],
                       turns=[tool_turn(1), tool_turn(2), finish_turn(3)],
-                      screenshot_history_rounds=1, model_response_max_attempts=1) as client:
+                      screenshot_history_rounds=1, execution_model_response_max_attempts=1) as client:
         run_id = start_run(client, create_plan(client, max_cycles=2 if exit_kind == "cycle_limit" else 3))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == {
@@ -457,7 +457,7 @@ def test_running_session_ignores_config_changes_and_holds_the_single_run_slot(tm
 def test_exhaustion_during_repair_is_always_blocked(tmp_path: Path, with_image: bool) -> None:
     content = [image_block()] if with_image else [text_block()]
     with build_client(tmp_path, calls=[replay_call(content=content)],
-                      turns=[tool_turn(1), AIMessage(content="invalid")], model_response_max_attempts=1) as client:
+                      turns=[tool_turn(1), AIMessage(content="invalid")], execution_model_response_max_attempts=1) as client:
         detail = wait_for_run(client, start_run(client, create_plan(client, max_cycles=2)))
         assert detail["run"]["verdict"] == "BLOCKED"
         assert detail["task_runs"][0]["result"]["reason_code"] == "cycle_limit"

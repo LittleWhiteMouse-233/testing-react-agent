@@ -20,16 +20,16 @@ T = TypeVar("T")
 Mutation = Callable[[AsyncSession], Awaitable[T]]
 
 
-class EventWriter:
+class RunEventWriter:
     """Owns event sequence, deduplication, commit, then publication."""
 
     def __init__(
         self,
         sessions: async_sessionmaker[AsyncSession],
-        event_bus: EventBus,
+        run_event_bus: EventBus[int],
     ) -> None:
         self.sessions = sessions
-        self.event_bus = event_bus
+        self.run_event_bus = run_event_bus
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def append(
@@ -62,7 +62,7 @@ class EventWriter:
         mutation: Mutation[T],
     ) -> tuple[T, list[StoredRunEvent]]:
         if not events:
-            raise ValueError("EventWriter.commit_many requires at least one event")
+            raise ValueError("RunEventWriter.commit_many requires at least one event")
         test_run_id = events[0][0].test_run_id
         if any(event.test_run_id != test_run_id for event, _ in events):
             raise ValueError("one event transaction cannot span test runs")
@@ -77,7 +77,7 @@ class EventWriter:
                 await session.commit()
         stored = [stored_event_from_row(row) for row in rows]
         for row in rows:
-            await self.event_bus.publish(row.test_run_id, row.sequence)
+            await self.run_event_bus.publish(row.test_run_id, row.sequence)
         return value, stored
 
     async def _stage(

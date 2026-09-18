@@ -1,6 +1,8 @@
 """Host integration fixtures communicate with an independent MCP process only."""
 from __future__ import annotations
 
+from uuid import uuid4
+
 import json
 import sys
 import time
@@ -96,7 +98,7 @@ def build_client(root: Path, *, calls: list[dict[str, Any]] | None = None,
 
 def create_plan(client: TestClient, *, max_cycles: int = 10, task_count: int = 1) -> dict[str, Any]:
     case = client.post("/api/test-cases", json={"name": "Protocol test", "source_text": "Verify an observed result"}).json()
-    plan = client.post(f"/api/test-cases/{case['id']}/plans").json()
+    plan = client.post(f"/api/test-cases/{case['id']}/plans", json={"planning_request_id": str(uuid4())}).json()
     tasks = [dict(entry["definition"], max_cycles=max_cycles) for entry in plan["content"]["tasks"][:task_count]]
     response = client.post(f"/api/test-plans/{plan['id']}/revisions", json={"content": {**plan["content"], "tasks": tasks}})
     assert response.status_code == 201, response.text

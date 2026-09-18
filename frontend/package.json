@@ -9,8 +9,8 @@
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "typecheck": "tsc -b --pretty false",
-    "generate:api": "openapi-typescript src/api/openapi.json -o src/api/schema.d.ts && node scripts/generate-run-event-validator.mjs",
-    "check:api": "openapi-typescript src/api/openapi.json -o src/api/schema.d.ts --check && node scripts/generate-run-event-validator.mjs --check"
+    "generate:api": "openapi-typescript src/api/openapi.json -o src/api/schema.d.ts && node scripts/generate-event-validators.mjs",
+    "check:api": "openapi-typescript src/api/openapi.json -o src/api/schema.d.ts --check && node scripts/generate-event-validators.mjs --check"
   },
   "dependencies": {
     "@ant-design/icons": "^6.0.0",

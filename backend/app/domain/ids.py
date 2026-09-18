@@ -13,6 +13,7 @@ UUID_PATTERN = (
 )
 
 TestCaseId = Annotated[str, StringConstraints(pattern=UUID_PATTERN)]
+PlanningRequestId = Annotated[str, StringConstraints(pattern=UUID_PATTERN)]
 TestPlanId = Annotated[str, StringConstraints(pattern=UUID_PATTERN)]
 TestTaskId = Annotated[str, StringConstraints(pattern=UUID_PATTERN)]
 TestRunId = Annotated[str, StringConstraints(pattern=UUID_PATTERN)]

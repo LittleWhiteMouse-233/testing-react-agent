@@ -11,7 +11,8 @@ from app.llm import (
     ScriptedChatModelClient,
 )
 from app.config import Settings
-from app.event_stream import EventBus, EventWriter
+from app.event_stream import EventBus, RunEventWriter
+from app.domain.planning.events import PlanningEvent
 from app.execution.executor import RunExecutor
 from app.execution.run_service import RunService
 from app.execution.task_agent import TaskAgentFactory
@@ -29,8 +30,9 @@ class Container:
         self.settings = settings
         self.engine = build_engine(settings.db_url)
         self.sessions = build_session_factory(self.engine)
-        self.event_bus = EventBus()
-        self.events = EventWriter(self.sessions, self.event_bus)
+        self.run_event_bus = EventBus[int]()
+        self.planning_event_bus = EventBus[PlanningEvent]()
+        self.run_event_writer = RunEventWriter(self.sessions, self.run_event_bus)
         self.artifacts = ArtifactStore(
             settings.artifacts_dir,
             self.sessions,
@@ -55,9 +57,10 @@ class Container:
             execution_model_id=settings.execution_model_id,
         )
         self.planning_graph = PlanningGraph(prompt_catalog.planner)
-        self.repository = SqlAlchemyRunRepository(self.sessions, self.events)
+        self.repository = SqlAlchemyRunRepository(self.sessions, self.run_event_writer)
         self.test_case_lock = TestCaseLock()
         self.planning = PlanningService(
+            planning_event_bus=self.planning_event_bus,
             test_case_lock=self.test_case_lock,
             repository=self.repository,
             planning_graph=self.planning_graph,
@@ -70,8 +73,8 @@ class Container:
             judge_prompt=prompt_catalog.judge,
             tool_call_timeout_seconds=settings.tool_call_timeout_seconds,
             tool_cleanup_timeout_seconds=settings.tool_cleanup_timeout_seconds,
-            model_call_max_attempts=settings.model_call_max_attempts,
-            model_response_max_attempts=settings.model_response_max_attempts,
+            model_call_max_attempts=settings.execution_model_call_max_attempts,
+            model_response_max_attempts=settings.execution_model_response_max_attempts,
         )
         self.executor = RunExecutor(
             repository=self.repository,

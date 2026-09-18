@@ -37,7 +37,7 @@ from app.domain.planning import (
 )
 from app.domain.resources.llm import LLMProfileSnapshot
 from app.domain.resources.tools import ToolCatalogSnapshot
-from app.event_stream import EventBus, EventWriter, project_run_message
+from app.event_stream import EventBus, RunEventWriter, project_run_message
 from app.execution.task_agent import TaskAgentGraphState
 from app.execution import RunExecutor, RunService, TaskAgentFactory
 from app.planning import PlanningGraph
@@ -280,7 +280,7 @@ async def test_latest_plan_and_single_active_run_are_serialized() -> None:
         await init_database(engine)
         sessions = build_session_factory(engine)
         repository = SqlAlchemyRunRepository(
-            sessions, EventWriter(sessions, EventBus())
+            sessions, RunEventWriter(sessions, EventBus())
         )
         generated_case = await api_repository.create_test_case(repository.sessions,
             CaseContent(name="Concurrent generation", source_text="Check TV")
@@ -363,7 +363,7 @@ async def test_task_result_evidence_must_belong_to_the_task_run() -> None:
         await init_database(engine)
         sessions = build_session_factory(engine)
         repository = SqlAlchemyRunRepository(
-            sessions, EventWriter(sessions, EventBus())
+            sessions, RunEventWriter(sessions, EventBus())
         )
         test_case = await api_repository.create_test_case(repository.sessions, planning_context().test_case_content)
         plan = await repository.create_plan(

@@ -146,7 +146,7 @@ describe("run event stream boundary", () => {
       () => source
     );
 
-    expect("onerror" in source).toBe(false);
+    source.onerror?.(new Event("error"));
     source.onmessage?.(new MessageEvent("message", {
       data: JSON.stringify(lifecycleEvent("run.started"))
     }));

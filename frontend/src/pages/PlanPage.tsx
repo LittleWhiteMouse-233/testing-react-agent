@@ -2,11 +2,13 @@ import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, EditOutlined, PlusO
 import { useIsMutating, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Checkbox, Empty, Form, Input, InputNumber, Modal, Radio, Select, Spin, message } from "antd";
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useBlocker, useNavigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage } from "../api/client";
 import type { TestCaseContent, TestPlan, TestPlanDraft, TestTaskDefinition } from "../api/contracts";
 import { emptyTask, isPlanDraftValid, toPlanDraft } from "../planDraft";
 import { formatTime, runSummary, StatusBadge } from "../runPresentation";
+import { usePlanningProgress } from "../api/usePlanningProgress";
+import PlanningProgressDialog from "./PlanningProgressDialog";
 
 export default function PlanPage({ archiving = false }: { archiving?: boolean }) {
   const { caseId = "" } = useParams();
@@ -16,6 +18,9 @@ export default function PlanPage({ archiving = false }: { archiving?: boolean })
 function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolean }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const planning = usePlanningProgress(caseId);
+  const blocker = useBlocker(planning.pending);
+  useEffect(() => { if (blocker.state === "blocked") blocker.reset(); }, [blocker]);
   const caseRequestPending = useIsMutating({ predicate: (mutation) => mutation.options.meta?.testCaseId === caseId }) > 0;
   const [plan, setPlan] = useState<TestPlan | null>(null);
   const [draft, setDraft] = useState<TestPlanDraft | null>(null);
@@ -56,12 +61,13 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   const generate = $api.useMutation("post", "/api/test-cases/{test_case_id}/plans", {
     meta: { testCaseId: caseId },
     onSuccess: (value) => { acceptPlan(value); setUserInput(""); message.success("计划已生成"); },
-    onError: async (error) => {
-      message.error(apiErrorMessage(error, "计划生成失败"));
+    onError: (error) => {
       if (error.code === "planning_input_not_found") void testCase.refetch();
       if (error.code === "test_plan_not_latest") {
-        const latest = (await plans.refetch()).data?.items[0];
-        if (latest) selectPlan(latest);
+        void plans.refetch().then((response) => {
+          const latest = response.data?.items[0];
+          if (latest) selectPlan(latest);
+        });
       }
     }
   });
@@ -88,11 +94,16 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   });
   const latest = plans.data?.items[0];
   const isLatest = !!plan && plan.id === latest?.id;
-  const busy = archiving || caseRequestPending || caseDraft !== null;
+  const busy = archiving || caseRequestPending || planning.progress !== null || caseDraft !== null;
   const canEdit = !busy && isLatest;
   const valid = isPlanDraftValid(draft);
   const canGenerate = !busy && !dirty && (!plan || (isLatest && !!userInput.trim()));
-  const generatePlan = () => { if (canGenerate) generate.mutate({ params: { path: { test_case_id: caseId } }, body: { user_input: userInput.trim() || null } }); };
+  const generatePlan = () => {
+    if (canGenerate) planning.start((requestId) => generate.mutateAsync({
+      params: { path: { test_case_id: caseId } },
+      body: { planning_request_id: requestId, user_input: userInput.trim() || null }
+    }));
+  };
   const updateDraft = (value: TestPlanDraft) => { setDraft(value); setDirty(true); setConfirmed(false); };
   const updateTask = (index: number, patch: Partial<TestTaskDefinition>) => {
     if (draft) updateDraft({ ...draft, tasks: draft.tasks.map((task, position) => position === index ? { ...task, ...patch } : task) });
@@ -104,11 +115,13 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
     if (!current || !other) return;
     tasks[index] = other; tasks[index + direction] = current; updateDraft({ ...draft, tasks });
   };
-  if (testCase.isLoading || plans.isLoading) return <div className="planning-welcome"><Spin /></div>;
-  if (testCase.error || plans.error || !testCase.data) return <div className="planning-welcome"><Alert type="error" title={apiErrorMessage(testCase.error ?? plans.error, "用例加载失败")} action={<Button onClick={() => { void testCase.refetch(); void plans.refetch(); }}>重试</Button>} /><Link to="/">返回用例列表</Link></div>;
+  const progressDialog = planning.progress && <PlanningProgressDialog progress={planning.progress} onClose={planning.close} />;
+  if (testCase.isLoading || plans.isLoading) return <section className="plan-context">{progressDialog}<div className="planning-welcome"><Spin /></div></section>;
+  if (testCase.error || plans.error || !testCase.data) return <section className="plan-context">{progressDialog}<div className="planning-welcome"><Alert type="error" title={apiErrorMessage(testCase.error ?? plans.error, "用例加载失败")} action={<Button onClick={() => { void testCase.refetch(); void plans.refetch(); }}>重试</Button>} /><Link to="/">返回用例列表</Link></div></section>;
 
   return <>
     <section className="plan-context">
+      {progressDialog}
       <div className="context-heading"><div className="eyebrow">用例库 / <span className="mono" title={caseId}>{caseId.slice(0, 8)}</span></div><h2>{testCase.data.content.name}</h2>
       </div>
       <div className="context-scroll"><section className="case-description"><div className="section-label">用例描述 <span>{testCase.data.content.source_text.length} 字</span>

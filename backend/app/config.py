@@ -83,8 +83,8 @@ class Settings(BaseSettings):
     tool_call_timeout_seconds: float = Field(default=120, gt=0)
     tool_cleanup_timeout_seconds: float = Field(default=30, gt=0)
     screenshot_history_rounds: int = Field(default=3, ge=1)
-    model_call_max_attempts: int = Field(default=3, ge=1, le=10)
-    model_response_max_attempts: int = Field(default=3, ge=1, le=10)
+    execution_model_call_max_attempts: int = Field(default=3, ge=1, le=10)
+    execution_model_response_max_attempts: int = Field(default=3, ge=1, le=10)
 
     @model_validator(mode="after")
     def model_routes_are_valid(self) -> "Settings":

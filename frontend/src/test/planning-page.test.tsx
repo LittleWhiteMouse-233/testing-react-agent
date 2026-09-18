@@ -2,12 +2,32 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { transferableAbortController } from "node:util";
 import { message } from "antd";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
+import { Link, createMemoryRouter, RouterProvider, Route, Routes } from "react-router-dom";
+import { StrictMode, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TestCase, TestPlan, TestPlanDraft, TestRunReport } from "../api/contracts";
 import PlanPage from "../pages/PlanPage";
 import CasesPage from "../pages/CasesPage";
 import ReportPage from "../pages/ReportPage";
+
+function TestRouter({ children, initialEntries }: { children: ReactNode; initialEntries: string[] }) {
+  const [router] = useState(() => createMemoryRouter([{ path: "*", element: children }], { initialEntries }));
+  return <RouterProvider router={router} />;
+}
+
+class PlanningEventSource extends EventTarget {
+  static instances: PlanningEventSource[] = [];
+  static autoReady = true;
+  onmessage: ((event: MessageEvent<string>) => void) | null = null;
+  onopen: ((event: Event) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  close = vi.fn();
+  constructor(readonly url: string) {
+    super();
+    PlanningEventSource.instances.push(this);
+    queueMicrotask(() => { if (PlanningEventSource.autoReady) this.dispatchEvent(new Event("ready")); });
+  }
+}
 
 // Keep the real OpenAPI and React Query lifecycle; only the HTTP boundary is fake.
 vi.mock("../api/client", async (importOriginal) => {
@@ -62,6 +82,7 @@ function savedPlan(version = 1, userInput: string | null = null): TestPlan {
 let plans: TestPlan[];
 let requests: Request[];
 let generateResponse: ((request: Request) => Promise<Response>) | undefined;
+let plansResponse: (() => Promise<Response>) | undefined;
 let queryClient: QueryClient;
 let currentCase: TestCase;
 let archived: boolean;
@@ -70,9 +91,13 @@ let archiveResponse: (() => Promise<Response>) | undefined;
 let startResponse: (() => Promise<Response>) | undefined;
 
 beforeEach(() => {
+  PlanningEventSource.instances = [];
+  PlanningEventSource.autoReady = true;
+  vi.stubGlobal("EventSource", PlanningEventSource);
   plans = [];
   requests = [];
   generateResponse = undefined;
+  plansResponse = undefined;
   updateResponse = undefined; archiveResponse = undefined; startResponse = undefined;
   currentCase = { ...testCase, content: { ...testCase.content } }; archived = false;
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -100,7 +125,7 @@ beforeEach(() => {
       if (archived && path.startsWith(`/api/test-cases/${testCase.id}`)) return Response.json({ code: "test_case_not_found", message: "用例不存在或已归档" }, { status: 404 });
       if (path === "/api/test-cases/another-case/plans") return Response.json({ items: [], total: 0 });
       if (path === "/api/test-cases/another-case") return Response.json({ ...testCase, id: "another-case", content: { name: "另一用例", source_text: "另一个原始目标" } });
-      if (path.endsWith("/plans")) return Response.json({ items: plans, total: plans.length });
+      if (path.endsWith("/plans")) return plansResponse ? plansResponse() : Response.json({ items: plans, total: plans.length });
       return Response.json(currentCase);
     }
     if (request.method === "PATCH") {
@@ -142,6 +167,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   cleanup();
+  vi.useRealTimers();
   queryClient.clear();
   await act(async () => { message.destroy(); await new Promise((resolve) => setTimeout(resolve, 0)); });
   vi.unstubAllGlobals();
@@ -150,14 +176,16 @@ afterEach(async () => {
 function renderPlanPage() {
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/cases/${testCase.id}/plan`]}>
+      <StrictMode>
+      <TestRouter initialEntries={[`/cases/${testCase.id}/plan`]}>
         <Link to="/cases/another-case/plan">切换用例</Link>
         <Link to={`/cases/${testCase.id}/plan`}>返回原用例</Link>
         <Routes>
           <Route path="/cases/:caseId/plan" element={<PlanPage />} />
           <Route path="/runs/:runId" element={<div>运行已创建</div>} />
         </Routes>
-      </MemoryRouter>
+      </TestRouter>
+      </StrictMode>
     </QueryClientProvider>
   );
 }
@@ -167,7 +195,98 @@ const startButton = () => screen.getByRole("button", { name: /启动运行/ });
 const planningPosts = () => requests.filter((request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/plans"));
 
 describe("planning page", () => {
-  it("keeps conflicting actions disabled after returning to a case with pending planning", async () => {
+  it("cleans a pending subscription on unmount under StrictMode without submitting", async () => {
+    PlanningEventSource.autoReady = false;
+    renderPlanPage();
+    fireEvent.click(await screen.findByRole("button", { name: "生成计划" }));
+    await screen.findByRole("dialog", { name: "规划进度" });
+    expect(PlanningEventSource.instances).toHaveLength(1);
+    const stream = PlanningEventSource.instances[0]!;
+    await act(async () => cleanup());
+    expect(stream.close).toHaveBeenCalledOnce();
+    expect(stream.onmessage).toBeNull();
+    act(() => stream.dispatchEvent(new Event("ready")));
+    expect(planningPosts()).toHaveLength(0);
+  });
+
+  it("waits for ready, submits once, filters logs and succeeds without a terminal SSE event", async () => {
+    PlanningEventSource.autoReady = false;
+    let complete!: (response: Response) => void;
+    generateResponse = () => new Promise((resolve) => { complete = resolve; });
+    renderPlanPage();
+    fireEvent.click(await screen.findByRole("button", { name: "生成计划" }));
+    expect(await screen.findByRole("dialog", { name: "规划进度" })).toHaveAttribute("aria-busy", "true");
+    expect(planningPosts()).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "关闭" })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    const stream = PlanningEventSource.instances[0]!;
+    act(() => { stream.dispatchEvent(new Event("ready")); stream.dispatchEvent(new Event("ready")); });
+    await waitFor(() => expect(planningPosts()).toHaveLength(1));
+    const { planning_request_id } = await planningPosts()[0]!.clone().json();
+    const event = { test_case_id: testCase.id, planning_request_id, occurred_at: "2026-01-01T00:00:00Z", type: "planning.attempt_started", attempt: 1 };
+    act(() => {
+      stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ ...event, planning_request_id: "99999999-9999-4999-8999-999999999999", attempt: 2 }) }));
+      stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ ...event, test_case_id: "99999999-9999-4999-8999-999999999999", attempt: 3 }) }));
+      stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) }));
+      stream.onerror?.(new Event("error"));
+      stream.onopen?.(new Event("open"));
+      stream.dispatchEvent(new Event("ready"));
+    });
+    expect(screen.getByRole("log")).toHaveTextContent("第 1/3 次生成");
+    expect(screen.getByRole("log")).not.toHaveTextContent("第 2/3 次生成");
+    expect(screen.getByRole("log")).not.toHaveTextContent("第 3/3 次生成");
+    expect(screen.getByText(/日志连接已恢复/)).toBeInTheDocument();
+    expect(planningPosts()).toHaveLength(1);
+    plans = [savedPlan()];
+    await act(async () => complete(Response.json(plans[0], { status: 201 })));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(stream.close).toHaveBeenCalled();
+  });
+
+  it("times out before POST and clears failed logs before the next attempt", async () => {
+    PlanningEventSource.autoReady = false;
+    renderPlanPage();
+    const generateButton = await screen.findByRole("button", { name: "生成计划" });
+    vi.useFakeTimers();
+    await act(async () => { fireEvent.click(generateButton); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_001); });
+    expect(screen.getByRole("log")).toHaveTextContent("日志连接超时");
+    expect(planningPosts()).toHaveLength(0);
+    expect(PlanningEventSource.instances[0]!.close).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    await act(async () => { fireEvent.click(generateButton); });
+    expect(screen.getByRole("log")).toBeEmptyDOMElement();
+  });
+
+  it("retains the panel after request network failure and cleans the stream on unmount", async () => {
+    generateResponse = async () => { throw new TypeError("fetch failed"); };
+    renderPlanPage();
+    fireEvent.click(await screen.findByRole("button", { name: "生成计划" }));
+    expect(await screen.findByText(/规划结果未确认/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "关闭" })).toBeEnabled();
+    expect(PlanningEventSource.instances[0]!.close).toHaveBeenCalled();
+    cleanup();
+    expect(PlanningEventSource.instances[0]!.onmessage).toBeNull();
+  });
+
+  it("waits for HTTP after malformed SSE and retains a failure panel when the case disappears", async () => {
+    let complete!: (response: Response) => void;
+    generateResponse = () => new Promise((resolve) => { complete = resolve; });
+    renderPlanPage();
+    fireEvent.click(await screen.findByRole("button", { name: "生成计划" }));
+    await waitFor(() => expect(planningPosts()).toHaveLength(1));
+    const stream = PlanningEventSource.instances[0]!;
+    act(() => stream.onmessage?.(new MessageEvent("message", { data: "{}" })));
+    expect(screen.getByText(/日志不可用/)).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toHaveAttribute("aria-busy", "true");
+    archived = true;
+    await act(async () => complete(Response.json({ code: "planning_input_not_found", message: "用例已归档" }, { status: 404 })));
+    expect(await screen.findByRole("button", { name: "关闭" })).toBeEnabled();
+    expect(screen.getByRole("dialog")).toHaveTextContent("用例已归档");
+  });
+
+  it("blocks leaving the case while planning and restores actions after completion", async () => {
     plans = [savedPlan()];
     let completePlanning!: (response: Response) => void;
     generateResponse = () => new Promise((resolve) => { completePlanning = resolve; });
@@ -177,7 +296,7 @@ describe("planning page", () => {
     await waitFor(() => expect(completePlanning).toBeDefined());
 
     fireEvent.click(screen.getByRole("link", { name: "切换用例" }));
-    expect(await screen.findByRole("button", { name: "生成计划" })).toBeEnabled();
+    expect(screen.getByRole("dialog", { name: "规划进度" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: "返回原用例" }));
     expect(await screen.findByRole("button", { name: /编辑用例/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /编辑计划/ })).toBeDisabled();
@@ -247,7 +366,7 @@ describe("planning page", () => {
     expect(generate).toBeEnabled();
     fireEvent.click(generate);
     await screen.findByRole("button", { name: "重新规划" });
-    expect(await planningPosts()[0]?.json()).toEqual({ user_input: userInput || null });
+    expect(await planningPosts()[0]?.json()).toEqual({ planning_request_id: expect.any(String), user_input: userInput || null });
     expect(planningInput()).toHaveValue("");
     expect(screen.getByRole("checkbox")).not.toBeChecked();
   });
@@ -269,7 +388,7 @@ describe("planning page", () => {
     expect(planningInput()).toHaveValue("");
     expect(screen.getByRole("checkbox")).not.toBeChecked();
     expect(startButton()).toBeDisabled();
-    expect(await planningPosts()[0]?.json()).toEqual({ user_input: "细化成功标准" });
+    expect(await planningPosts()[0]?.json()).toEqual({ planning_request_id: expect.any(String), user_input: "细化成功标准" });
   });
 
   it.each([502, 409])("retains input after HTTP %s and does not automatically replan", async (status) => {
@@ -284,9 +403,29 @@ describe("planning page", () => {
     fireEvent.click(replan);
     await screen.findByText("本次规划未保存");
     if (status === 409) await screen.findByText("版本 2 · 最新");
+    fireEvent.click(await screen.findByRole("button", { name: "关闭" }));
     await waitFor(() => expect(replan).toBeEnabled());
     expect(planningInput()).toHaveValue("保留本轮输入");
     expect(planningPosts()).toHaveLength(1);
+  });
+
+  it("allows closing a confirmed planning failure while refreshing the latest plan is still pending", async () => {
+    plans = [savedPlan()];
+    let finishRefresh!: (response: Response) => void;
+    generateResponse = async () => {
+      plansResponse = () => new Promise((resolve) => { finishRefresh = resolve; });
+      return Response.json({ code: "test_plan_not_latest", message: "版本冲突，规划未保存" }, { status: 409 });
+    };
+    renderPlanPage();
+    const replan = await screen.findByRole("button", { name: "重新规划" });
+    fireEvent.change(planningInput(), { target: { value: "保留修改要求" } });
+    fireEvent.click(replan);
+    const closeButton = await screen.findByRole("button", { name: "关闭" });
+    expect(screen.getByRole("log")).toHaveTextContent("版本冲突，规划未保存");
+    expect(closeButton).toBeEnabled();
+    fireEvent.click(closeButton);
+    await act(async () => finishRefresh(Response.json({ items: [savedPlan(2)], total: 1 })));
+    expect(planningInput()).toHaveValue("保留修改要求");
   });
 
   it("requires saving manual edits before replanning and keeps input while saving", async () => {
@@ -421,9 +560,9 @@ describe("planning page", () => {
 });
 
 function renderCasesPage() {
-  render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={[`/cases/${testCase.id}/plan?search=设置`]}>
+  render(<QueryClientProvider client={queryClient}><TestRouter initialEntries={[`/cases/${testCase.id}/plan?search=设置`]}>
     <Routes><Route path="/" element={<CasesPage />} /><Route path="/cases/:caseId/plan" element={<CasesPage />} /><Route path="/runs/:runId" element={<div>运行已创建</div>} /></Routes>
-  </MemoryRouter></QueryClientProvider>);
+  </TestRouter></QueryClientProvider>);
 }
 
 it("archives from a separate inbox button, retains history wording and clears planning caches", async () => {
@@ -500,9 +639,9 @@ it("shows the saved planning input in the online report", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => Response.json(report)));
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/runs/run/report"]}>
+      <TestRouter initialEntries={["/runs/run/report"]}>
         <Routes><Route path="/runs/:runId/report" element={<ReportPage />} /></Routes>
-      </MemoryRouter>
+      </TestRouter>
     </QueryClientProvider>
   );
   expect(await screen.findByText("报告保留的规划输入")).toBeInTheDocument();

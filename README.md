@@ -21,7 +21,7 @@
 - `backend/app/domain/`：用例、计划、运行、工具目录、模型快照和事件的领域事实。
 - `backend/app/planning/`：无工具的规划流程，读取原始用例、最新计划与本轮额外输入；`execution/`：Act/Judge 共用执行图。
 - `backend/app/tools.py`：标准 stdio MCP 配置、会话和 LangChain 工具导入；不理解设备或工具参数语义。
-- `backend/app/event_stream/`：从 LangGraph updates 投影持久消息事件，提交后发布 SSE。
+- `backend/app/event_stream/`：共享有界 EventBus；执行事件经 RunEventWriter 提交后通知，规划事件仅在连接中发送。慢订阅队列溢出会断开，执行流可从数据库补拉，规划流不保留历史。
 - `frontend/`：计划编辑、实时运行、历史和报告。
 - `mcp_servers/atv_mcp/`：可信外部 ATV MCP，独立配置和安装，不参与宿主测试。
 - `mcp_servers/fake_mcp/`：独立的通用 MCP 场景/响应回放服务，不依赖 ATV。
@@ -77,8 +77,8 @@ npm.cmd run dev
 | `TEST_AGENT_TOOL_CALL_TIMEOUT_SECONDS` | 120 秒，通用工具调用与发现超时；可能包含会话重建 |
 | `TEST_AGENT_TOOL_CLEANUP_TIMEOUT_SECONDS` | 30 秒，调用中止与会话收尾的独立等待上限 |
 | `TEST_AGENT_SCREENSHOT_HISTORY_ROUNDS` | 3，State 保留原图 base64 的最近有截图决策轮数；过期图片替换为 artifact 引用 |
-| `TEST_AGENT_MODEL_CALL_MAX_ATTEMPTS` | 3，模型传输错误有限重试 |
-| `TEST_AGENT_MODEL_RESPONSE_MAX_ATTEMPTS` | 3，连续无效响应/工具错误上限 |
+| `TEST_AGENT_EXECUTION_MODEL_CALL_MAX_ATTEMPTS` | 3，执行阶段模型传输错误有限重试 |
+| `TEST_AGENT_EXECUTION_MODEL_RESPONSE_MAX_ATTEMPTS` | 3，执行阶段连续无效响应/工具错误上限 |
 
 模型参数统一放在 `models.toml` 的有序 `[[profiles]]` 中，每个 profile 独立填写 `api_key`、`base_url`、`model`、`mode` 和所需预算参数；省略的参数采用代码默认值，完整示例见 `models.example.toml`。真实模型必须设置 `mode = "real"`，并按服务实际能力填写上下文窗口与输出上限。
 
@@ -154,7 +154,9 @@ RunService 用一个工作状态管理准备、执行和清理阶段；准备阶
 
 ## API 与数据升级
 
-- `POST /api/test-cases/{id}/plans` 接受可选请求体 `{"user_input":"本轮补充或修改要求"}`。首次规划可不填写；已有计划时必须提供非空白输入，基于最新已保存计划（含人工修订）重新规划。缺少输入返回 `422 / planning_user_input_required`；生成期间参考版本变化返回 `409 / test_plan_not_latest`，不保存结果或自动重试。规划不读取设备信息。
+- `POST /api/test-cases/{id}/plans` 接受请求体 `{"planning_request_id":"客户端生成的 UUID","user_input":"本轮补充或修改要求"}`。关联 ID 必填且不持久化；首次规划的额外输入可不填写，已有计划时必须提供非空白输入，基于最新已保存计划（含人工修订）重新规划。缺少额外输入返回 `422 / planning_user_input_required`；生成期间参考版本变化返回 `409 / test_plan_not_latest`，不保存结果或自动重试。规划不读取设备信息。
+- `GET /api/test-cases/{id}/planning/stream` 订阅临时规划进度。后端注册后发送命名 `ready` 控制事件，前端收到后才 POST；后续 data 为 OpenAPI 的 PlanningEvent，按 case 路由、按 planning_request_id 筛选。Graph 使用公开 custom stream 提供模型尝试进度，服务补充请求归属、准备输入及保存阶段；校验通过不等于保存成功。
+- 规划进度在中栏粘滞弹窗中按日志追加，连接及请求期间禁止关闭、冲突操作和应用内导航；失败可查看并关闭，成功更新计划后自动清空。日志只在组件内存，关闭、离开或刷新后丢弃。初次订阅 10 秒未就绪不会提交规划；断线重连不补拉，POST 网络错误显示结果未确认，不自动重提。SSE 断线不取消规划。同 case 操作互斥，不同 case 独立。
 - `POST /api/runs` 接收 `test_plan_id` 和 `assumptions_confirmed: true`。
 - 设备查询 API 和 device 字段已删除；运行保存一个 `execution_model` 和实际工具目录。
 - 计划修订创建新版本，只允许 latest 启动；相同运行的事件只追加，重复导出创建新文件。

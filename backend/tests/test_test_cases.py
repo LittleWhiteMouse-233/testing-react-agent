@@ -1,6 +1,8 @@
 """Mutable case intent and archive boundaries preserve immutable run history."""
 from __future__ import annotations
 
+from uuid import uuid4
+
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -55,7 +57,7 @@ def test_update_and_archive_preserve_all_plan_versions_runs_and_evidence(tmp_pat
         for action, payload in [("/api/runs", {"test_plan_id": first_plan["id"], "assumptions_confirmed": True}),
                                 (f"/api/test-plans/{first_plan['id']}/revisions", {"content": revision_content})]:
             assert client.post(action, json=payload).status_code == 409
-        replanned = client.post(case_url + "/plans", json={"user_input": "采用新的名称和描述"}).json()
+        replanned = client.post(case_url + "/plans", json={"planning_request_id": str(uuid4()), "user_input": "采用新的名称和描述"}).json()
         assert replanned["planning_context"]["test_case_content"] == updated_content
 
         listed = client.get("/api/runs", params={"test_case_id": case_id}).json()
@@ -87,7 +89,7 @@ def test_update_and_archive_preserve_all_plan_versions_runs_and_evidence(tmp_pat
             assert client.get(url).status_code == 404
         assert client.patch(case_url, json=updated_content).status_code == 404
         assert client.post(case_url + "/archive").status_code == 404
-        assert client.post(case_url + "/plans", json={"user_input": "不能规划"}).status_code == 404
+        assert client.post(case_url + "/plans", json={"planning_request_id": str(uuid4()), "user_input": "不能规划"}).status_code == 404
         assert client.post(f"/api/test-plans/{replanned['id']}/revisions", json={"content": revision_content}).status_code == 404
         mcp_before = read_records(tmp_path)
         assert client.post("/api/runs", json={"test_plan_id": replanned["id"], "assumptions_confirmed": True}).status_code == 404
@@ -141,11 +143,11 @@ def test_planning_blocks_changes_until_request_finishes(tmp_path: Path, monkeypa
         monkeypatch.setattr(container.planning_graph, "generate", blocked_generate)
 
         async def exercise() -> None:
-            first = asyncio.create_task(container.planning.generate(test_case_id=case["id"]))
+            first = asyncio.create_task(container.planning.generate(test_case_id=case["id"], planning_request_id=str(uuid4())))
             await asyncio.wait_for(entered.wait(), 5)
             # Rejecting another request must not release the first's occupation.
             with pytest.raises(CaseBusy):
-                await container.planning.generate(test_case_id=case["id"])
+                await container.planning.generate(test_case_id=case["id"], planning_request_id=str(uuid4()))
             with pytest.raises(CasePlanning):
                 with container.test_case_lock.hold(case["id"], "editing"):
                     await container.repository.update_test_case(case["id"], CaseContent(name="修改", source_text="修改"))
@@ -189,7 +191,7 @@ def test_plan_page_writes_exclude_other_writes_and_run_start(
         revision_content = {**plan["content"], "tasks": [task["definition"] for task in plan["content"]["tasks"]]}
         requests = {
             "editing": ("PATCH", case_url, {"name": "修改", "source_text": "新正文"}),
-            "planning": ("POST", case_url + "/plans", {"user_input": "调整计划"}),
+            "planning": ("POST", case_url + "/plans", {"planning_request_id": str(uuid4()), "user_input": "调整计划"}),
             "revising": ("POST", f"/api/test-plans/{plan['id']}/revisions", {"content": revision_content}),
             "running": ("POST", "/api/runs", {"test_plan_id": plan["id"], "assumptions_confirmed": True}),
         }
@@ -341,7 +343,7 @@ def test_archive_reserves_case_before_database_work_and_releases_on_cancellation
                 attempts = [
                     ("GET", case_url, None), ("GET", case_url + "/plans", None),
                     ("PATCH", case_url, {"name": "不能修改", "source_text": "归档占用中"}),
-                    ("POST", case_url + "/plans", {"user_input": "不能规划"}),
+                    ("POST", case_url + "/plans", {"planning_request_id": str(uuid4()), "user_input": "不能规划"}),
                     ("POST", f"/api/test-plans/{plan['id']}/revisions", {"content": revision_content}),
                     ("POST", "/api/runs", {"test_plan_id": plan["id"], "assumptions_confirmed": True}),
                 ]

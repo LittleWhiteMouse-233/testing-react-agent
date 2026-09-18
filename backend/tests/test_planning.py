@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -38,7 +40,7 @@ def test_initial_planning_accepts_optional_input(tmp_path: Path, payload: dict |
         install_model(client, model)
         case_content = {"name": "原始用例", "source_text": "检查设置页面"}
         case = client.post("/api/test-cases", json=case_content).json()
-        response = client.post(f"/api/test-cases/{case['id']}/plans", json=payload)
+        response = client.post(f"/api/test-cases/{case['id']}/plans", json={"planning_request_id": str(uuid4()), **(payload or {})})
         assert response.status_code == 201, response.text
         plan = response.json()
         expected_input = (payload or {}).get("user_input")
@@ -59,8 +61,8 @@ def test_replanning_rejects_missing_input_before_model_call(tmp_path: Path, payl
         install_model(client, model)
         case = client.post("/api/test-cases", json={"name": "用例", "source_text": "检查画面"}).json()
         url = f"/api/test-cases/{case['id']}/plans"
-        first = client.post(url).json()
-        response = client.post(url, json=payload)
+        first = client.post(url, json={"planning_request_id": str(uuid4())}).json()
+        response = client.post(url, json={"planning_request_id": str(uuid4()), **(payload or {})})
         assert response.status_code == 422
         assert response.json()["code"] == "planning_user_input_required"
         assert len(model.invocations) == 1
@@ -74,7 +76,7 @@ def test_replanning_uses_latest_revision_and_only_current_input(tmp_path: Path) 
         case_content = {"name": "原始用例", "source_text": "检查画面"}
         case = client.post("/api/test-cases", json=case_content).json()
         url = f"/api/test-cases/{case['id']}/plans"
-        first = client.post(url, json={"user_input": "第一轮输入"}).json()
+        first = client.post(url, json={"planning_request_id": str(uuid4()), "user_input": "第一轮输入"}).json()
         revision_content = {
             **first["content"],
             "title": "人工修订标题",
@@ -86,7 +88,7 @@ def test_replanning_uses_latest_revision_and_only_current_input(tmp_path: Path) 
         assert revision_response.status_code == 201, revision_response.text
         revision = revision_response.json()
         assert revision["planning_context"] == first["planning_context"]
-        second_response = client.post(url, json={"user_input": "第二轮修改要求"})
+        second_response = client.post(url, json={"planning_request_id": str(uuid4()), "user_input": "第二轮修改要求"})
         assert second_response.status_code == 201, second_response.text
         second = second_response.json()
         messages = model.invocations[1]
@@ -102,7 +104,7 @@ def test_replanning_uses_latest_revision_and_only_current_input(tmp_path: Path) 
         }
         # Even JSON-shaped extra input must not replace the original case in the fake model.
         third_input = '{"name":"补充信息","source_text":"第三轮输入"}'
-        third_response = client.post(url, json={"user_input": third_input})
+        third_response = client.post(url, json={"planning_request_id": str(uuid4()), "user_input": third_input})
         assert third_response.status_code == 201, third_response.text
         third = third_response.json()
         assert third["derived_from_plan_id"] == second["id"]
@@ -126,7 +128,7 @@ def test_generation_rejects_concurrent_plan_writes(tmp_path: Path, monkeypatch: 
         container = install_model(client, model)
         case = client.post("/api/test-cases", json={"name": "并发用例", "source_text": "检查画面"}).json()
         url = f"/api/test-cases/{case['id']}/plans"
-        first = client.post(url).json() if existing_plan else None
+        first = client.post(url, json={"planning_request_id": str(uuid4())}).json() if existing_plan else None
         generated = Event()
         release = Event()
         original_generate = container.planning_graph.generate
@@ -134,8 +136,9 @@ def test_generation_rejects_concurrent_plan_writes(tmp_path: Path, monkeypatch: 
         async def delayed_generate(
             request: CaseContent, *, model_client: ChatModelClient,
             previous_plan: PlanDraft | None = None, user_input: str | None = None,
+            on_progress=None,
         ) -> PlanDraft:
-            draft = await original_generate(request, model_client=model_client, previous_plan=previous_plan, user_input=user_input)
+            draft = await original_generate(request, model_client=model_client, previous_plan=previous_plan, user_input=user_input, on_progress=on_progress)
             if user_input == "等待中的修改":
                 generated.set()
                 assert await asyncio.to_thread(release.wait, 10)
@@ -143,14 +146,14 @@ def test_generation_rejects_concurrent_plan_writes(tmp_path: Path, monkeypatch: 
 
         monkeypatch.setattr(container.planning_graph, "generate", delayed_generate)
         with ThreadPoolExecutor(max_workers=1) as executor:
-            pending = executor.submit(client.post, url, json={"user_input": "等待中的修改"})
+            pending = executor.submit(client.post, url, json={"planning_request_id": str(uuid4()), "user_input": "等待中的修改"})
             try:
                 assert generated.wait(10)
                 if first:
                     content = {**first["content"], "tasks": [task["definition"] for task in first["content"]["tasks"]]}
                     rejected = client.post(f"/api/test-plans/{first['id']}/revisions", json={"content": content})
                 else:
-                    rejected = client.post(url)
+                    rejected = client.post(url, json={"planning_request_id": str(uuid4())})
                 assert rejected.status_code == 409, rejected.text
                 assert rejected.json()["code"] == "test_case_busy"
             finally:
@@ -167,10 +170,10 @@ def test_planning_retry_keeps_current_context_and_failure_creates_no_version(tmp
         install_model(client, model)
         case = client.post("/api/test-cases", json={"name": "用例", "source_text": "检查画面"}).json()
         url = f"/api/test-cases/{case['id']}/plans"
-        first = client.post(url).json()
+        first = client.post(url, json={"planning_request_id": str(uuid4())}).json()
         invalid_model = ScriptedChatModelClient(plans=[{"title": "缺少任务"}, {"title": "缺少任务"}, {"title": "缺少任务"}])
         install_model(client, invalid_model)
-        failed = client.post(url, json={"user_input": "细化任务"})
+        failed = client.post(url, json={"planning_request_id": str(uuid4()), "user_input": "细化任务"})
         assert failed.status_code == 502
         assert len(invalid_model.invocations) == 3
         for messages in invalid_model.invocations:
@@ -223,8 +226,40 @@ async def test_real_planning_json_mode_validates_responses(
         ))
         graph = PlanningGraph(load_prompt("planner"))
         if invalid_attempts == 3:
-            with pytest.raises(PlanningFailure, match="Planning failed after 3 attempts"):
+            with pytest.raises(PlanningFailure, match="3 次尝试后失败"):
                 await graph.generate(case, model_client=model)
         else:
             assert await graph.generate(case, model_client=model) == expected_plan
     assert len(requests) == min(invalid_attempts + 1, 3)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "provider"])
+async def test_planning_progress_distinguishes_model_boundary_failures(monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    from app.planning.graph import PlanningAttemptProgress
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        if failure == "timeout":
+            await asyncio.Event().wait()
+        return httpx.Response(503, json={"error": {"message": "provider unavailable"}})
+
+    progress: list[PlanningAttemptProgress] = []
+
+    async def observe(event: PlanningAttemptProgress) -> None:
+        progress.append(event)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
+        monkeypatch.setattr("app.llm.client.ChatOpenAI", partial(ChatOpenAI, http_async_client=http_client, max_retries=0))
+        model = RealChatModelClient(LLMProfileSettings(
+            id="planner", mode="real", model="test", base_url="https://model.invalid/v1",
+            api_key="test-key", timeout_seconds=0.1,
+        ))
+        with pytest.raises(PlanningFailure):
+            await PlanningGraph(load_prompt("planner")).generate(
+                CaseContent(name="调用失败", source_text="检查画面"), model_client=model, on_progress=observe,
+            )
+    failures = [event for event in progress if event["type"] == "planning.attempt_failed"]
+    assert len(failures) == 3
+    expected = "模型调用超时" if failure == "timeout" else "模型调用失败"
+    for event in failures:
+        assert "reason" in event
+        assert expected in event["reason"] and "校验失败" not in event["reason"]

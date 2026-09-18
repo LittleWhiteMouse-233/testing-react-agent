@@ -15,6 +15,10 @@ export const API_ORIGIN = (import.meta.env.VITE_API_ORIGIN ?? "").replace(
 export const apiFetch = createFetchClient<paths>({ baseUrl: API_ORIGIN });
 export const $api = createQueryClient(apiFetch);
 
+export function planningEventStreamUrl(testCaseId: string): string {
+  return `${API_ORIGIN}/api/test-cases/${encodeURIComponent(testCaseId)}/planning/stream`;
+}
+
 const querySerializer = createQuerySerializer();
 
 export function artifactUrl(artifactId: string): string {

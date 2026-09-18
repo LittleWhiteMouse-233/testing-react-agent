@@ -194,6 +194,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/test-cases/{test_case_id}/planning/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stream Planning Events */
+        get: operations["stream_planning_events_api_test_cases__test_case_id__planning_stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/test-cases/{test_case_id}/plans": {
         parameters: {
             query?: never;
@@ -415,6 +432,95 @@ export interface components {
             items: components["schemas"]["TestRunListResponse"][];
             /** Total */
             total: number;
+        };
+        /**
+         * PlanningAttemptEvent
+         * @description 模型尝试开始或校验完成，需要明确本次尝试序号。
+         */
+        PlanningAttemptEvent: {
+            /** Attempt */
+            attempt: number;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Planning Request Id */
+            planning_request_id: string;
+            /** Test Case Id */
+            test_case_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "planning.attempt_started" | "planning.validated";
+        };
+        /**
+         * PlanningAttemptFailedEvent
+         * @description 可重试的单次模型失败，与整个请求失败具有不同生命周期。
+         */
+        PlanningAttemptFailedEvent: {
+            /** Attempt */
+            attempt: number;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Planning Request Id */
+            planning_request_id: string;
+            /** Reason */
+            reason: string;
+            /** Test Case Id */
+            test_case_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "planning.attempt_failed";
+        };
+        PlanningEvent: components["schemas"]["PlanningStageEvent"] | components["schemas"]["PlanningAttemptEvent"] | components["schemas"]["PlanningAttemptFailedEvent"] | components["schemas"]["PlanningFailedEvent"];
+        /**
+         * PlanningFailedEvent
+         * @description 规划请求失败；原因也可能来自输入准备或计划保存。
+         */
+        PlanningFailedEvent: {
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Planning Request Id */
+            planning_request_id: string;
+            /** Reason */
+            reason: string;
+            /** Test Case Id */
+            test_case_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "planning.failed";
+        };
+        /**
+         * PlanningStageEvent
+         * @description 输入准备与持久化阶段；不复制计划内容或数据库版本事实。
+         */
+        PlanningStageEvent: {
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Planning Request Id */
+            planning_request_id: string;
+            /** Test Case Id */
+            test_case_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "planning.input_ready" | "planning.saving" | "planning.started" | "planning.succeeded";
         };
         /**
          * ReasonCode
@@ -762,9 +868,11 @@ export interface components {
         };
         /**
          * TestPlanGenerateRequest
-         * @description HTTP 规划命令的可选输入；重新规划必填由应用服务验证。
+         * @description HTTP 规划命令及临时事件关联；重新规划额外输入由服务验证。
          */
         TestPlanGenerateRequest: {
+            /** Planning Request Id */
+            planning_request_id: string;
             /** User Input */
             user_input?: string | null;
         };
@@ -1767,6 +1875,64 @@ export interface operations {
             };
         };
     };
+    stream_planning_events_api_test_cases__test_case_id__planning_stream_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                test_case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ephemeral SSE stream. The schema describes each JSON data event; named ready precedes planning. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["PlanningEvent"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
     list_test_plans_api_test_cases__test_case_id__plans_get: {
         parameters: {
             query?: never;
@@ -1834,9 +2000,9 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
-                "application/json": components["schemas"]["TestPlanGenerateRequest"] | null;
+                "application/json": components["schemas"]["TestPlanGenerateRequest"];
             };
         };
         responses: {

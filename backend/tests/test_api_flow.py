@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 import asyncio
 import json
 import tempfile
@@ -61,7 +63,7 @@ def test_complete_message_first_run_and_exports() -> None:
 
             plan_response = client.post(
                 f"/api/test-cases/{test_case['id']}/plans",
-                json={"user_input": "检查版本号完整显示"},
+                json={"planning_request_id": str(uuid4()), "user_input": "检查版本号完整显示"},
             )
             assert plan_response.status_code == 201, plan_response.text
             plan = plan_response.json()
@@ -246,11 +248,11 @@ def test_only_latest_plan_can_start() -> None:
                 "/api/test-cases", json={"name": "Case", "source_text": "目标"}
             ).json()
             first = client.post(
-                f"/api/test-cases/{case['id']}/plans",
+                f"/api/test-cases/{case['id']}/plans", json={"planning_request_id": str(uuid4())},
             ).json()
             second = client.post(
                 f"/api/test-cases/{case['id']}/plans",
-                json={"user_input": "细化成功标准"},
+                json={"planning_request_id": str(uuid4()), "user_input": "细化成功标准"},
             ).json()
             assert second["origin"] == "replanning"
             stale_revision = client.post(

@@ -28,6 +28,7 @@ from app.domain.execution import Artifact, TestRun, TestRunStatus
 from app.domain.ids import ArtifactId, TestCaseId, TestPlanId, TestRunId
 from app.domain.errors import PlanningUserInputRequired, TestCaseBusy, TestCaseHasActiveRun, TestCasePlanning, TestPlanNotLatest
 from app.domain.planning import TestCase, TestCaseContent, TestPlan
+from app.domain.planning.events import PlanningEvent
 from app.reporting import TestRunReport
 from app.execution.run_service import RunConflict, RunResourcesUnavailable
 from app.tools import MCPConnectionError
@@ -43,11 +44,22 @@ CONFLICT_RESPONSE: dict[int | str, dict[str, Any]] = {
 BAD_GATEWAY_RESPONSE: dict[int | str, dict[str, Any]] = {
     502: API_ERROR_RESPONSE
 }
+# FastAPI applies the response class media type to additional `model` responses.
+# SSE failures still use the router's canonical ApiError JSON contract.
+JSON_ERROR_RESPONSE: dict[str, Any] = {
+    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiError"}}}
+}
 
 router = APIRouter(
     prefix="/api",
     responses={422: API_ERROR_RESPONSE, 500: API_ERROR_RESPONSE},
 )
+
+
+class EventStreamResponse(StreamingResponse):
+    """HTTP framework boundary: declare the SSE media type for runtime and OpenAPI."""
+
+    media_type = "text/event-stream"
 
 
 def container(request: Request) -> Container:
@@ -141,11 +153,12 @@ async def get_test_case(test_case_id: TestCaseId, request: Request) -> TestCase:
 )
 async def generate_plan(
     test_case_id: TestCaseId, request: Request,
-    payload: TestPlanGenerateRequest | None = None,
+    payload: TestPlanGenerateRequest,
 ) -> TestPlan:
     try:
         return await container(request).planning.generate(
-            test_case_id=test_case_id, user_input=payload.user_input if payload else None,
+            test_case_id=test_case_id, user_input=payload.user_input,
+            planning_request_id=payload.planning_request_id,
         )
     except PlanningUserInputRequired as exc:
         raise problem(422, "planning_user_input_required", str(exc)) from exc
@@ -286,13 +299,13 @@ async def cancel_test_run(test_run_id: TestRunId, request: Request) -> Response:
 
 @router.get(
     "/runs/{test_run_id}/stream",
-    response_class=StreamingResponse,
+    response_class=EventStreamResponse,
     responses={
         200: {
             "description": "Server-sent run events",
             "content": {"text/event-stream": {"schema": {"type": "string"}}},
         },
-        **NOT_FOUND_RESPONSE,
+        404: JSON_ERROR_RESPONSE, 422: JSON_ERROR_RESPONSE, 500: JSON_ERROR_RESPONSE,
     },
 )
 async def stream_run_events(
@@ -314,7 +327,7 @@ async def stream_run_events(
     async def generate() -> AsyncIterator[str]:
         cursor = max(after, last_event_id or 0)
         yield "retry: 1000\n\n"
-        async with app.event_bus.subscribe(test_run_id) as queue:
+        async with app.run_event_bus.subscribe(test_run_id) as queue:
             while True:
                 if await request.is_disconnected():
                     return
@@ -332,13 +345,53 @@ async def stream_run_events(
                         continue
                     return
                 try:
-                    await asyncio.wait_for(queue.get(), timeout=15)
+                    if await asyncio.wait_for(queue.get(), timeout=15) is None:
+                        return
                 except TimeoutError:
                     yield ": keepalive\n\n"
 
-    return StreamingResponse(
+    return EventStreamResponse(
         generate(),
-        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get(
+    "/test-cases/{test_case_id}/planning/stream",
+    response_class=EventStreamResponse,
+    responses={
+        200: {"description": "Ephemeral SSE stream. The schema describes each JSON data event; named ready precedes planning.",
+              "model": PlanningEvent,
+              "content": {"text/event-stream": {"schema": {"type": "object"}}}},
+        404: JSON_ERROR_RESPONSE, 409: JSON_ERROR_RESPONSE,
+        422: JSON_ERROR_RESPONSE, 500: JSON_ERROR_RESPONSE,
+    },
+)
+async def stream_planning_events(test_case_id: TestCaseId, request: Request) -> StreamingResponse:
+    app = container(request)
+    try:
+        app.test_case_lock.ensure_not_archiving(test_case_id)
+        await app.repository.get_test_case(test_case_id)
+    except LookupError as exc:
+        raise problem(404, "test_case_not_found", str(exc)) from exc
+    except TestCaseBusy as exc:
+        raise problem(409, "test_case_busy", str(exc)) from exc
+
+    async def generate() -> AsyncIterator[str]:
+        async with app.planning_event_bus.subscribe(test_case_id) as queue:
+            yield "retry: 1000\nevent: ready\ndata: {}\n\n"
+            while not await request.is_disconnected():
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if event is None:
+                    return
+                yield f"data: {event.model_dump_json()}\n\n"
+
+    return EventStreamResponse(
+        generate(),
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 

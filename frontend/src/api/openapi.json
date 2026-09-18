@@ -477,6 +477,207 @@
         "title": "PageResponse[TestRunListResponse]",
         "type": "object"
       },
+      "PlanningAttemptEvent": {
+        "additionalProperties": false,
+        "description": "模型尝试开始或校验完成，需要明确本次尝试序号。",
+        "properties": {
+          "attempt": {
+            "maximum": 3.0,
+            "minimum": 1.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "planning_request_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Planning Request Id",
+            "type": "string"
+          },
+          "test_case_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Test Case Id",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "planning.attempt_started",
+              "planning.validated"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "test_case_id",
+          "planning_request_id",
+          "occurred_at",
+          "type",
+          "attempt"
+        ],
+        "title": "PlanningAttemptEvent",
+        "type": "object"
+      },
+      "PlanningAttemptFailedEvent": {
+        "additionalProperties": false,
+        "description": "可重试的单次模型失败，与整个请求失败具有不同生命周期。",
+        "properties": {
+          "attempt": {
+            "maximum": 3.0,
+            "minimum": 1.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "planning_request_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Planning Request Id",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "test_case_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Test Case Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "planning.attempt_failed",
+            "default": "planning.attempt_failed",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "test_case_id",
+          "planning_request_id",
+          "occurred_at",
+          "type",
+          "attempt",
+          "reason"
+        ],
+        "title": "PlanningAttemptFailedEvent",
+        "type": "object"
+      },
+      "PlanningEvent": {
+        "discriminator": {
+          "mapping": {
+            "planning.attempt_failed": "#/components/schemas/PlanningAttemptFailedEvent",
+            "planning.attempt_started": "#/components/schemas/PlanningAttemptEvent",
+            "planning.failed": "#/components/schemas/PlanningFailedEvent",
+            "planning.input_ready": "#/components/schemas/PlanningStageEvent",
+            "planning.saving": "#/components/schemas/PlanningStageEvent",
+            "planning.started": "#/components/schemas/PlanningStageEvent",
+            "planning.succeeded": "#/components/schemas/PlanningStageEvent",
+            "planning.validated": "#/components/schemas/PlanningAttemptEvent"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/PlanningStageEvent"
+          },
+          {
+            "$ref": "#/components/schemas/PlanningAttemptEvent"
+          },
+          {
+            "$ref": "#/components/schemas/PlanningAttemptFailedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/PlanningFailedEvent"
+          }
+        ]
+      },
+      "PlanningFailedEvent": {
+        "additionalProperties": false,
+        "description": "规划请求失败；原因也可能来自输入准备或计划保存。",
+        "properties": {
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "planning_request_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Planning Request Id",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "test_case_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Test Case Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "planning.failed",
+            "default": "planning.failed",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "test_case_id",
+          "planning_request_id",
+          "occurred_at",
+          "type",
+          "reason"
+        ],
+        "title": "PlanningFailedEvent",
+        "type": "object"
+      },
+      "PlanningStageEvent": {
+        "additionalProperties": false,
+        "description": "输入准备与持久化阶段；不复制计划内容或数据库版本事实。",
+        "properties": {
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "planning_request_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Planning Request Id",
+            "type": "string"
+          },
+          "test_case_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Test Case Id",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "planning.started",
+              "planning.input_ready",
+              "planning.saving",
+              "planning.succeeded"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "test_case_id",
+          "planning_request_id",
+          "occurred_at",
+          "type"
+        ],
+        "title": "PlanningStageEvent",
+        "type": "object"
+      },
       "ReasonCode": {
         "description": "TaskRun/执行错误的稳定结果原因；它是持久化事实而非异常类型。",
         "enum": [
@@ -1462,8 +1663,13 @@
       },
       "TestPlanGenerateRequest": {
         "additionalProperties": false,
-        "description": "HTTP 规划命令的可选输入；重新规划必填由应用服务验证。",
+        "description": "HTTP 规划命令及临时事件关联；重新规划额外输入由服务验证。",
         "properties": {
+          "planning_request_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Planning Request Id",
+            "type": "string"
+          },
           "user_input": {
             "anyOf": [
               {
@@ -1476,6 +1682,9 @@
             "title": "User Input"
           }
         },
+        "required": [
+          "planning_request_id"
+        ],
         "title": "TestPlanGenerateRequest",
         "type": "object"
       },
@@ -3290,6 +3499,77 @@
         "summary": "Archive Test Case"
       }
     },
+    "/api/test-cases/{test_case_id}/planning/stream": {
+      "get": {
+        "operationId": "stream_planning_events_api_test_cases__test_case_id__planning_stream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "test_case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+              "title": "Test Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningEvent",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Ephemeral SSE stream. The schema describes each JSON data event; named ready precedes planning."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Stream Planning Events"
+      }
+    },
     "/api/test-cases/{test_case_id}/plans": {
       "get": {
         "operationId": "list_test_plans_api_test_cases__test_case_id__plans_get",
@@ -3377,18 +3657,11 @@
           "content": {
             "application/json": {
               "schema": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/TestPlanGenerateRequest"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "title": "Payload"
+                "$ref": "#/components/schemas/TestPlanGenerateRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "201": {

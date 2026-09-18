@@ -1,6 +1,7 @@
 import validateStoredRunEvent from "./generated/validateStoredRunEvent.mjs";
 import { runEventStreamUrl } from "./client";
 import type { StoredRunEvent } from "./contracts";
+import { openEventStream, type EventStreamSource } from "./eventStream";
 
 export interface RunEventStreamCallbacks {
   onEvent: (stored: StoredRunEvent) => void;
@@ -9,12 +10,7 @@ export interface RunEventStreamCallbacks {
   onConnection?: (state: "connected" | "reconnecting") => void;
 }
 
-export interface RunEventSource {
-  close: () => void;
-  onmessage: ((event: MessageEvent<string>) => void) | null;
-  onopen?: ((event: Event) => void) | null;
-  onerror?: ((event: Event) => void) | null;
-}
+export type RunEventSource = EventStreamSource;
 
 export type RunEventSourceFactory = (url: string) => RunEventSource;
 
@@ -68,25 +64,15 @@ export function openRunEventStream(
   callbacks: RunEventStreamCallbacks,
   createEventSource: RunEventSourceFactory = (url) => new EventSource(url)
 ): RunEventSource {
-  const source = createEventSource(runEventStreamUrl(testRunId, after));
-  if (callbacks.onConnection) {
-    source.onopen = () => callbacks.onConnection?.("connected");
-    source.onerror = () => callbacks.onConnection?.("reconnecting");
-  }
-  source.onmessage = (raw) => {
-    let stored: StoredRunEvent;
-    try {
-      stored = parseStoredRunEvent(raw.data);
-    } catch (error) {
-      source.close();
-      callbacks.onContractError(error);
-      return;
+  const source = openEventStream(runEventStreamUrl(testRunId, after), parseStoredRunEvent, {
+    ...callbacks,
+    onEvent: (stored) => {
+      callbacks.onEvent(stored);
+      if (isTerminalRunEvent(stored)) {
+        source.close();
+        callbacks.onTerminal();
+      }
     }
-    callbacks.onEvent(stored);
-    if (isTerminalRunEvent(stored)) {
-      source.close();
-      callbacks.onTerminal();
-    }
-  };
+  }, createEventSource);
   return source;
 }

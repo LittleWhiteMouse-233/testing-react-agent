@@ -5,7 +5,7 @@ from typing import Generic, Literal, TypeVar
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-from app.domain.ids import TestCaseId, TestPlanId
+from app.domain.ids import PlanningRequestId, TestCaseId, TestPlanId
 from app.domain.planning import TestCase, TestCaseContent, TestPlanContent, TestTaskDefinition
 from app.domain.execution import TaskRunStatus, TestRun, TestRunStatus, TestRunVerdict
 
@@ -18,10 +18,11 @@ class TestCaseCreateRequest(TestCaseContent):
 
 
 class TestPlanGenerateRequest(BaseModel):
-    """HTTP 规划命令的可选输入；重新规划必填由应用服务验证。"""
+    """HTTP 规划命令及临时事件关联；重新规划额外输入由服务验证。"""
 
     model_config = ConfigDict(extra="forbid")
 
+    planning_request_id: PlanningRequestId
     user_input: str | None = None
 
 
