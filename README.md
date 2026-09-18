@@ -226,11 +226,11 @@ cd mcp_servers/atv_mcp
 python -m src.atv_mcp --config config.yaml
 ```
 
-编辑 `mcp_servers/atv_mcp/config.yaml` 的 `serial`，确保 `mcp_servers/mcp.json` 中的 Python 命令指向具备该服务依赖的环境。默认 `command: "python"` 使用启动进程 PATH 中的 Python；通过 `start.ps1` 启动时继承终端已激活的 Python 环境。使用独立环境时，将 `command` 改为该环境 Python 的绝对路径。服务也可自行安装和部署，再按实际启动方式配置 `command`、`args` 和 `cwd`；宿主不要求安装外部 MCP 包，不读取 YAML，也不提供设备选择 API。
+编辑 `mcp_servers/atv_mcp/config.yaml` 的 `ip_address`，只填写电视 IP（如 `192.168.31.102`），服务使用 ADB 默认端口 `5555` 并自动连接，无需人工执行 `adb connect`。电视需要开启该端口的网络 ADB 并授权当前电脑；只提供 IP 不会自动发现自定义端口或完成无线调试配对。确保 `mcp_servers/mcp.json` 中的 Python 命令指向具备该服务依赖的环境。默认 `command: "python"` 使用启动进程 PATH 中的 Python；通过 `start.ps1` 启动时继承终端已激活的 Python 环境。使用独立环境时，将 `command` 改为该环境 Python 的绝对路径。服务也可自行安装和部署，再按实际启动方式配置 `command`、`args` 和 `cwd`；宿主不要求安装外部 MCP 包，不读取 YAML，也不提供设备选择 API。
 
 - `get_device_capabilities()`：按键值、说明和有效限制，供模型主动发现。
 - `execute_operations(operations)`：按序执行 `press_key`、`screenshot`、`wait`、`text`，返回原始顺序的文本和图片。
-- 两个工具参数校验通过后先探活；失败直接返回“设备断连”，不自动重连。
+- 能力查询、队列开始及每次按键、文本输入、截图命令前均检查设备状态；不可用时自动 `adb connect` 一次并复查，仍不可用才返回带连接诊断的“设备断连”。连接恢复后才发送设备操作；已发出的按键/文本命令失败时不重放。
 - 整队列预校验，禁止相邻截图。失败停止后缀，已完成动作不重放；截图只重试当前操作。
 - 默认最多 16 项、队列 60 秒、操作 15 秒、截图 3 次、显式等待 100–10000ms，均在 YAML 调整。
 - 按键/输入后默认等待 `post_action_wait_ms: 1000`；下一项是显式 wait 时不叠加。末尾动作也等待，截图和 wait 本身不附加等待。自动等待不消耗模型操作预算。

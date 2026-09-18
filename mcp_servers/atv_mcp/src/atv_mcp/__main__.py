@@ -7,6 +7,7 @@ import base64
 import re
 import shlex
 from contextlib import suppress
+from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -25,7 +26,7 @@ class ATVSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     adb_path: str = "adb"
-    serial: str = Field(min_length=1)
+    ip_address: IPv4Address | IPv6Address
     queue_max_operations: int = Field(default=16, ge=1)
     queue_timeout_seconds: float = Field(default=60, gt=0)
     operation_timeout_seconds: float = Field(default=15, gt=0)
@@ -81,15 +82,26 @@ class ATVController:
     def __init__(self, settings: ATVSettings) -> None:
         self.settings = settings
 
+    @property
+    def serial(self) -> str:
+        address = self.settings.ip_address
+        host = f"[{address}]" if isinstance(address, IPv6Address) else str(address)
+        return f"{host}:5555"
+
     async def run(self, *arguments: str) -> bytes:
+        await self.probe()
+        return await self._run_adb("-s", self.serial, *arguments)
+
+    async def _run_adb(self, *arguments: str) -> bytes:
         process = await asyncio.create_subprocess_exec(
-            self.settings.adb_path, "-s", self.settings.serial, *arguments,
+            self.settings.adb_path, *arguments,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), self.settings.operation_timeout_seconds)
             if process.returncode:
-                raise RuntimeError(stderr.decode("utf-8", errors="replace").strip() or "ADB command failed")
+                diagnostic = (stderr or stdout).decode("utf-8", errors="replace").strip()
+                raise RuntimeError(diagnostic or "ADB command failed")
             return stdout
         finally:
             with anyio.CancelScope(shield=True):
@@ -99,11 +111,24 @@ class ATVController:
                     await process.wait()
 
     async def probe(self) -> None:
-        try:
-            if (await self.run("get-state")).strip() != b"device":
-                raise RuntimeError("ADB target is not ready")
-        except (OSError, RuntimeError, TimeoutError) as exc:
-            raise RuntimeError(f"设备断连: {exc}") from exc
+        connection_output = ""
+        for attempt in range(2):
+            try:
+                state = await self._run_adb("-s", self.serial, "get-state")
+                if state.strip() != b"device":
+                    raise RuntimeError(f"ADB target is not ready: {state.decode('utf-8', errors='replace').strip()}")
+                return
+            except (OSError, RuntimeError, TimeoutError) as exc:
+                if attempt:
+                    reason = str(exc) or type(exc).__name__
+                    raise RuntimeError(f"设备断连: {self.serial}; connect: {connection_output}; {reason}") from exc
+            # ADB connect can report failure on stdout with exit code zero.
+            # Only the subsequent get-state confirms that the device is usable.
+            try:
+                connection_output = (await self._run_adb("connect", self.serial)).decode("utf-8", errors="replace").strip()
+            except (OSError, RuntimeError, TimeoutError) as exc:
+                reason = str(exc) or type(exc).__name__
+                raise RuntimeError(f"设备断连: {self.serial}; connect failed: {reason}") from exc
 
     async def screenshot(self) -> bytes:
         last_error: Exception | None = None
@@ -130,9 +155,9 @@ def build_server(settings: ATVSettings) -> FastMCP:
         async with execution_lock:
             await controller.probe()
         return {
-            "serial": settings.serial,
+            "serial": controller.serial,
             "keys": [{"key": key.value, "description": key.value.replace("_", " ").lower()} for key in RemoteKey],
-            "limits": settings.model_dump(exclude={"adb_path", "serial"}),
+            "limits": settings.model_dump(exclude={"adb_path", "ip_address"}),
         }
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False), structured_output=False)
@@ -164,10 +189,10 @@ def build_server(settings: ATVSettings) -> FastMCP:
                     raise ValueError("Consecutive screenshots are forbidden")
             async with execution_lock:
                 position = 0
-                await controller.probe()
-                execution_started = True
                 deadline = anyio.current_time() + settings.queue_timeout_seconds
                 with anyio.fail_after(settings.queue_timeout_seconds):
+                    await controller.probe()
+                    execution_started = True
                     for position, operation in enumerate(operations):
                         await checkpoint()
                         # Honor request cancellation between bounded device commands.
