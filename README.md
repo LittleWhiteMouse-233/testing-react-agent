@@ -25,7 +25,7 @@
 - `frontend/`：计划编辑、实时运行、历史和报告。
 - `mcp_servers/atv_mcp/`：可信外部 ATV MCP，独立配置和安装，不参与宿主测试。
 - `mcp_servers/fake_mcp/`：独立的通用 MCP 场景/响应回放服务，不依赖 ATV。
-- `mcp.json`：宿主连接配置；`data/`：忽略的运行数据库、checkpoint、证据和导出。
+- `mcp_servers/mcp.json`：宿主连接配置；`data/`：忽略的运行数据库、checkpoint、证据和导出。
 
 宿主及其测试不 import 外部包，不管理设备 ID、状态、探活或配置。第三方工具只需通过 MCP 提供 schema 和结果；不需要实现项目专属的 scopes、manifest 或设备接口。
 
@@ -39,17 +39,27 @@
 .\install.cmd
 ```
 
-安装脚本分别检查前后端依赖，通过检查的部分直接跳过；未通过时才调用包管理器安装，并在安装后复查。后端使用 pip 默认的增量安装，保留满足要求的第三方包；前端使用 `npm install --include=dev`，保留已有 `node_modules`，不使用会清空它的 `npm ci`。安装意外中止后重新运行即可复用已完成的部分；未完成或版本不兼容的包仍需要安装，后端本地项目的 editable 注册可能重新生成。独立 MCP 服务仍按各自说明安装。
+安装脚本先检查 Conda、`llm-dev` 中的 Python 和 Node/npm，再始终执行两端增量安装，由包管理器判断需要更新的依赖；每端安装后复用基础自检。后端使用 `pip install -e "./backend[dev]"`，前端使用 `npm install --include=dev`，不清空环境或 `node_modules`。安装中止后可重新运行；editable 注册可能重新生成。失败时保留包管理器诊断并指出阶段。独立 MCP 服务仍按各自说明安装。
 
 完成依赖安装后，Windows 日常启动只需在仓库根目录运行：
 
 ```powershell
-.\start.cmd
+.\start.ps1
 ```
 
-脚本自动设置 Python UTF-8，先执行数据库迁移，再在同一个终端运行后端和前端；迁移失败时不会启动服务。打开 http://localhost:5173 使用应用，后端监听 `127.0.0.1:8000`（单 worker）。日志以 `backend` / `frontend` 区分，按 Ctrl+C 停止两个服务；任一服务退出时另一个也会停止。5173 被占用时直接报错，不会自动切换到其他端口。
+若 PowerShell 的脚本执行策略阻止启动，可使用仅对本次进程生效的命令，不修改用户或系统策略：
 
-启动入口先调用 `check-dependencies.cmd` 检查依赖，失败时提示运行 `install.cmd` 并退出，不自动安装。检查通过后才执行数据库迁移和服务启动。检查包括后端项目安装记录、启动/开发工具导入与 `pip check`，以及前端依赖树和启动工具；它不校验每个已安装文件的完整性。模型配置变更后重新运行启动命令。
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
+```
+
+入口自动设置 Python UTF-8、初始化并激活现有 `llm-dev` 环境；无需提前执行 `conda init powershell`。基础自检通过后，Python 启动器先执行数据库迁移，再直接运行后端和前端；迁移失败不会启动服务。打开 http://localhost:5173 使用应用，后端监听 `127.0.0.1:8000`（单 worker）。日志以 `backend` / `frontend` 区分；任一服务意外退出时另一个也会停止。端口被占用时直接报错，不会自动切换端口。
+
+首次 Ctrl+C 立即显示停止提示，停止 Vite 并请求后端正常关闭，不需要回车或 Y/N。后端最多等待三秒让已有 HTTP 请求结束，随后中断仍打开的 SSE，进入应用关闭流程，取消运行、保存终态并清理 MCP。三秒不包含业务收尾时间，正常运行的 SSE 不受影响。关闭时页面可能收不到最终取消事件，重启后可查询持久化结果；取消收尾故障仍按现有规则记录为 BLOCKED，已经完成的运行不会被改写。再次 Ctrl+C 会明确提示并强制结束本次启动的进程树，结果可能未保存。安装和基础自检仍是短时批处理，手动中断它们时可能出现 Windows 的批处理确认。
+
+`check-dependencies.cmd` 只做离线、只读的基础自检：检查基础工具、后端项目安装记录与 Alembic/Uvicorn 导入、前端直接依赖与 Vite 入口。无参数检查两端并汇总，也支持 `backend` 或 `frontend`；退出码 0 为通过、1 为失败、2 为参数错误。它不加载应用，不验证模型配置、凭据、数据库、端口、MCP、电视或完整依赖文件，不承担保证应用可用的责任。启动检查失败不会自动安装，按提示补齐前置工具或运行 `install.cmd`。模型配置变更后需重启。
+
+需要排查整个 Conda 环境的依赖冲突时，可单独运行 `$env:PYTHONUTF8 = "1"; conda run --no-capture-output -n llm-dev python -m pip check`；此检查不作为应用启动门槛。
 
 开发时仍可单独启动各服务：
 
@@ -73,7 +83,7 @@ npm.cmd run dev
 | `TEST_AGENT_MODEL_CONFIG_PATH` | 默认 `./models.toml`；模型配置文件，相对路径从仓库根目录解析 |
 | `TEST_AGENT_PLANNING_MODEL_ID` | 规划模型 ID，未设或留空时使用首个 profile |
 | `TEST_AGENT_EXECUTION_MODEL_ID` | Act/Judge 共用模型 ID，未设或留空时使用首个 profile |
-| `TEST_AGENT_MCP_CONFIG_PATH` | 仓库根目录 `mcp.json`，相对路径从根目录解析 |
+| `TEST_AGENT_MCP_CONFIG_PATH` | 默认 `mcp_servers/mcp.json`，相对路径从仓库根目录解析 |
 | `TEST_AGENT_TOOL_CALL_TIMEOUT_SECONDS` | 120 秒，通用工具调用与发现超时；可能包含会话重建 |
 | `TEST_AGENT_TOOL_CLEANUP_TIMEOUT_SECONDS` | 30 秒，调用中止与会话收尾的独立等待上限 |
 | `TEST_AGENT_SCREENSHOT_HISTORY_ROUNDS` | 3，State 保留原图 base64 的最近有截图决策轮数；过期图片替换为 artifact 引用 |
@@ -96,7 +106,7 @@ TEST_AGENT_EXECUTION_MODEL_ID=vision
 
 旧的 `ADB_*`、Act/Judge 模型路由和设备操作参数已移除。模型上下文预算仍由 profile 的 context window、输出保留、图片 token 估计和安全余量共同决定。
 
-`mcp.json` 使用 `mcpServers`，每个连接支持 `command`、`args`、`env`、`cwd`，首版仅 stdio。`cwd` 相对于配置文件解析；命令直接启动，不经过 shell。MCP SDK 继承其标准进程环境，再应用显式 `env`。不同服务的工具加服务名前缀。
+`mcp_servers/mcp.json` 使用 `mcpServers`，每个连接支持 `command`、`args`、`env`、`cwd`，首版仅 stdio。`cwd` 相对于配置文件解析，例如 `atv_mcp` 指向 `mcp_servers/atv_mcp/`；命令直接启动，不经过 shell。MCP SDK 继承其标准进程环境，再应用显式 `env`。不同服务的工具加服务名前缀。
 
 连接在一次运行内复用；运行开始冻结实际工具目录，运行中不热加载。Planning 和历史查询不连接 MCP；配置/连接/发现失败时创建运行接口返回 502。只启用此次运行需要的服务。
 
@@ -109,7 +119,7 @@ $env:PYTHONUTF8 = "1"
 conda run -n llm-dev python -m pip install -e ./mcp_servers/atv_mcp
 ```
 
-编辑 `mcp_servers/atv_mcp/config.yaml` 的 `serial`，确保 `mcp.json` 中的 Python 命令指向安装该包的环境。宿主不读取 YAML，也不提供设备选择 API。
+编辑 `mcp_servers/atv_mcp/config.yaml` 的 `serial`，确保 `mcp_servers/mcp.json` 中的 Python 命令指向安装该包的环境。宿主不读取 YAML，也不提供设备选择 API。
 
 - `get_device_capabilities()`：按键值、说明和有效限制，供模型主动发现。
 - `execute_operations(operations)`：按序执行 `press_key`、`screenshot`、`wait`、`text`，返回原始顺序的文本和图片。

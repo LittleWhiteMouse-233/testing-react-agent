@@ -187,10 +187,12 @@ class RunService:
         self._closing = True
         work = self._work
         if work is not None and work.task is not None:
+            logger.info("Requesting run cancellation and waiting for cleanup: %s", work.test_run_id)
             work.cancellation.set()
             if work.test_run_id is None and not work.task.cancelling():
                 work.task.cancel()
             await asyncio.gather(work.task, return_exceptions=True)
+            logger.info("Run shutdown wait ended: %s", work.test_run_id)
 
     async def cancel(self, test_run_id: str) -> bool:
         run = await self.repository.get_test_run(test_run_id)

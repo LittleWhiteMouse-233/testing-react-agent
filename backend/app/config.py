@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     planning_model_id: str | None = None
     execution_model_id: str | None = None
 
-    mcp_config_path: Path = PROJECT_ROOT / "mcp.json"
+    mcp_config_path: Path = PROJECT_ROOT / "mcp_servers" / "mcp.json"
     tool_call_timeout_seconds: float = Field(default=120, gt=0)
     tool_cleanup_timeout_seconds: float = Field(default=30, gt=0)
     screenshot_history_rounds: int = Field(default=3, ge=1)
