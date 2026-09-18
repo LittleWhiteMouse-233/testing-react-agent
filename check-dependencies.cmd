@@ -22,17 +22,17 @@ exit /b 0
 
 :backend
 echo [backend] Checking basic dependencies...
-where conda >nul 2>nul
+where python >nul 2>nul
 if errorlevel 1 (
-    echo [backend] FAIL: Conda is unavailable. Install Conda and add it to PATH.
+    echo [backend] FAIL: Python is unavailable. Activate your Python environment and ensure python is on PATH.
     exit /b 1
 )
-call conda run --no-capture-output -n llm-dev python --version
+call python --version
 if errorlevel 1 (
-    echo [backend] FAIL: Cannot run Python in llm-dev. Create or repair that Conda environment.
+    echo [backend] FAIL: Cannot run Python. Activate or repair your Python environment.
     exit /b 1
 )
-call conda run --no-capture-output -n llm-dev python -c "from importlib.metadata import version; version('android-tv-test-agent'); import alembic, uvicorn"
+call python -c "from importlib.metadata import version; version('android-tv-test-agent'); import alembic, uvicorn"
 if errorlevel 1 (
     echo [backend] FAIL: Basic project dependencies are missing or invalid. Run install.cmd.
     exit /b 1

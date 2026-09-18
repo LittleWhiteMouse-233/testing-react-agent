@@ -23,51 +23,155 @@
 - `backend/app/tools.py`：标准 stdio MCP 配置、会话和 LangChain 工具导入；不理解设备或工具参数语义。
 - `backend/app/event_stream/`：共享有界 EventBus；执行事件经 RunEventWriter 提交后通知，规划事件仅在连接中发送。慢订阅队列溢出会断开，执行流可从数据库补拉，规划流不保留历史。
 - `frontend/`：计划编辑、实时运行、历史和报告。
-- `mcp_servers/atv_mcp/`：可信外部 ATV MCP，独立配置和安装，不参与宿主测试。
+- `mcp_servers/atv_mcp/`：可信外部 ATV MCP，独立部署、配置和依赖管理，不参与宿主测试。
 - `mcp_servers/fake_mcp/`：独立的通用 MCP 场景/响应回放服务，不依赖 ATV。
 - `mcp_servers/mcp.json`：宿主连接配置；`data/`：忽略的运行数据库、checkpoint、证据和导出。
 
 宿主及其测试不 import 外部包，不管理设备 ID、状态、探活或配置。第三方工具只需通过 MCP 提供 schema 和结果；不需要实现项目专属的 scopes、manifest 或设备接口。
 
+`mcp_servers/` 中的服务是独立外挂，不是应用依赖。用户按各服务自己的安装策略准备运行环境和依赖，再配置宿主的启动命令。即使服务选择复用应用的 Python 环境，其缺少导入包也属于该 MCP 服务的依赖缺失，不属于应用依赖缺失。宿主依赖中的 `mcp` 和 `langchain-mcp-adapters` 用于客户端协议接入，不代表宿主负责安装外部服务及其依赖。
+
 ## 安装和启动
 
-首次使用时，复制 `.env.example` 为 `.env`，并复制 `models.example.toml` 为 `models.toml`。在 `models.toml` 中配置各模型的连接、API key 和参数，在 `.env` 中选择规划与执行模型并配置 MCP。默认 scripted 模型只用于测试；没有显式执行场景时返回 blocked，不会猜测工具名称或伪造截图。
+以下示例均从仓库根目录开始，使用当前环境的 `python`，不要求特定环境名称。
 
-安装依赖（需已安装 Conda、Node.js，并创建 `llm-dev` 环境，在仓库根目录运行）：
+### 1. 环境准备
+
+#### 运行环境与配置
+
+- Python 3.12 或 3.13：使用自己选择的环境管理方式创建和激活 Python 环境；若终端已自动激活目标环境，无需重复激活。
+- Node.js/npm：当前锁定的 Vite 要求 Node.js `^20.19.0 || >=22.12.0`，确保 `node` 和 `npm.cmd` 在 PATH 中可用。
+- 首次使用时，复制 `.env.example` 为 `.env`，并复制 `models.example.toml` 为 `models.toml`。在 `models.toml` 中配置各模型的连接、API key 和参数，在 `.env` 中选择规划与执行模型并配置 MCP。模型配置变更后需重启。
+
+默认 scripted 模型只用于测试；没有显式执行场景时返回 blocked，不会猜测工具名称或伪造截图。
+
+#### 依赖安装与快捷脚本
+
+仓库提供以下本地开发快捷脚本。运行前须先激活自己的 Python 环境；脚本均使用当前 PATH 中的 `python`，不依赖 Conda、不选择或切换环境。
+
+| 脚本 | 用途 |
+|---|---|
+| `install.cmd` | 检查基础工具，增量安装前后端依赖，并在每端安装后执行基础自检 |
+| `check-dependencies.cmd` | 离线、只读的基础依赖自检，可单独运行 |
+| `start.ps1` | PowerShell 启动入口，自检后启动前后端 |
+| `start.cmd` | CMD 启动入口，也可从 PowerShell 调用 |
+
+快捷安装（PowerShell 示例）：
 
 ```powershell
 .\install.cmd
 ```
 
-安装脚本先检查 Conda、`llm-dev` 中的 Python 和 Node/npm，再始终执行两端增量安装，由包管理器判断需要更新的依赖；每端安装后复用基础自检。后端使用 `pip install -e "./backend[dev]"`，前端使用 `npm install --include=dev`，不清空环境或 `node_modules`。安装中止后可重新运行；editable 注册可能重新生成。失败时保留包管理器诊断并指出阶段。独立 MCP 服务仍按各自说明安装。
+也可直接执行安装命令：
 
-完成依赖安装后，Windows 日常启动只需在仓库根目录运行：
+```powershell
+$env:PYTHONUTF8 = "1"
+python -m pip install -e "./backend[dev]"
+npm.cmd --prefix frontend install --include=dev
+```
+
+后端安装开发依赖，前端包含 Vite 等开发依赖。PowerShell 示例使用 `npm.cmd`，避免 `npm.ps1` 的执行策略限制。
+
+安装脚本先检查当前 Python 和 Node/npm，再始终执行两端增量安装，由包管理器判断需要更新的依赖；每端安装后复用基础自检。不清空环境或 `node_modules`，安装中止后可重新运行；editable 注册可能重新生成。失败时保留包管理器诊断并指出阶段。
+
+`install.cmd` 不扫描 `mcp_servers/` 的依赖描述文件，也不安装外部服务或其依赖；当前没有附带安装 MCP 依赖的可选开关。外部 MCP 服务需按各自的安装策略单独准备。
+
+#### 基础自检与依赖排查
+
+```powershell
+.\check-dependencies.cmd
+# 也可只检查一端
+.\check-dependencies.cmd backend
+.\check-dependencies.cmd frontend
+```
+
+`check-dependencies.cmd` 只做离线、只读的基础自检：检查基础工具、后端项目安装记录与 Alembic/Uvicorn 导入、前端直接依赖与 Vite 入口。无参数检查两端并汇总，也支持 `backend` 或 `frontend`；退出码 0 为通过、1 为失败、2 为参数错误。它不加载应用，不验证模型配置、凭据、数据库、端口、MCP、电视或完整依赖文件，不承担保证应用可用的责任。启动检查失败不会自动安装，按提示补齐前置工具或运行 `install.cmd`。
+
+需要排查当前 Python 环境的依赖冲突时，可单独运行：
+
+```powershell
+$env:PYTHONUTF8 = "1"
+python -m pip check
+```
+
+此检查不作为应用启动门槛。安装和基础自检是短时批处理，手动中断它们时可能出现 Windows 的批处理确认。
+
+### 2. PowerShell 启动入口
+
+完成依赖安装并激活目标 Python 环境后，在仓库根目录运行：
 
 ```powershell
 .\start.ps1
 ```
 
-若 PowerShell 的脚本执行策略阻止启动，可使用仅对本次进程生效的命令，不修改用户或系统策略：
+#### 脚本执行策略限制
+
+若脚本执行策略阻止启动，可使用仅对本次进程生效的命令，不修改用户或系统策略：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-入口自动设置 Python UTF-8、初始化并激活现有 `llm-dev` 环境；无需提前执行 `conda init powershell`。基础自检通过后，Python 启动器先执行数据库迁移，再直接运行后端和前端；迁移失败不会启动服务。打开 http://localhost:5173 使用应用，后端监听 `127.0.0.1:8000`（单 worker）。日志以 `backend` / `frontend` 区分；任一服务意外退出时另一个也会停止。端口被占用时直接报错，不会自动切换端口。
+这条命令只处理 `start.ps1` 的执行策略限制，不会初始化 Conda 或选择 Python 环境；它继承父终端的 PATH，仍须确保 PATH 中的 `python` 来自目标环境。不想使用 PowerShell 脚本入口时，也可使用下节的 `start.cmd`。
 
-首次 Ctrl+C 立即显示停止提示，停止 Vite 并请求后端正常关闭，不需要回车或 Y/N。后端最多等待三秒让已有 HTTP 请求结束，随后中断仍打开的 SSE，进入应用关闭流程，取消运行、保存终态并清理 MCP。三秒不包含业务收尾时间，正常运行的 SSE 不受影响。关闭时页面可能收不到最终取消事件，重启后可查询持久化结果；取消收尾故障仍按现有规则记录为 BLOCKED，已经完成的运行不会被改写。再次 Ctrl+C 会明确提示并强制结束本次启动的进程树，结果可能未保存。安装和基础自检仍是短时批处理，手动中断它们时可能出现 Windows 的批处理确认。
+#### Conda 无法激活环境
 
-`check-dependencies.cmd` 只做离线、只读的基础自检：检查基础工具、后端项目安装记录与 Alembic/Uvicorn 导入、前端直接依赖与 Vite 入口。无参数检查两端并汇总，也支持 `backend` 或 `frontend`；退出码 0 为通过、1 为失败、2 为参数错误。它不加载应用，不验证模型配置、凭据、数据库、端口、MCP、电视或完整依赖文件，不承担保证应用可用的责任。启动检查失败不会自动安装，按提示补齐前置工具或运行 `install.cmd`。模型配置变更后需重启。
+PowerShell 中能运行 `conda` 不代表能使用 `conda activate`：激活环境需要加载 Conda 的 PowerShell 初始化代码。未执行过 `conda init powershell`、未加载终端配置，或执行策略禁止加载 `Conda.psm1` 时，激活可能失败；仅能找到 `conda.bat` 也不代表当前 PowerShell 已切换环境。可用以下命令检查实际使用的 Python 路径：
 
-需要排查整个 Conda 环境的依赖冲突时，可单独运行 `$env:PYTHONUTF8 = "1"; conda run --no-capture-output -n llm-dev python -m pip check`；此检查不作为应用启动门槛。
+```powershell
+python -c "import sys; print(sys.executable)"
+```
 
-开发时仍可单独启动各服务：
+不想修改 PowerShell 执行策略时，可使用下节的 CMD 方式（需能识别 `conda`，也可使用 Miniconda/Anaconda Prompt），或在 PowerShell 中直接执行：
+
+```powershell
+$env:PYTHONUTF8 = "1"
+conda run --no-capture-output -n llm-dev .\start.cmd
+```
+
+`conda run` 为本次启动选择环境，无需在当前 PowerShell 中执行 `conda activate`；`start.cmd` 仍会完成依赖自检并调用 Python 启动器。`llm-dev` 只是环境名示例，请替换成已安装项目依赖的环境。直接运行 `start.cmd` 本身不会自动切换到 `llm-dev`。
+
+#### 启动后会执行的操作与停止方式
+
+入口自动设置 Python UTF-8，沿用终端已经激活的 Python 环境，并依次执行：
+
+1. 运行基础依赖自检，失败则停止，不自动安装依赖。
+2. 调用 Python 启动器执行数据库迁移，迁移失败不会启动服务。
+3. 启动后端和前端。打开 http://localhost:5173 使用应用，后端监听 `127.0.0.1:8000`（单 worker）。
+
+日志以 `backend` / `frontend` 区分；任一服务意外退出时另一个也会停止。端口被占用时直接报错，不会自动切换端口。
+
+通过 `start.ps1` 启动时，首次 Ctrl+C 立即显示停止提示，停止 Vite 并请求后端正常关闭，不需要回车或 Y/N。后端最多等待三秒让已有 HTTP 请求结束，随后中断仍打开的 SSE，进入应用关闭流程，取消运行、保存终态并清理 MCP。三秒不包含业务收尾时间，正常运行的 SSE 不受影响。
+
+关闭时页面可能收不到最终取消事件，重启后可查询持久化结果；取消收尾故障仍按现有规则记录为 BLOCKED，已经完成的运行不会被改写。再次 Ctrl+C 会明确提示并强制结束本次启动的进程树，结果可能未保存。
+
+### 3. CMD 启动入口
+
+在 CMD 中激活已安装依赖的 Python 环境后运行。使用 Conda 的示例：
+
+```cmd
+conda activate llm-dev
+start.cmd
+```
+
+也可在已激活目标环境的 PowerShell 中运行：
+
+```powershell
+.\start.cmd
+```
+
+与 `start.ps1` 相比，`start.cmd` 无需修改 PowerShell 执行策略，但也不会初始化 Conda 或切换 Python 环境。两者复用相同的基础自检、Python 启动器和关闭处理，启动顺序、端口、日志及服务联动停止行为相同；CMD 在 Ctrl+C 时可能额外询问是否终止批处理（Y/N）。
+
+### 4. 前后端分别用命令行启动
+
+完成上述环境准备后，也可直接启动各服务。后端终端先激活自己准备的应用 Python 环境；以下两个终端均从仓库根目录开始：
 
 ```powershell
 # 后端终端
 $env:PYTHONUTF8 = "1"
 cd backend
-conda run --no-capture-output -n llm-dev python -m uvicorn app.main:app --port 8000
+python -m alembic upgrade head
+python -m uvicorn app.main:app --port 8000
 ```
 
 ```powershell
@@ -75,6 +179,8 @@ conda run --no-capture-output -n llm-dev python -m uvicorn app.main:app --port 8
 cd frontend
 npm.cmd run dev
 ```
+
+分别启动时需自行执行数据库迁移，并在两个终端分别停止服务。
 
 ## 宿主配置
 
@@ -112,14 +218,15 @@ TEST_AGENT_EXECUTION_MODEL_ID=vision
 
 ## 独立 ATV MCP
 
-ATV 仅作为示例外部服务。需要使用时单独安装：
+ATV 仅作为示例外部服务。用户需按该服务自己的 `pyproject.toml` 准备依赖和运行环境。默认 MCP 配置在 `mcp_servers/atv_mcp/` 工作目录直接从源码启动，无需安装 ATV 包。以下命令应在用户为 ATV 准备的 Python 环境中执行（从仓库根目录开始）：
 
 ```powershell
 $env:PYTHONUTF8 = "1"
-conda run -n llm-dev python -m pip install -e ./mcp_servers/atv_mcp
+cd mcp_servers/atv_mcp
+python -m src.atv_mcp --config config.yaml
 ```
 
-编辑 `mcp_servers/atv_mcp/config.yaml` 的 `serial`，确保 `mcp_servers/mcp.json` 中的 Python 命令指向安装该包的环境。宿主不读取 YAML，也不提供设备选择 API。
+编辑 `mcp_servers/atv_mcp/config.yaml` 的 `serial`，确保 `mcp_servers/mcp.json` 中的 Python 命令指向具备该服务依赖的环境。默认 `command: "python"` 使用启动进程 PATH 中的 Python；通过 `start.ps1` 启动时继承终端已激活的 Python 环境。使用独立环境时，将 `command` 改为该环境 Python 的绝对路径。服务也可自行安装和部署，再按实际启动方式配置 `command`、`args` 和 `cwd`；宿主不要求安装外部 MCP 包，不读取 YAML，也不提供设备选择 API。
 
 - `get_device_capabilities()`：按键值、说明和有效限制，供模型主动发现。
 - `execute_operations(operations)`：按序执行 `press_key`、`screenshot`、`wait`、`text`，返回原始顺序的文本和图片。
@@ -192,10 +299,9 @@ RunService 用一个工作状态管理准备、执行和清理阶段；准备阶
 ```powershell
 $env:PYTHONUTF8 = "1"
 cd backend
-conda run -n llm-dev python -m pytest -q
-conda run -n llm-dev python -m pyright
-conda run -n llm-dev python -m pyright ../mcp_servers
-conda run -n llm-dev python scripts/export_openapi.py ../frontend/src/api/openapi.json
+python -m pytest -q
+python -m pyright
+python scripts/export_openapi.py ../frontend/src/api/openapi.json
 cd ../frontend
 npm.cmd run generate:api
 npm.cmd test
@@ -204,7 +310,7 @@ npm.cmd run check:api
 npm.cmd run build
 ```
 
-静态检查独立包时需要其声明的依赖和 PyYAML 类型存根；这不要求启动 ATV。自动化不使用网络、真实模型密钥或电视。核心验证包括通用工具闭环、取消/超时、图片窗口、事件顺序、证据归属、计划版本、并发限制和导出。
+上述应用检查应在已安装应用开发依赖的 Python 环境中执行。独立 MCP 包的静态检查由用户在该服务的环境中单独执行（例如从仓库根目录运行 `python -m pyright mcp_servers/atv_mcp`），需自行准备检查工具、服务依赖和 PyYAML 类型存根；这不属于应用依赖安装或检查，也不要求启动 ATV。自动化不使用网络、真实模型密钥或电视。核心验证包括通用工具闭环、取消/超时、图片窗口、事件顺序、证据归属、计划版本、并发限制和导出。
 
 MCP 适配器和 SDK 分别固定为 0.3.2、1.30.0。应用使用[官方适配器](https://github.com/langchain-ai/langchain-mcp-adapters/tree/v0.3.2)、公开 session、ToolNode wrapper、消息 reducer 和 checkpointer API。产品代码只补充框架不拥有的证据存储、轮数预算、必需任务上下文和视觉窗口；不读取私有 checkpoint 表、不复制消息协议。结构化返回值保留为消息文本，并清除嵌套的重复图片字节。
 

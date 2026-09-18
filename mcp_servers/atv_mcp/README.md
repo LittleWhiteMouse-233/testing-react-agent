@@ -2,7 +2,13 @@
 
 Independent, trusted Android TV MCP service. The host connects through stdio and does not import this package or read its configuration. Host tests do not install, launch or test it.
 
-Install this directory with `python -m pip install -e .`. Configure `serial` and ADB settings in `config.yaml`, then run:
+With the dependencies declared in `pyproject.toml` available, configure `serial` and ADB settings in `config.yaml`, then run directly from this directory without installing the ATV package:
+
+```text
+python -m src.atv_mcp --config config.yaml
+```
+
+This is the launch mode used by the repository's default MCP configuration. Alternatively, install this directory with `python -m pip install -e .` and run:
 
 ```text
 atv-mcp --config config.yaml
