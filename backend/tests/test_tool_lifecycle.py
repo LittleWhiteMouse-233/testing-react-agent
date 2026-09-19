@@ -23,23 +23,31 @@ from app.artifacts import ArtifactStore
 from app.domain import planning
 from app.domain.execution import TaskAgentCompletion
 from app.domain.errors import TaskAgentCancelled, ToolCallError, ToolCleanupError, describe_exception
-from app.execution.task_agent import TaskAgentGraphState, _TaskRuntime
+from app.execution.task_agent import TaskAgentGraphState, TaskAgentInput, _TaskRuntime
 from app.llm import ScriptedChatModelClient
 from app.prompts import load_prompt
 
 
 @pytest.fixture
 def task_runtime() -> _TaskRuntime:
+    model_client = ScriptedChatModelClient()
+    prompt = load_prompt("act")
     return _TaskRuntime(
         artifacts=create_autospec(ArtifactStore, instance=True),
-        run_cancellation_event=asyncio.Event(), task_run_id=str(uuid4()),
-        task=planning.TestTask(test_task_id=str(uuid4()), definition=planning.TestTaskDefinition(
-            type=planning.TestTaskType.ACT, title="Observe", goal="Observe the target",
-            success_criteria=["Expected content is visible"],
-        )),
-        previous_task_runs=[], tools=(), model_client=ScriptedChatModelClient(),
-        prompt_definition=load_prompt("act"), model_response_max_attempts=3,
-        max_cycles=3, screenshot_history_rounds=1, tool_call_timeout_seconds=5,
+        run_cancellation_event=asyncio.Event(),
+        task_input=TaskAgentInput(
+            task_run_id=str(uuid4()),
+            task=planning.TestTask(test_task_id=str(uuid4()), definition=planning.TestTaskDefinition(
+                type=planning.TestTaskType.ACT, title="Observe", goal="Observe the target",
+                success_criteria=["Expected content is visible"],
+            )),
+            previous_task_runs=(), max_cycles=3, screenshot_history_rounds=1,
+            expected_model_profile=model_client.profile_snapshot,
+            expected_prompt_version=prompt.version,
+        ),
+        tools=(), model_client=model_client,
+        prompt_definition=prompt, model_response_max_attempts=3,
+        tool_call_timeout_seconds=5,
     )
 
 

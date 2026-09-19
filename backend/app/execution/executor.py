@@ -34,14 +34,13 @@ from app.domain.execution import (
     TestRunVerdict,
     aggregate_test_run_verdict,
 )
-from app.domain.planning import TestTask
-from app.domain.resources.llm import LLMProfileSnapshot
+from app.domain.planning import TestTask, TestTaskType
 from app.execution.signals import (
     GRAPH_SIGNAL_ADAPTER,
     MessageValidationSignal,
     ToolStartedSignal,
 )
-from app.execution.task_agent import TaskAgentFactory
+from app.execution.task_agent import TaskAgentFactory, TaskAgentInput
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.event_stream.projector import project_run_message
 
@@ -86,24 +85,27 @@ class RunExecutor:
                         remaining_after_active_task = list(
                             detail.test_plan.content.tasks[index + 1 :]
                         )
-                        completion = await self._execute_task(
-                            test_run_id=test_run_id,
-                            task_run=active_task,
-                            test_task=test_task,
-                            tools=tools,
+                        task_input = TaskAgentInput(
+                            task_run_id=active_task.id,
+                            task=test_task,
                             max_cycles=(detail.environment.act_max_cycles
-                                        if test_task.definition.type.value == "act"
+                                        if test_task.definition.type == TestTaskType.ACT
                                         else detail.environment.judge_max_cycles),
                             screenshot_history_rounds=detail.environment.screenshot_history_rounds,
-                            previous_task_runs=completed,
+                            previous_task_runs=tuple(completed),
                             expected_model_profile=(
                                 detail.environment.execution_model
                             ),
                             expected_prompt_version=(
                                 detail.environment.act_prompt_version
-                                if test_task.definition.type.value == "act"
+                                if test_task.definition.type == TestTaskType.ACT
                                 else detail.environment.judge_prompt_version
                             ),
+                        )
+                        completion = await self._execute_task(
+                            test_run_id=test_run_id,
+                            task_input=task_input,
+                            tools=tools,
                             run_cancellation_event=run_cancellation_event,
                             checkpointer=checkpointer,
                             on_cleanup_failure=on_cleanup_failure,
@@ -175,27 +177,15 @@ class RunExecutor:
         self,
         *,
         test_run_id: str,
-        task_run: TaskRun,
-        test_task: TestTask,
+        task_input: TaskAgentInput,
         tools: tuple[BaseTool, ...],
-        max_cycles: int,
-        screenshot_history_rounds: int,
-        previous_task_runs: list[TaskRun],
-        expected_model_profile: LLMProfileSnapshot,
-        expected_prompt_version: str,
         run_cancellation_event: asyncio.Event,
         checkpointer: BaseCheckpointSaver[Any],
         on_cleanup_failure: Callable[[BaseException], None] | None = None,
     ) -> TaskAgentCompletion:
         graph, initial = await self.agent_factory.build(
-            task_run_id=task_run.id,
+            task_input=task_input,
             tools=tools,
-            max_cycles=max_cycles,
-            screenshot_history_rounds=screenshot_history_rounds,
-            task=test_task,
-            previous_task_runs=previous_task_runs,
-            expected_model_profile=expected_model_profile,
-            expected_prompt_version=expected_prompt_version,
             run_cancellation_event=run_cancellation_event,
             checkpointer=checkpointer,
             on_cleanup_failure=on_cleanup_failure,
@@ -203,8 +193,8 @@ class RunExecutor:
         completion: TaskAgentCompletion | None = None
         async for part in graph.astream(
             initial,
-            config={"configurable": {"thread_id": f"task-run:{task_run.id}"},
-                    "recursion_limit": max_cycles * 8 + 20},
+            config={"configurable": {"thread_id": f"task-run:{task_input.task_run_id}"},
+                    "recursion_limit": task_input.max_cycles * 8 + 20},
             stream_mode=["updates", "custom"],
             version="v2",
             durability="exit",
@@ -213,10 +203,10 @@ class RunExecutor:
             data = part["data"]
             if mode == "updates":
                 completion = await self._consume_updates(
-                    test_run_id, task_run.id, data, completion
+                    test_run_id, task_input.task_run_id, data, completion
                 )
             elif mode == "custom":
-                await self._consume_signal(test_run_id, task_run.id, data)
+                await self._consume_signal(test_run_id, task_input.task_run_id, data)
         if completion is None:
             raise RuntimeError("TaskAgent ended without TaskAgentCompletion")
         return completion
