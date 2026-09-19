@@ -35,8 +35,7 @@ const plan: TestPlan = {
         type: "judge",
         title: "判断",
         goal: "确认页面",
-        success_criteria: ["标题可见"],
-        max_cycles: 2
+        success_criteria: ["标题可见"]
       }
     }]
   },

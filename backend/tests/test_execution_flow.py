@@ -40,6 +40,38 @@ def test_generic_tools_complete_deterministic_verdicts(tmp_path: Path, status: s
         assert "execution_model" in detail["environment"]
 
 
+@pytest.mark.parametrize("act_limit,judge_limit,counts", [(1, 3, [1, 0]), (3, 1, [2, 1])])
+def test_configured_cycle_limits_by_task_type(
+    tmp_path: Path, act_limit: int, judge_limit: int, counts: list[int],
+) -> None:
+    with build_client(tmp_path, act_max_cycles=act_limit, judge_max_cycles=judge_limit) as client:
+        plan = create_plan(client, task_count=2)
+        assert all("max_cycles" not in task["definition"] for task in plan["content"]["tasks"])
+        invalid_tasks = [dict(task["definition"], max_cycles=99) for task in plan["content"]["tasks"]]
+        response = client.post(f"/api/test-plans/{plan['id']}/revisions",
+                               json={"content": {**plan["content"], "tasks": invalid_tasks}})
+        assert response.status_code == 422
+        run_id = start_run(client, plan)
+        detail = wait_for_run(client, run_id)
+        assert detail["run"]["verdict"] == "BLOCKED"
+        assert [task["cycle_count"] for task in detail["task_runs"]] == counts
+        blocked = next(task for task in detail["task_runs"] if task["status"] == "blocked")
+        assert blocked["result"]["reason_code"] == "cycle_limit"
+        assert detail["environment"]["act_max_cycles"] == act_limit
+        assert detail["environment"]["judge_max_cycles"] == judge_limit
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        contexts = [json.loads(invocation[1].text) for invocation in model.invocations[1:]]
+        for context in contexts:
+            expected = act_limit if context["task"]["definition"]["type"] == "act" else judge_limit
+            assert context["max_cycles"] == expected
+            assert "max_cycles" not in context["task"]["definition"]
+        container.run_service.act_max_cycles = 50
+        container.run_service.judge_max_cycles = 50
+        stored = client.get(f"/api/runs/{run_id}").json()["detail"]
+        assert stored["environment"] == detail["environment"]
+
+
 def test_act_and_judge_share_tools_and_model(tmp_path: Path) -> None:
     with build_client(tmp_path) as client:
         detail = wait_for_run(client, start_run(client, create_plan(client, task_count=2)))
@@ -97,8 +129,8 @@ def test_unsupported_graph_exit_is_blocked_and_releases_run_entry(
 @pytest.mark.parametrize("with_image,verdict,reason", [(True, "BLOCKED", "cycle_limit"), (False, "BLOCKED", "cycle_limit")])
 def test_round_limit_and_evidence(tmp_path: Path, with_image: bool, verdict: str, reason: str) -> None:
     content = [image_block()] if with_image else [text_block()]
-    with build_client(tmp_path, calls=[replay_call(content=content)], turns=[tool_turn(1)]) as client:
-        detail = wait_for_run(client, start_run(client, create_plan(client, max_cycles=1)))
+    with build_client(tmp_path, calls=[replay_call(content=content)], turns=[tool_turn(1)], act_max_cycles=1) as client:
+        detail = wait_for_run(client, start_run(client, create_plan(client)))
         assert detail["run"]["verdict"] == verdict
         assert detail["task_runs"][0]["result"]["reason_code"] == reason
         assert detail["task_runs"][0]["cycle_count"] == 1
@@ -190,8 +222,8 @@ def test_timeout_rebuilds_after_cleanup_or_blocks_cleanup_failure(tmp_path: Path
 def test_timeout_budget_priority_and_no_unneeded_rebuild(tmp_path: Path, with_image: bool, max_cycles: int) -> None:
     initial = replay_call(content=[image_block()] if with_image else [text_block()])
     with build_client(tmp_path, calls=[initial, replay_call(delay=10)], turns=[tool_turn(1), tool_turn(2)],
-                      tool_call_timeout_seconds=2, execution_model_response_max_attempts=1) as client:
-        detail = wait_for_run(client, start_run(client, create_plan(client, max_cycles=max_cycles)))
+                      tool_call_timeout_seconds=2, execution_model_response_max_attempts=1, act_max_cycles=max_cycles) as client:
+        detail = wait_for_run(client, start_run(client, create_plan(client)))
         reason = 'cycle_limit' if max_cycles == 2 else 'tool_failed'
         assert detail['task_runs'][0]['result']['reason_code'] == reason
         assert detail['task_runs'][0]['cycle_count'] == 2
@@ -400,8 +432,8 @@ def test_visual_retention_reaches_state_and_terminal_checkpoint(
     monkeypatch.setattr(_TaskRuntime, "after_tools", observe_after_tools)
     with build_client(tmp_path, calls=[replay_call(), replay_call(error=exit_kind == "tool_error")],
                       turns=[tool_turn(1), tool_turn(2), finish_turn(3)],
-                      screenshot_history_rounds=1, execution_model_response_max_attempts=1) as client:
-        run_id = start_run(client, create_plan(client, max_cycles=2 if exit_kind == "cycle_limit" else 3))
+                      screenshot_history_rounds=1, execution_model_response_max_attempts=1, act_max_cycles=2 if exit_kind == "cycle_limit" else 3) as client:
+        run_id = start_run(client, create_plan(client))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == {
             "finish": "PASS", "cancel": "CANCELLED", "tool_error": "BLOCKED", "cycle_limit": "BLOCKED",
@@ -457,8 +489,8 @@ def test_running_session_ignores_config_changes_and_holds_the_single_run_slot(tm
 def test_exhaustion_during_repair_is_always_blocked(tmp_path: Path, with_image: bool) -> None:
     content = [image_block()] if with_image else [text_block()]
     with build_client(tmp_path, calls=[replay_call(content=content)],
-                      turns=[tool_turn(1), AIMessage(content="invalid")], execution_model_response_max_attempts=1) as client:
-        detail = wait_for_run(client, start_run(client, create_plan(client, max_cycles=2)))
+                      turns=[tool_turn(1), AIMessage(content="invalid")], execution_model_response_max_attempts=1, act_max_cycles=2) as client:
+        detail = wait_for_run(client, start_run(client, create_plan(client)))
         assert detail["run"]["verdict"] == "BLOCKED"
         assert detail["task_runs"][0]["result"]["reason_code"] == "cycle_limit"
 

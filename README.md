@@ -195,6 +195,8 @@ npm.cmd run dev
 | `TEST_AGENT_SCREENSHOT_HISTORY_ROUNDS` | 3，State 保留原图 base64 的最近有截图决策轮数；过期图片替换为 artifact 引用 |
 | `TEST_AGENT_EXECUTION_MODEL_CALL_MAX_ATTEMPTS` | 3，执行阶段模型传输错误有限重试 |
 | `TEST_AGENT_EXECUTION_MODEL_RESPONSE_MAX_ATTEMPTS` | 3，执行阶段连续无效响应/工具错误上限 |
+| `TEST_AGENT_ACT_MAX_CYCLES` | 30，act 任务总决策轮次上限，范围 1～100 |
+| `TEST_AGENT_JUDGE_MAX_CYCLES` | 10，judge 任务总决策轮次上限，范围 1～100 |
 
 模型参数统一放在 `models.toml` 的有序 `[[profiles]]` 中，每个 profile 独立填写 `api_key`、`base_url`、`model`、`mode` 和所需预算参数；省略的参数采用代码默认值，完整示例见 `models.example.toml`。真实模型必须设置 `mode = "real"`，并按服务实际能力填写上下文窗口与输出上限。
 
@@ -252,6 +254,8 @@ Act 达成目标，Judge 验证行为；Judge 可主动准备条件和触发交�
 State 与 checkpoint 保留消息身份、顺序、文字和工具调用关系，只保留视觉窗口内图片的 base64，终止时不额外清空窗口。执行沿用 `durability="exit"`，图退出时保存回收后的 State；进程突然崩溃时不保证中间 checkpoint 恢复。图片回收前后公开消息均投影为相同 Artifact ID，现有消息去重保证 SSE/历史事件不重复追加；持久事件、历史原图与 JSON/HTML 导出保持完整。内存与最终快照的图片载荷随窗口内截图体积变化，文字历史仍随任务累积。
 
 开发调试重建约定：过期图片使用 `type="text"`、固定文本 `[Screenshot was captured; image is outside the visual history window.]` 和 `extras.artifact_id`，占据原图片内容块位置。通过该 ID 调用 `ArtifactStore.load_content(artifact_id)` 获取 `(content, mime_type)`，以 `base64.b64encode(content).decode("ascii")` 重建 `{"type": "image", "id": artifact_id, "mime_type": mime_type, "base64": encoded}` 内容块。消息 ID、内容块顺序及持久事件提供历史定位；原图丢失时应报告缺失，不伪造内容。重建仅用于开发人员调试，不自动回填运行 State，也不提供独立调试命令。
+
+任务总轮次仅由 `.env` 中的 `TEST_AGENT_ACT_MAX_CYCLES` 和 `TEST_AGENT_JUDGE_MAX_CYCLES` 按类型统一提供；规划生成和人工编辑均不提供轮次设置。修改配置后重启后端，对新运行生效。创建运行时冻结上限到运行环境快照，执行、运行页和报告均使用该快照。
 
 通过/失败必须引用本任务实际保存的截图；是否需要操作后重新取证由模型判断。总轮次或连续纠错预算耗尽统一 BLOCKED。连续尝试默认 3 次（包含首次），参数错误、模型响应校验错误、工具业务错误和超时共用预算，成功调用后清零；同时耗尽采用 cycle_limit。全局 fail-fast、取消和最终 PASS/FAIL/BLOCKED/CANCELLED 聚合由程序决定。
 

@@ -103,7 +103,7 @@ class TaskAgentFactory:
 
     async def build(
         self, *, task_run_id: str, tools: tuple[BaseTool, ...],
-        screenshot_history_rounds: int, task: TestTask, previous_task_runs: list[TaskRun],
+        max_cycles: int, screenshot_history_rounds: int, task: TestTask, previous_task_runs: list[TaskRun],
         expected_model_profile: LLMProfileSnapshot, expected_prompt_version: str,
         run_cancellation_event: asyncio.Event, checkpointer: BaseCheckpointSaver[Any] | None,
         on_cleanup_failure: Callable[[BaseException], None] | None = None,
@@ -122,6 +122,7 @@ class TaskAgentFactory:
             task_run_id=task_run_id, task=task, previous_task_runs=previous_task_runs,
             tools=tools, model_client=model_client, prompt_definition=prompt,
             model_response_max_attempts=self.model_response_max_attempts,
+            max_cycles=max_cycles,
             screenshot_history_rounds=screenshot_history_rounds,
             tool_call_timeout_seconds=self.tool_call_timeout_seconds,
             tool_cleanup_timeout_seconds=self.tool_cleanup_timeout_seconds,
@@ -177,6 +178,7 @@ class _TaskRuntime:
     model_client: ChatModelClient
     prompt_definition: PromptDefinition
     model_response_max_attempts: int
+    max_cycles: int
     screenshot_history_rounds: int
     tool_call_timeout_seconds: float
     tool_cleanup_timeout_seconds: float = 30
@@ -188,6 +190,7 @@ class _TaskRuntime:
             SystemMessage(content=self.prompt_definition.text),
             HumanMessage(content=json.dumps({
                 "task": self.task.model_dump(mode="json"),
+                "max_cycles": self.max_cycles,
                 "previous_task_runs": [run.model_dump(mode="json") for run in self.previous_task_runs],
             }, ensure_ascii=False)),
         ], "route": "guard"}
@@ -195,7 +198,7 @@ class _TaskRuntime:
     async def guard(self, state: TaskAgentGraphState) -> dict[str, object]:
         if self.run_cancellation_event.is_set():
             return self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state)
-        if state["cycle_count"] >= self.task.definition.max_cycles:
+        if state["cycle_count"] >= self.max_cycles:
             return self._completion(TaskRunStatus.BLOCKED, ReasonCode.CYCLE_LIMIT,
                                     "Decision round limit reached", state)
         return {"route": "model"}
@@ -238,7 +241,7 @@ class _TaskRuntime:
             return {"route": "tools"}
         assert message.id is not None
         get_stream_writer()(MessageValidationSignal(message_id=message.id, attempt=state["model_attempt"], reason=reason).model_dump(mode="json"))
-        if state["cycle_count"] >= self.task.definition.max_cycles:
+        if state["cycle_count"] >= self.max_cycles:
             repairs = [ToolMessage(content=reason, tool_call_id=call["id"], name=call["name"], status="error")
                        for call in message.tool_calls if call.get("id")]
             return {"messages": repairs, "route": "guard"}
@@ -384,7 +387,7 @@ class _TaskRuntime:
             evidence = _latest_artifact_ids(messages) if status != TaskRunStatus.BLOCKED else []
             update.update(self._completion(status, reason, terminal.summary, state, evidence=evidence))
         elif tool_message.status == "error":
-            if (state["cycle_count"] < self.task.definition.max_cycles
+            if (state["cycle_count"] < self.max_cycles
                     and state["model_attempt"] >= self.model_response_max_attempts):
                 update.update(self._completion(TaskRunStatus.BLOCKED, ReasonCode.TOOL_FAILED, tool_message.text, state))
         else:

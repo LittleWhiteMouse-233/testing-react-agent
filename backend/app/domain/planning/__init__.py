@@ -67,7 +67,6 @@ class TestTaskDefinition(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     goal: str = Field(min_length=1)
     success_criteria: list[str] = Field(min_length=1)
-    max_cycles: int = Field(ge=1, le=100)
 
     @model_validator(mode="after")
     def text_is_not_blank(self) -> "TestTaskDefinition":

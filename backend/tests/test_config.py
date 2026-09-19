@@ -13,6 +13,25 @@ from app.config import LLMProfileSettings, PROJECT_ROOT, Settings
 settings_factory = cast(Callable[..., Settings], Settings)
 
 
+def test_task_cycle_limits_defaults_and_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TEST_AGENT_ACT_MAX_CYCLES", raising=False)
+    monkeypatch.delenv("TEST_AGENT_JUDGE_MAX_CYCLES", raising=False)
+    settings = settings_factory(_env_file=None, model_config_path=PROJECT_ROOT / "models.example.toml")
+    assert (settings.act_max_cycles, settings.judge_max_cycles) == (30, 10)
+    monkeypatch.setenv("TEST_AGENT_ACT_MAX_CYCLES", "40")
+    monkeypatch.setenv("TEST_AGENT_JUDGE_MAX_CYCLES", "15")
+    settings = settings_factory(_env_file=None, model_config_path=PROJECT_ROOT / "models.example.toml")
+    assert (settings.act_max_cycles, settings.judge_max_cycles) == (40, 15)
+
+
+@pytest.mark.parametrize("setting", ["act_max_cycles", "judge_max_cycles"])
+@pytest.mark.parametrize("limit", [0, 101])
+def test_task_cycle_limits_reject_out_of_range(setting: str, limit: int) -> None:
+    with pytest.raises(ValidationError, match=setting):
+        settings_factory(_env_file=None, model_config_path=PROJECT_ROOT / "models.example.toml",
+                         **{setting: limit})
+
+
 def test_settings_load_model_parameters_from_toml_and_routes_from_env(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

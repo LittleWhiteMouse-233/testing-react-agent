@@ -3,7 +3,7 @@ import { Alert, Button, Empty, Image, Spin, message } from "antd";
 import { Link, useParams } from "react-router-dom";
 import { $api, apiErrorMessage, artifactUrl } from "../api/client";
 import { useRunReport } from "../api/useRunReport";
-import { ElapsedTime, EventTimeline, formatTime, RunResources, StatusBadge, taskStatus } from "../runPresentation";
+import { ElapsedTime, EventTimeline, formatTime, RunResources, StatusBadge, taskStatus, taskMaxCycles } from "../runPresentation";
 
 export default function ReportPage() {
   const { runId = "" } = useParams();
@@ -63,7 +63,7 @@ export function RunReportContent({ runId }: { runId: string }) {
           <StatusBadge status={taskStatus(taskRun, finished)} />{taskRun && <ElapsedTime startedAt={taskRun.started_at} finishedAt={taskRun.finished_at} active={taskRun.status === "running"} />}
         </summary>
         <div className="timeline-task-body"><p><strong>目标：</strong>{task.definition.goal}</p><strong>成功标准</strong><ul>{task.definition.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul>
-          {taskRun?.result && <div className="result-note"><p>{taskRun.result.summary}</p><small>{taskRun.result.reason_code} · {taskRun.cycle_count} / {task.definition.max_cycles} 轮</small></div>}
+          {taskRun?.result && <div className="result-note"><p>{taskRun.result.summary}</p><small>{taskRun.result.reason_code} · {taskRun.cycle_count} / {taskMaxCycles(task.definition.type, detail.environment)} 轮</small></div>}
           {events.length ? <EventTimeline events={events} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有任务事件" />}
           {taskScreenshots.length > 0 && <Image.PreviewGroup><div className="evidence-grid">{taskScreenshots.map((artifact) => <figure key={artifact.id}><Image src={artifactUrl(artifact.id)} alt={"截图 " + artifact.id} />
             <figcaption>{formatTime(artifact.created_at)} {taskRun?.result?.evidence_artifact_ids.includes(artifact.id) && <span className="pill blue">判定证据</span>}</figcaption></figure>)}</div></Image.PreviewGroup>}

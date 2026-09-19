@@ -1894,6 +1894,12 @@
         "additionalProperties": false,
         "description": "RunService 在 TestRun 创建时冻结且执行器必须遵守的环境事实。",
         "properties": {
+          "act_max_cycles": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Act Max Cycles",
+            "type": "integer"
+          },
           "act_prompt_version": {
             "minLength": 1,
             "title": "Act Prompt Version",
@@ -1911,6 +1917,12 @@
             "const": "3",
             "title": "Execution Protocol Version",
             "type": "string"
+          },
+          "judge_max_cycles": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Judge Max Cycles",
+            "type": "integer"
           },
           "judge_prompt_version": {
             "minLength": 1,
@@ -1930,6 +1942,8 @@
         "required": [
           "tool_catalog",
           "execution_model",
+          "act_max_cycles",
+          "judge_max_cycles",
           "act_prompt_version",
           "judge_prompt_version",
           "app_version",
@@ -2176,12 +2190,6 @@
             "title": "Goal",
             "type": "string"
           },
-          "max_cycles": {
-            "maximum": 100.0,
-            "minimum": 1.0,
-            "title": "Max Cycles",
-            "type": "integer"
-          },
           "success_criteria": {
             "items": {
               "type": "string"
@@ -2204,8 +2212,7 @@
           "type",
           "title",
           "goal",
-          "success_criteria",
-          "max_cycles"
+          "success_criteria"
         ],
         "title": "TestTaskDefinition",
         "type": "object"

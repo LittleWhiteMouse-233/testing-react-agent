@@ -72,7 +72,7 @@ function savedPlan(version = 1, userInput: string | null = null): TestPlan {
       tasks: [{
         test_task_id: `33333333-3333-4333-8333-${String(version).padStart(12, "0")}`,
         definition: { type: "judge", title: "检查页面", goal: "确认设置页面",
-          success_criteria: ["设置标题可见"], max_cycles: 2 }
+          success_criteria: ["设置标题可见"] }
       }]
     },
     created_at: "2026-01-01T00:00:00Z"
@@ -482,7 +482,7 @@ describe("planning page", () => {
     expect(replan).toBeDisabled();
     expect(planningInput()).toBeDisabled();
     expect(screen.getByDisplayValue("计划 1")).toBeDisabled();
-    expect(screen.getByRole("spinbutton")).toBeDisabled();
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /新增任务/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /保存新版本/ })).toBeDisabled();
     expect(startButton()).toBeDisabled();
@@ -655,7 +655,7 @@ it("shows the saved planning input in the online report", async () => {
       id: "run", test_plan_id: plan.id, status: "finished", verdict: "PASS",
       created_at: plan.created_at, started_at: plan.created_at, finished_at: plan.created_at
     }, environment: { execution_model: plan.planning_context.planning_model, tool_catalog: { tools: [] },
-      act_prompt_version: "act-v1", judge_prompt_version: "judge-v1", app_version: "0.1.0", execution_protocol_version: "3", screenshot_history_rounds: 3
+      act_prompt_version: "act-v1", judge_prompt_version: "judge-v1", app_version: "0.1.0", execution_protocol_version: "3", act_max_cycles: 30, judge_max_cycles: 10, screenshot_history_rounds: 3
     }, task_runs: [] },
     artifacts: [], events: []
   };

@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     mcp_config_path: Path = PROJECT_ROOT / "mcp_servers" / "mcp.json"
     tool_call_timeout_seconds: float = Field(default=120, gt=0)
     tool_cleanup_timeout_seconds: float = Field(default=30, gt=0)
+    act_max_cycles: int = Field(default=30, ge=1, le=100)
+    judge_max_cycles: int = Field(default=10, ge=1, le=100)
     screenshot_history_rounds: int = Field(default=3, ge=1)
     execution_model_call_max_attempts: int = Field(default=3, ge=1, le=10)
     execution_model_response_max_attempts: int = Field(default=3, ge=1, le=10)

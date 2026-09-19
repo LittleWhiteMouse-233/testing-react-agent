@@ -18,8 +18,7 @@ export function emptyTask(setup = ""): TestTaskDefinition {
     type: "act",
     title: setup || "新任务",
     goal: setup,
-    success_criteria: [""],
-    max_cycles: 10
+    success_criteria: [""]
   };
 }
 
@@ -35,7 +34,6 @@ export function isPlanDraftValid(plan: TestPlanDraft | null): boolean {
         task.title.length <= 200 &&
         task.goal.trim().length > 0 &&
         task.success_criteria.length > 0 &&
-        task.success_criteria.every((criterion) => criterion.trim().length > 0) &&
-        Number.isInteger(task.max_cycles) && task.max_cycles >= 1 && task.max_cycles <= 100
+        task.success_criteria.every((criterion) => criterion.trim().length > 0)
     );
 }

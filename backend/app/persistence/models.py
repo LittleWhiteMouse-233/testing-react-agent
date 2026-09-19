@@ -98,7 +98,6 @@ class TestTaskRow(Base):
     title: Mapped[str] = mapped_column(String(200))
     goal: Mapped[str] = mapped_column(Text)
     success_criteria_json: Mapped[list[str]] = mapped_column(JSON)
-    max_cycles: Mapped[int] = mapped_column(Integer)
 
 
 class TestRunRow(Base):

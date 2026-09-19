@@ -35,14 +35,12 @@ def _default_plan(request: TestCaseContent) -> PlanDraft:
                 title="到达目标页面",
                 goal=goal,
                 success_criteria=["当前截图显示用例描述的目标页面或目标状态"],
-                max_cycles=10,
             ),
             TestTaskDefinition(
                 type=TestTaskType.JUDGE,
                 title="验证预期结果",
                 goal=goal,
                 success_criteria=["当前截图满足用例中的预期结果"],
-                max_cycles=2,
             ),
         ],
     )

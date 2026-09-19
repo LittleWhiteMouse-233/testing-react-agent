@@ -91,6 +91,9 @@ class RunExecutor:
                             task_run=active_task,
                             test_task=test_task,
                             tools=tools,
+                            max_cycles=(detail.environment.act_max_cycles
+                                        if test_task.definition.type.value == "act"
+                                        else detail.environment.judge_max_cycles),
                             screenshot_history_rounds=detail.environment.screenshot_history_rounds,
                             previous_task_runs=completed,
                             expected_model_profile=(
@@ -175,6 +178,7 @@ class RunExecutor:
         task_run: TaskRun,
         test_task: TestTask,
         tools: tuple[BaseTool, ...],
+        max_cycles: int,
         screenshot_history_rounds: int,
         previous_task_runs: list[TaskRun],
         expected_model_profile: LLMProfileSnapshot,
@@ -186,6 +190,7 @@ class RunExecutor:
         graph, initial = await self.agent_factory.build(
             task_run_id=task_run.id,
             tools=tools,
+            max_cycles=max_cycles,
             screenshot_history_rounds=screenshot_history_rounds,
             task=test_task,
             previous_task_runs=previous_task_runs,
@@ -199,7 +204,7 @@ class RunExecutor:
         async for part in graph.astream(
             initial,
             config={"configurable": {"thread_id": f"task-run:{task_run.id}"},
-                    "recursion_limit": test_task.definition.max_cycles * 8 + 20},
+                    "recursion_limit": max_cycles * 8 + 20},
             stream_mode=["updates", "custom"],
             version="v2",
             durability="exit",

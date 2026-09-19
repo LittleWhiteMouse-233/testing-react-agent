@@ -91,6 +91,8 @@ def run_environment_snapshot() -> RunEnvironmentSnapshot:
     return RunEnvironmentSnapshot(
         tool_catalog=ToolCatalogSnapshot(tools=[]),
         execution_model=model_snapshot(),
+        act_max_cycles=30,
+        judge_max_cycles=10,
         act_prompt_version="act-v1",
         judge_prompt_version="judge-v1",
         app_version="0.1.0",
@@ -109,7 +111,6 @@ def plan_draft(task_count: int = 1) -> PlanContent[TaskDefinition]:
                 title=f"Task {index}",
                 goal="Verify the screen",
                 success_criteria=["The expected screen is visible"],
-                max_cycles=2,
             )
             for index in range(task_count)
         ],

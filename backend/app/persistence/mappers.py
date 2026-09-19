@@ -58,7 +58,6 @@ def test_task_from_row(row: TestTaskRow) -> TestTask:
             title=row.title,
             goal=row.goal,
             success_criteria=load_string_list(row.success_criteria_json),
-            max_cycles=row.max_cycles,
         ),
     )
 

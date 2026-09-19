@@ -35,11 +35,11 @@ def task_runtime() -> _TaskRuntime:
         run_cancellation_event=asyncio.Event(), task_run_id=str(uuid4()),
         task=planning.TestTask(test_task_id=str(uuid4()), definition=planning.TestTaskDefinition(
             type=planning.TestTaskType.ACT, title="Observe", goal="Observe the target",
-            success_criteria=["Expected content is visible"], max_cycles=3,
+            success_criteria=["Expected content is visible"],
         )),
         previous_task_runs=[], tools=(), model_client=ScriptedChatModelClient(),
         prompt_definition=load_prompt("act"), model_response_max_attempts=3,
-        screenshot_history_rounds=1, tool_call_timeout_seconds=5,
+        max_cycles=3, screenshot_history_rounds=1, tool_call_timeout_seconds=5,
     )
 
 

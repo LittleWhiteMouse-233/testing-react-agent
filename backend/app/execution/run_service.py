@@ -62,6 +62,8 @@ class RunService:
         act_prompt: PromptDefinition,
         judge_prompt: PromptDefinition,
         tools: MCPToolProvider,
+        act_max_cycles: int,
+        judge_max_cycles: int,
         screenshot_history_rounds: int = 3,
     ) -> None:
         self.repository = repository
@@ -71,6 +73,8 @@ class RunService:
         self.app_version = app_version
         self.act_prompt = act_prompt
         self.judge_prompt = judge_prompt
+        self.act_max_cycles = act_max_cycles
+        self.judge_max_cycles = judge_max_cycles
         self.screenshot_history_rounds = screenshot_history_rounds
         self.tools = tools
         self._start_lock = asyncio.Lock()
@@ -149,6 +153,8 @@ class RunService:
                     execution_model=self.model_provider.client_for_activity(
                         AgentActivity.EXECUTION
                     ).profile_snapshot,
+                    act_max_cycles=self.act_max_cycles,
+                    judge_max_cycles=self.judge_max_cycles,
                     screenshot_history_rounds=self.screenshot_history_rounds,
                     act_prompt_version=self.act_prompt.version,
                     judge_prompt_version=self.judge_prompt.version,
@@ -177,10 +183,6 @@ class RunService:
             if not prepared_run.done():
                 prepared_run.set_exception(exc)
                 return
-            raise
-        except asyncio.CancelledError:
-            if not prepared_run.done():
-                prepared_run.cancel()
             raise
 
     async def shutdown(self) -> None:

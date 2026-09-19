@@ -96,10 +96,10 @@ def build_client(root: Path, *, calls: list[dict[str, Any]] | None = None,
     return TestClient(app)
 
 
-def create_plan(client: TestClient, *, max_cycles: int = 10, task_count: int = 1) -> dict[str, Any]:
+def create_plan(client: TestClient, *, task_count: int = 1) -> dict[str, Any]:
     case = client.post("/api/test-cases", json={"name": "Protocol test", "source_text": "Verify an observed result"}).json()
     plan = client.post(f"/api/test-cases/{case['id']}/plans", json={"planning_request_id": str(uuid4())}).json()
-    tasks = [dict(entry["definition"], max_cycles=max_cycles) for entry in plan["content"]["tasks"][:task_count]]
+    tasks = [entry["definition"] for entry in plan["content"]["tasks"][:task_count]]
     response = client.post(f"/api/test-plans/{plan['id']}/revisions", json={"content": {**plan["content"], "tasks": tasks}})
     assert response.status_code == 201, response.text
     return response.json()

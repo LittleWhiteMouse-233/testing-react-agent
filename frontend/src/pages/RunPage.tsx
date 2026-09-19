@@ -5,7 +5,7 @@ import { Link, Navigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage, artifactUrl } from "../api/client";
 import { latestScreenshotArtifactId } from "../api/runEvents";
 import { useRunReport } from "../api/useRunReport";
-import { ElapsedTime, EventTimeline, RunResources, StatusBadge, taskCycleCount, taskStatus } from "../runPresentation";
+import { ElapsedTime, EventTimeline, RunResources, StatusBadge, taskCycleCount, taskMaxCycles, taskStatus } from "../runPresentation";
 
 export function ActiveRunPage() {
   const runs = $api.useQuery("get", "/api/runs", { params: { query: { status: ["pending", "running"], limit: 1 } } }, {
@@ -60,7 +60,7 @@ function RunExecution({ runId }: { runId: string }) {
             <span className={"task-number " + task.definition.type}>{index + 1}</span><div><div className="task-title"><h3>{task.definition.title}</h3><StatusBadge status={taskStatus(taskRun, finished)} /></div>
               <small>{task.definition.type.toUpperCase()}</small><p>{task.definition.goal}</p>
               <details><summary>成功标准</summary><ul>{task.definition.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul></details>
-              <div className="task-runtime"><span>{taskRun ? taskCycleCount(taskRun, report.events) : "—"} / {task.definition.max_cycles} 轮</span><ElapsedTime startedAt={taskRun?.started_at ?? null} finishedAt={taskRun?.finished_at ?? null} active={taskRun?.status === "running"} /></div>
+              <div className="task-runtime"><span>{taskRun ? taskCycleCount(taskRun, report.events) : "—"} / {taskMaxCycles(task.definition.type, report.data.detail.environment)} 轮</span><ElapsedTime startedAt={taskRun?.started_at ?? null} finishedAt={taskRun?.finished_at ?? null} active={taskRun?.status === "running"} /></div>
               {taskRun?.result && <p className="task-result">{taskRun.result.summary}</p>}
             </div>
           </article>;

@@ -1,6 +1,6 @@
 import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, EditOutlined, PlusOutlined, RocketOutlined, SaveOutlined } from "@ant-design/icons";
 import { useIsMutating, useQueryClient } from "@tanstack/react-query";
-import { Alert, Button, Checkbox, Empty, Form, Input, InputNumber, Modal, Radio, Select, Spin, message } from "antd";
+import { Alert, Button, Checkbox, Empty, Form, Input, Modal, Radio, Select, Spin, message } from "antd";
 import { useEffect, useState } from "react";
 import { Link, useBlocker, useNavigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage } from "../api/client";
@@ -165,7 +165,7 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
       {plan && draft ? <>
         <div className="plan-task-list"><h3>{draft.title}</h3>{draft.tasks.map((task, index) => <article className="plan-task" key={index}><span className={"task-number " + task.type}>{index + 1}</span><div>
           <div className="task-title"><h3>{task.title}</h3><span className={"pill " + (task.type === "judge" ? "purple" : "blue")}>{task.type === "judge" ? "Judge" : "Act"}</span></div>
-          <p>{task.goal}</p><ul>{task.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul><small>最多 {task.max_cycles} 轮</small>
+          <p>{task.goal}</p><ul>{task.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul>
         </div></article>)}</div>
         <div className="plan-start"><Checkbox disabled={busy || dirty || !isLatest} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}>我已确认计划 assumptions、任务目标和成功标准</Checkbox>
           <Button block size="large" type="primary" icon={<RocketOutlined />} loading={start.isPending} disabled={busy || !valid || dirty || !confirmed || !isLatest}
@@ -188,15 +188,14 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
           <Button aria-label={"上移任务 " + (index + 1)} icon={<ArrowUpOutlined />} disabled={!canEdit || index === 0} onClick={() => moveTask(index, -1)} />
           <Button aria-label={"下移任务 " + (index + 1)} icon={<ArrowDownOutlined />} disabled={!canEdit || index === draft.tasks.length - 1} onClick={() => moveTask(index, 1)} />
           <Button aria-label={"删除任务 " + (index + 1)} danger icon={<DeleteOutlined />} onClick={() => updateDraft({ ...draft, tasks: draft.tasks.filter((_, position) => position !== index) })} /></div></div>
-          <div className="task-editor-options"><Form.Item label="类型"><Radio.Group value={task.type} onChange={(event) => updateTask(index, { type: event.target.value })}><Radio.Button value="act">Act</Radio.Button><Radio.Button value="judge">Judge</Radio.Button></Radio.Group></Form.Item>
-            <Form.Item label="最大循环数"><InputNumber min={1} max={100} value={task.max_cycles} onChange={(value) => updateTask(index, { max_cycles: value ?? 1 })} /></Form.Item></div>
+          <Form.Item label="类型"><Radio.Group value={task.type} onChange={(event) => updateTask(index, { type: event.target.value })}><Radio.Button value="act">Act</Radio.Button><Radio.Button value="judge">Judge</Radio.Button></Radio.Group></Form.Item>
           <Form.Item label="任务标题"><Input value={task.title} maxLength={200} onChange={(event) => updateTask(index, { title: event.target.value })} /></Form.Item>
           <Form.Item label="目标"><Input.TextArea value={task.goal} onChange={(event) => updateTask(index, { goal: event.target.value })} /></Form.Item>
           <Form.Item label="成功标准（每行一条）"><Input.TextArea value={task.success_criteria.join("\n")} onChange={(event) => updateTask(index, { success_criteria: event.target.value.split("\n") })} /></Form.Item>
         </section>)}
         <Button block icon={<PlusOutlined />} onClick={() => updateDraft({ ...draft, tasks: [...draft.tasks, emptyTask()] })}>新增任务</Button>
         {draft.setup_steps.map((step, index) => <Button key={index} type="link" onClick={() => updateDraft({ ...draft, tasks: [...draft.tasks, emptyTask(step)] })}>将准备步骤 {index + 1} 转为任务</Button>)}
-        {!valid && <Alert type="warning" title="请补全计划标题、任务目标、成功标准与循环上限" />}
+        {!valid && <Alert type="warning" title="请补全计划标题、任务目标、成功标准" />}
         <div className="editor-footer"><Button disabled={busy} onClick={() => { if (plan) selectPlan(plan); }}>放弃修改</Button><Button type="primary" icon={<SaveOutlined />} disabled={!canEdit || !dirty || !valid} loading={revise.isPending}
           onClick={() => { if (plan) revise.mutate({ params: { path: { test_plan_id: plan.id } }, body: { content: draft } }); }}>保存新版本</Button></div>
       </Form>}

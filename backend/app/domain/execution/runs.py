@@ -86,6 +86,8 @@ class TestRunEnvironmentSnapshot(BaseModel):
 
     tool_catalog: ToolCatalogSnapshot
     execution_model: LLMProfileSnapshot
+    act_max_cycles: int = Field(ge=1, le=100)
+    judge_max_cycles: int = Field(ge=1, le=100)
     screenshot_history_rounds: int = Field(default=3, ge=1)
     act_prompt_version: str = Field(min_length=1)
     judge_prompt_version: str = Field(min_length=1)

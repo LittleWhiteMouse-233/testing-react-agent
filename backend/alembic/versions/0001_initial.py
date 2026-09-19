@@ -81,7 +81,6 @@ def upgrade() -> None:
         sa.Column("title", sa.String(200), nullable=False),
         sa.Column("goal", sa.Text(), nullable=False),
         sa.Column("success_criteria_json", sa.JSON(), nullable=False),
-        sa.Column("max_cycles", sa.Integer(), nullable=False),
         sa.UniqueConstraint(
             "test_plan_id", "position", name="uq_test_task_position"
         ),

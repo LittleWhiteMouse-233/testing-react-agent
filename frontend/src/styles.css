@@ -121,7 +121,6 @@ dd { margin-left: 0; font-size: 12px; white-space: pre-wrap; }
 .task-editor { background: #fafafc; border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 16px 0; }
 .task-editor-heading, .editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .task-editor-heading .ant-btn { margin-left: 4px; }
-.task-editor-options { display: flex; gap: 24px; }
 .editor-footer { position: sticky; bottom: 0; background: white; padding: 20px 0 0; margin: 12px 0 0; }
 .page-empty { padding: 72px 32px; text-align: center; }
 .execution-layout { display: grid; grid-template-columns: minmax(260px, 25%) minmax(330px, 36%) minmax(370px, 39%); min-height: calc(100vh - 160px); }

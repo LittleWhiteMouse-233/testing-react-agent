@@ -958,6 +958,8 @@ export interface components {
          * @description RunService 在 TestRun 创建时冻结且执行器必须遵守的环境事实。
          */
         TestRunEnvironmentSnapshot: {
+            /** Act Max Cycles */
+            act_max_cycles: number;
             /** Act Prompt Version */
             act_prompt_version: string;
             /** App Version */
@@ -968,6 +970,8 @@ export interface components {
              * @constant
              */
             execution_protocol_version: "3";
+            /** Judge Max Cycles */
+            judge_max_cycles: number;
             /** Judge Prompt Version */
             judge_prompt_version: string;
             /**
@@ -1075,8 +1079,6 @@ export interface components {
         TestTaskDefinition: {
             /** Goal */
             goal: string;
-            /** Max Cycles */
-            max_cycles: number;
             /** Success Criteria */
             success_criteria: string[];
             /** Title */

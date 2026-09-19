@@ -1,6 +1,6 @@
 import { Button, Empty, Image, Select, Switch } from "antd";
 import { useEffect, useRef, useState } from "react";
-import type { StoredRunEvent, TaskRun, TestRunListResponse, TestRunReport } from "./api/contracts";
+import type { StoredRunEvent, TaskRun, TestRunListResponse, TestRunReport, TestTaskDefinition } from "./api/contracts";
 import { artifactUrl } from "./api/client";
 
 export const statusLabels: Record<string, string> = {
@@ -45,6 +45,10 @@ export function runSummary(run: TestRunListResponse) {
 
 export function taskStatus(taskRun: TaskRun | undefined, finished: boolean) {
   return taskRun?.status ?? (finished ? "未执行" : "待执行");
+}
+
+export function taskMaxCycles(type: TestTaskDefinition["type"], environment: TestRunReport["detail"]["environment"]) {
+  return type === "act" ? environment.act_max_cycles : environment.judge_max_cycles;
 }
 
 export function taskCycleCount(taskRun: TaskRun, events: StoredRunEvent[]) {

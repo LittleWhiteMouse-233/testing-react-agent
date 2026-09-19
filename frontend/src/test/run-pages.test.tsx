@@ -81,6 +81,15 @@ it.each<TestRunVerdict>(["PASS", "FAIL", "BLOCKED", "CANCELLED"])("shows the aut
   expect(sources).toHaveLength(0);
 });
 
+it.each(["act", "judge"] as const)("shows the configured %s budget in the report", async (type) => {
+  report.detail.test_plan.content.tasks[0]!.definition.type = type;
+  report.detail.environment.act_max_cycles = 37;
+  report.detail.environment.judge_max_cycles = 14;
+  renderPage(`/runs/${runId}/report`);
+  await screen.findByText("设置页面验证");
+  expect(screen.getByText(`completed · 2 / ${type === "act" ? 37 : 14} 轮`)).toBeInTheDocument();
+});
+
 it("keeps archived reports readable and exportable but disables rerun", async () => {
   report.test_case_archived = true;
   renderPage(`/runs/${runId}/report`);
@@ -121,17 +130,21 @@ it("keeps cancelled unstarted tasks distinct from fail-fast skipped tasks", asyn
   expect(screen.getByTestId("location")).toHaveTextContent(`/cases/${caseId}/plan`);
 });
 
-it("restores history, merges live cycles, reports reconnection and waits for cancellation to finish", async () => {
+it.each(["act", "judge"] as const)("restores history and merges live cycles with the configured %s budget", async (type) => {
   report = runReport(null);
+  report.detail.test_plan.content.tasks[0]!.definition.type = type;
+  report.detail.environment.act_max_cycles = 37;
+  report.detail.environment.judge_max_cycles = 14;
+  const limit = type === "act" ? 37 : 14;
   report.detail.test_plan.content.tasks.push({ test_task_id: caseId, definition: { ...report.detail.test_plan.content.tasks[0]!.definition, title: "后续任务" } });
   renderPage(`/runs/${runId}`);
   await waitFor(() => expect(sources).toHaveLength(1));
   expect(screen.getByText("待执行")).toBeInTheDocument();
-  expect(screen.getByText("— / 10 轮")).toBeInTheDocument();
+  expect(screen.getByText(`— / ${limit} 轮`)).toBeInTheDocument();
   const source = sources[0]!;
   expect(source.url).toContain("after=1");
   act(() => source.onmessage?.(new MessageEvent("message", { data: JSON.stringify(runEvent(2, { type: "cycle.started", test_run_id: runId, task_run_id: taskRunId, cycle_count: 3 })) })));
-  expect(await screen.findByText("3 / 10 轮")).toBeInTheDocument();
+  expect(await screen.findByText(`3 / ${limit} 轮`)).toBeInTheDocument();
   act(() => source.onerror?.(new Event("error")));
   expect(screen.getByText("正在重连")).toBeInTheDocument();
   act(() => source.onopen?.(new Event("open")));
@@ -331,7 +344,7 @@ it.each(["1.5", "Infinity"])("uses a whole first page for invalid URL page %s on
 
 it("refreshes only on lifecycle changes and reconnection for a multi-task event history", async () => {
   report = runReport(null);
-  report.detail.test_plan.content.tasks[0]!.definition.max_cycles = 30;
+  report.detail.environment.judge_max_cycles = 30;
   report.detail.test_plan.content.tasks.push({ test_task_id: caseId, definition: { ...report.detail.test_plan.content.tasks[0]!.definition, title: "第二任务" } });
   const transmittedEventCounts: number[] = [];
   const originalFetch = vi.mocked(fetch).getMockImplementation()!;

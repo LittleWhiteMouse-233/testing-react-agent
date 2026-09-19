@@ -40,7 +40,6 @@ def definition(task_type: TaskType = TaskType.JUDGE) -> TaskDefinition:
         title="Check",
         goal="Check the visible state",
         success_criteria=["Title is visible"],
-        max_cycles=2,
     )
 
 

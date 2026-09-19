@@ -90,6 +90,8 @@ class Container:
             act_prompt=prompt_catalog.act,
             judge_prompt=prompt_catalog.judge,
             tools=self.tools,
+            act_max_cycles=settings.act_max_cycles,
+            judge_max_cycles=settings.judge_max_cycles,
             screenshot_history_rounds=settings.screenshot_history_rounds,
         )
         self.reports = ReportService(partial(read_test_run_report, self.sessions), self.artifacts)

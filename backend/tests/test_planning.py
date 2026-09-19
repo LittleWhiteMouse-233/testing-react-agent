@@ -200,7 +200,7 @@ async def test_real_planning_json_mode_validates_responses(
         system_prompt = payload["messages"][0]["content"]
         assert "JSON" in system_prompt
         assert '"success_criteria"' in system_prompt
-        assert '"max_cycles"' in system_prompt
+        assert '"max_cycles"' not in system_prompt
         content = (
             '{"title":"缺少任务"}'
             if len(requests) <= invalid_attempts

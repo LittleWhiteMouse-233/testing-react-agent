@@ -168,7 +168,6 @@ class SqlAlchemyRunRepository:
                     success_criteria_json=dump_string_list(
                         task.definition.success_criteria
                     ),
-                    max_cycles=task.definition.max_cycles,
                 )
                 for position, task in enumerate(identified.tasks)
             ]
