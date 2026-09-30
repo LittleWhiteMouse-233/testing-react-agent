@@ -8,7 +8,13 @@ Install with `python -m pip install -e .`, then start with:
 fake-mcp --scenario scenario.json --record calls.jsonl
 ```
 
-The host can also launch `src/fake_mcp/__main__.py` directly with a Python interpreter that has the declared dependencies. All paths are CLI arguments; no host deployment configuration is read.
+The host can also launch the single service module directly from this project directory with a Python interpreter that has the declared dependencies:
+
+```text
+python src/fake_mcp_server.py --scenario scenario.json --record calls.jsonl
+```
+
+`src/fake_mcp_server.py` contains the scenario models, protocol replay and CLI. There is no device-control package. All paths are CLI arguments; no host deployment configuration is read. Application tests launch this entry in a separate process and never import the service implementation.
 
 A scenario declares standard MCP tools and an ordered list of expected requests:
 

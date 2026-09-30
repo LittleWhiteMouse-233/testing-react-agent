@@ -23,13 +23,12 @@
 - `backend/app/tools.py`：标准 stdio MCP 配置、会话和 LangChain 工具导入；不理解设备或工具参数语义。
 - `backend/app/event_stream/`：共享有界 EventBus；执行事件经 RunEventWriter 提交后通知，规划事件仅在连接中发送。慢订阅队列溢出会断开，执行流可从数据库补拉，规划流不保留历史。
 - `frontend/`：计划编辑、实时运行、历史和报告。
-- `mcp_servers/atv_mcp/`：可信外部 ATV MCP，独立部署、配置和依赖管理，不参与宿主测试。
-- `mcp_servers/fake_mcp/`：独立的通用 MCP 场景/响应回放服务，不依赖 ATV。
+- `mcp_servers/`：独立 MCP 服务，使用说明见下方[服务文档](#mcp-服务文档)。
 - `mcp_servers/mcp.json`：宿主连接配置；`data/`：忽略的运行数据库、checkpoint、证据和导出。
 
 宿主及其测试不 import 外部包，不管理设备 ID、状态、探活或配置。第三方工具只需通过 MCP 提供 schema 和结果；不需要实现项目专属的 scopes、manifest 或设备接口。
 
-`mcp_servers/` 中的服务是独立外挂，不是应用依赖。用户按各服务自己的安装策略准备运行环境和依赖，再配置宿主的启动命令。即使服务选择复用应用的 Python 环境，其缺少导入包也属于该 MCP 服务的依赖缺失，不属于应用依赖缺失。宿主依赖中的 `mcp` 和 `langchain-mcp-adapters` 用于客户端协议接入，不代表宿主负责安装外部服务及其依赖。
+MCP 服务独立管理运行环境、依赖和配置；应用仅负责协议接入。安装和使用方式见各服务文档。
 
 ## 安装和启动
 
@@ -74,7 +73,7 @@ npm.cmd --prefix frontend install --include=dev
 
 安装脚本先检查当前 Python 和 Node/npm，再始终执行两端增量安装，由包管理器判断需要更新的依赖；每端安装后复用基础自检。不清空环境或 `node_modules`，安装中止后可重新运行；editable 注册可能重新生成。失败时保留包管理器诊断并指出阶段。
 
-`install.cmd` 不扫描 `mcp_servers/` 的依赖描述文件，也不安装外部服务或其依赖；当前没有附带安装 MCP 依赖的可选开关。外部 MCP 服务需按各自的安装策略单独准备。
+`install.cmd` 仅安装应用依赖；MCP 服务请按[服务文档](#mcp-服务文档)单独准备。
 
 #### 基础自检与依赖排查
 
@@ -214,30 +213,16 @@ TEST_AGENT_EXECUTION_MODEL_ID=vision
 
 旧的 `ADB_*`、Act/Judge 模型路由和设备操作参数已移除。模型上下文预算仍由 profile 的 context window、输出保留、图片 token 估计和安全余量共同决定。
 
-`mcp_servers/mcp.json` 使用 `mcpServers`，每个连接支持 `command`、`args`、`env`、`cwd`，首版仅 stdio。`cwd` 相对于配置文件解析，例如 `atv_mcp` 指向 `mcp_servers/atv_mcp/`；命令直接启动，不经过 shell。MCP SDK 继承其标准进程环境，再应用显式 `env`。不同服务的工具加服务名前缀。
+`mcp_servers/mcp.json` 使用 `mcpServers`，每个连接支持 `command`、`args`、`env`、`cwd`，首版仅 stdio。`cwd` 相对于配置文件解析；命令直接启动，不经过 shell。MCP SDK 继承其标准进程环境，再应用显式 `env`。不同服务的工具加服务名前缀。
+
+按服务文档设置启动命令和工作目录。`command: "python"` 使用启动进程 PATH 中的 Python；通过 `start.ps1` 启动时继承终端已激活的环境。服务使用独立 Python 环境时，将 `command` 设为该环境解释器的绝对路径。
 
 连接在一次运行内复用；运行开始冻结实际工具目录，运行中不热加载。Planning 和历史查询不连接 MCP；配置/连接/发现失败时创建运行接口返回 502。只启用此次运行需要的服务。
 
-## 独立 ATV MCP
+## MCP 服务文档
 
-ATV 仅作为示例外部服务。用户需按该服务自己的 `pyproject.toml` 准备依赖和运行环境。默认 MCP 配置在 `mcp_servers/atv_mcp/` 工作目录直接从源码启动，无需安装 ATV 包。以下命令应在用户为 ATV 准备的 Python 环境中执行（从仓库根目录开始）：
-
-```powershell
-$env:PYTHONUTF8 = "1"
-cd mcp_servers/atv_mcp
-python -m src.atv_mcp --config config.yaml
-```
-
-编辑 `mcp_servers/atv_mcp/config.yaml` 的 `ip_address`，只填写电视 IP（如 `192.168.31.102`），服务使用 ADB 默认端口 `5555` 并自动连接，无需人工执行 `adb connect`。电视需要开启该端口的网络 ADB 并授权当前电脑；只提供 IP 不会自动发现自定义端口或完成无线调试配对。确保 `mcp_servers/mcp.json` 中的 Python 命令指向具备该服务依赖的环境。默认 `command: "python"` 使用启动进程 PATH 中的 Python；通过 `start.ps1` 启动时继承终端已激活的 Python 环境。使用独立环境时，将 `command` 改为该环境 Python 的绝对路径。服务也可自行安装和部署，再按实际启动方式配置 `command`、`args` 和 `cwd`；宿主不要求安装外部 MCP 包，不读取 YAML，也不提供设备选择 API。
-
-- `get_device_capabilities()`：按键值、说明和有效限制，供模型主动发现。
-- `execute_operations(operations)`：按序执行 `press_key`、`screenshot`、`wait`、`text`，返回原始顺序的文本和图片。
-- 能力查询、队列开始及每次按键、文本输入、截图命令前均检查设备状态；不可用时自动 `adb connect` 一次并复查，仍不可用才返回带连接诊断的“设备断连”。连接恢复后才发送设备操作；已发出的按键/文本命令失败时不重放。
-- 整队列预校验，禁止相邻截图。失败停止后缀，已完成动作不重放；截图只重试当前操作。
-- 默认最多 16 项、队列 60 秒、操作 15 秒、截图 3 次、显式等待 100–10000ms，均在 YAML 调整。
-- 按键/输入后默认等待 `post_action_wait_ms: 1000`；下一项是显式 wait 时不叠加。末尾动作也等待，截图和 wait 本身不附加等待。自动等待不消耗模型操作预算。
-
-该包不运行专属测试，仅做静态检查；宿主测试不会安装或启动它。
+- [ATV MCP](mcp_servers/atv_mcp/README.md)
+- [Fake MCP](mcp_servers/fake_mcp/README.md)
 
 ## 执行、证据和历史
 
@@ -298,7 +283,7 @@ RunService 用一个工作状态管理准备、执行和清理阶段；准备阶
 
 ## 测试和静态检查
 
-测试通过临时 mcp.json 启动 `mcp_servers/fake_mcp`，场景只声明标准工具、预期调用、响应、延迟和断连。通过 JSONL 调用记录观察进程及执行顺序，不访问外部服务内部对象，不复制 ATV 规则。
+应用集成测试通过独立 stdio 进程验证 MCP 接入，测试服务的使用说明见[服务文档](#mcp-服务文档)。
 
 ```powershell
 $env:PYTHONUTF8 = "1"
@@ -314,7 +299,7 @@ npm.cmd run check:api
 npm.cmd run build
 ```
 
-上述应用检查应在已安装应用开发依赖的 Python 环境中执行。独立 MCP 包的静态检查由用户在该服务的环境中单独执行（例如从仓库根目录运行 `python -m pyright mcp_servers/atv_mcp`），需自行准备检查工具、服务依赖和 PyYAML 类型存根；这不属于应用依赖安装或检查，也不要求启动 ATV。自动化不使用网络、真实模型密钥或电视。核心验证包括通用工具闭环、取消/超时、图片窗口、事件顺序、证据归属、计划版本、并发限制和导出。
+上述应用检查应在已安装应用开发依赖的 Python 环境中执行。自动化不使用网络、真实模型密钥或电视。核心验证包括通用工具闭环、取消/超时、图片窗口、事件顺序、证据归属、计划版本、并发限制和导出。
 
 MCP 适配器和 SDK 分别固定为 0.3.2、1.30.0。应用使用[官方适配器](https://github.com/langchain-ai/langchain-mcp-adapters/tree/v0.3.2)、公开 session、ToolNode wrapper、消息 reducer 和 checkpointer API。产品代码只补充框架不拥有的证据存储、轮数预算、必需任务上下文和视觉窗口；不读取私有 checkpoint 表、不复制消息协议。结构化返回值保留为消息文本，并清除嵌套的重复图片字节。
 

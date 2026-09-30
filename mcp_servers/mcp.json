@@ -2,7 +2,7 @@
   "mcpServers": {
     "atv": {
       "command": "python",
-      "args": ["-m", "src.atv_mcp", "--config", "config.yaml"],
+      "args": ["src/atv_mcp_server.py", "--config", "config.yaml"],
       "cwd": "atv_mcp",
       "env": {"PYTHONUTF8": "1"}
     }

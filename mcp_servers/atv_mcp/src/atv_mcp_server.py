@@ -5,9 +5,6 @@ import argparse
 import asyncio
 import base64
 import re
-import shlex
-from contextlib import suppress
-from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -18,25 +15,20 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .keys import RemoteKey, _KEY_CODES
+from atv_adb_ctrl import ATVController, ATVControlSettings, RemoteKey
 
 
-class ATVSettings(BaseModel):
-    """Device-owned runtime settings, never consumed by a host application."""
+class ATVServerSettings(ATVControlSettings):
+    """Flat YAML configuration extending device settings with MCP queue policy."""
 
-    model_config = ConfigDict(extra="forbid")
-    adb_path: str = "adb"
-    ip_address: IPv4Address | IPv6Address
     queue_max_operations: int = Field(default=16, ge=1)
     queue_timeout_seconds: float = Field(default=60, gt=0)
-    operation_timeout_seconds: float = Field(default=15, gt=0)
-    capture_max_attempts: int = Field(default=3, ge=1)
     wait_min_ms: int = Field(default=100, ge=0)
     wait_max_ms: int = Field(default=10000, ge=0)
     post_action_wait_ms: int = Field(default=1000, ge=0)
 
     @model_validator(mode="after")
-    def wait_limits_are_ordered(self) -> "ATVSettings":
+    def wait_limits_are_ordered(self) -> "ATVServerSettings":
         if self.wait_max_ms < self.wait_min_ms:
             raise ValueError("wait_max_ms must be at least wait_min_ms")
         return self
@@ -47,7 +39,7 @@ class PressKeyOperation(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     type: Literal["press_key"]
-    key: str
+    key: RemoteKey
 
 
 class ScreenshotOperation(BaseModel):
@@ -76,75 +68,7 @@ class TextOperation(BaseModel):
 Operation = Annotated[PressKeyOperation | ScreenshotOperation | WaitOperation | TextOperation, Field(discriminator="type")]
 
 
-class ATVController:
-    """Bounded ADB primitives; no dependency on the MCP host or its task semantics."""
-
-    def __init__(self, settings: ATVSettings) -> None:
-        self.settings = settings
-
-    @property
-    def serial(self) -> str:
-        address = self.settings.ip_address
-        host = f"[{address}]" if isinstance(address, IPv6Address) else str(address)
-        return f"{host}:5555"
-
-    async def run(self, *arguments: str) -> bytes:
-        await self.probe()
-        return await self._run_adb("-s", self.serial, *arguments)
-
-    async def _run_adb(self, *arguments: str) -> bytes:
-        process = await asyncio.create_subprocess_exec(
-            self.settings.adb_path, *arguments,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), self.settings.operation_timeout_seconds)
-            if process.returncode:
-                diagnostic = (stderr or stdout).decode("utf-8", errors="replace").strip()
-                raise RuntimeError(diagnostic or "ADB command failed")
-            return stdout
-        finally:
-            with anyio.CancelScope(shield=True):
-                if process.returncode is None:
-                    with suppress(ProcessLookupError):
-                        process.kill()
-                    await process.wait()
-
-    async def probe(self) -> None:
-        connection_output = ""
-        for attempt in range(2):
-            try:
-                state = await self._run_adb("-s", self.serial, "get-state")
-                if state.strip() != b"device":
-                    raise RuntimeError(f"ADB target is not ready: {state.decode('utf-8', errors='replace').strip()}")
-                return
-            except (OSError, RuntimeError, TimeoutError) as exc:
-                if attempt:
-                    reason = str(exc) or type(exc).__name__
-                    raise RuntimeError(f"设备断连: {self.serial}; connect: {connection_output}; {reason}") from exc
-            # ADB connect can report failure on stdout with exit code zero.
-            # Only the subsequent get-state confirms that the device is usable.
-            try:
-                connection_output = (await self._run_adb("connect", self.serial)).decode("utf-8", errors="replace").strip()
-            except (OSError, RuntimeError, TimeoutError) as exc:
-                reason = str(exc) or type(exc).__name__
-                raise RuntimeError(f"设备断连: {self.serial}; connect failed: {reason}") from exc
-
-    async def screenshot(self) -> bytes:
-        last_error: Exception | None = None
-        for _ in range(self.settings.capture_max_attempts):
-            await checkpoint()
-            try:
-                image = await self.run("exec-out", "screencap", "-p")
-                if not image.startswith(b"\x89PNG\r\n\x1a\n"):
-                    raise RuntimeError("Invalid PNG screenshot")
-                return image
-            except (RuntimeError, TimeoutError, OSError) as exc:
-                last_error = exc
-        raise RuntimeError(f"Screenshot failed: {last_error}")
-
-
-def build_server(settings: ATVSettings) -> FastMCP:
+def build_server(settings: ATVServerSettings) -> FastMCP:
     server = FastMCP("android-tv", dependencies=[])
     controller = ATVController(settings)
     execution_lock = asyncio.Lock()
@@ -177,15 +101,14 @@ def build_server(settings: ATVSettings) -> FastMCP:
                 raise ValueError(f"Queue length must be 1..{settings.queue_max_operations}")
             for index, operation in enumerate(operations):
                 position = index
-                if isinstance(operation, PressKeyOperation):
-                    RemoteKey(operation.key)
-                elif isinstance(operation, WaitOperation):
+                if isinstance(operation, WaitOperation):
                     if not settings.wait_min_ms <= operation.duration_ms <= settings.wait_max_ms:
                         raise ValueError("Wait duration is outside configured limits")
                 elif isinstance(operation, TextOperation):
                     if re.search(r"[\x00-\x1f\x7f]", operation.text):
                         raise ValueError("Text contains control characters")
-                elif index and isinstance(operations[index - 1], ScreenshotOperation):
+                elif (isinstance(operation, ScreenshotOperation) and index
+                      and isinstance(operations[index - 1], ScreenshotOperation)):
                     raise ValueError("Consecutive screenshots are forbidden")
             async with execution_lock:
                 position = 0
@@ -204,22 +127,20 @@ def build_server(settings: ATVSettings) -> FastMCP:
                                 encoded = await asyncio.to_thread(lambda: base64.b64encode(image).decode("ascii"))
                                 content.append(ImageContent(type="image", data=encoded, mimeType="image/png"))
                             elif isinstance(operation, PressKeyOperation):
-                                await controller.run("shell", "input", "keyevent", _KEY_CODES[RemoteKey(operation.key)])
+                                await controller.press_key(operation.key)
                                 content.append(TextContent(type="text", text=f"{position + 1}: Pressed {operation.key}"))
                             elif isinstance(operation, TextOperation):
-                                # ADB shell joins arguments on-device; quote for that boundary.
-                                text = operation.text.replace(" ", "%s")
-                                await controller.run("shell", "input", "text", shlex.quote(text))
+                                await controller.input_text(operation.text)
                                 content.append(TextContent(type="text", text=f"{position + 1}: Entered text"))
                         await checkpoint()
                         if isinstance(operation, WaitOperation):
                             with anyio.fail_after(settings.operation_timeout_seconds):
-                                await anyio.sleep(operation.duration_ms / 1000)
+                                await controller.wait(operation.duration_ms)
                             content.append(TextContent(type="text", text=f"{position + 1}: Waited {operation.duration_ms} ms"))
                         elif isinstance(operation, (PressKeyOperation, TextOperation)):
                             explicit_wait = position + 1 < len(operations) and isinstance(operations[position + 1], WaitOperation)
                             if not explicit_wait and settings.post_action_wait_ms:
-                                await anyio.sleep(settings.post_action_wait_ms / 1000)
+                                await controller.wait(settings.post_action_wait_ms)
                                 last = content[-1]
                                 assert isinstance(last, TextContent)
                                 last.text += f"; settled for {settings.post_action_wait_ms} ms"
@@ -230,7 +151,8 @@ def build_server(settings: ATVSettings) -> FastMCP:
                 if execution_started else
                 f"Queue rejected before execution at operation {position + 1}; no operations were executed"
             )
-            content.append(TextContent(type="text", text=f"{failure}: {exc}"))
+            reason = str(exc) or type(exc).__name__
+            content.append(TextContent(type="text", text=f"{failure}: {reason}"))
             return CallToolResult(isError=True, content=list(content))
 
     return server
@@ -240,7 +162,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
     arguments = parser.parse_args()
-    settings = ATVSettings.model_validate(yaml.safe_load(arguments.config.read_text(encoding="utf-8")))
+    settings = ATVServerSettings.model_validate(yaml.safe_load(arguments.config.read_text(encoding="utf-8")))
     build_server(settings).run(transport="stdio")
 
 

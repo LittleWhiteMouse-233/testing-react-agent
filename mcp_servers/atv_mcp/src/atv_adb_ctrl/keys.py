@@ -32,6 +32,12 @@ class RemoteKey(StrEnum):
     DIGIT_8 = "DIGIT_8"
     DIGIT_9 = "DIGIT_9"
 
+    @property
+    def code(self) -> str:
+        """Android keyevent code for this remote key."""
+        return _KEY_CODES[self]
+
+
 _KEY_CODES: dict[RemoteKey, str] = {
     RemoteKey.DPAD_UP: "19",
     RemoteKey.DPAD_DOWN: "20",
