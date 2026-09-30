@@ -27,14 +27,15 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows console shutdow
 
 
 @contextmanager
-def console_process(command: list[str], log_path: Path, *, env: dict[str, str] | None = None) -> Iterator[subprocess.Popen[bytes]]:
+def console_process(command: list[str], log_path: Path, *, env: dict[str, str] | None = None,
+                    interactive: bool = False) -> Iterator[subprocess.Popen[bytes]]:
     startup = subprocess.STARTUPINFO()
     startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startup.wShowWindow = subprocess.SW_HIDE
     with log_path.open("wb") as output:
         process = subprocess.Popen(
             command, cwd=ROOT / "backend", env=env,
-            stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if interactive else subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=startup,
         )
         try:
@@ -43,6 +44,8 @@ def console_process(command: list[str], log_path: Path, *, env: dict[str, str] |
             if process.poll() is None:
                 subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True)
                 process.wait(timeout=10)
+            if process.stdin is not None:
+                process.stdin.close()
 
 
 def console_signal(process: subprocess.Popen[bytes], event: int = 1) -> None:
@@ -85,21 +88,27 @@ def wait_for_text(path: Path, text: str, process: subprocess.Popen[bytes], timeo
     raise AssertionError(f"Timed out waiting for {text!r} in {path}: {output}")
 
 
-def test_powershell_entry_ctrl_c_needs_no_input_and_releases_ports(tmp_path: Path) -> None:
+def test_cmd_entry_ctrl_c_explains_confirmation_and_releases_ports(tmp_path: Path) -> None:
     env = {**os.environ, "TEST_AGENT_DATA_DIR": str(tmp_path),
            "TEST_AGENT_DATABASE_URL": f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}",
            "TEST_AGENT_CHECKPOINT_PATH": str(tmp_path / "checkpoints.db")}
     log = tmp_path / "entry.log"
-    command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "start.ps1")]
-    with console_process(command, log, env=env) as process:
+    command = [os.environ["COMSPEC"], "/d", "/c", str(ROOT / "start.cmd")]
+    with console_process(command, log, env=env, interactive=True) as process:
         wait_for_text(log, "Application startup complete", process, timeout=40)
         wait_for_text(log, "Local:", process)
         console_signal(process, event=0)
         wait_for_text(log, "正在停止服务", process, timeout=3)
+        wait_for_text(log, "Services stopped", process)
+        wait_for_text(log, "建议输入 N", process)
+        assert process.stdin is not None
+        process.stdin.write(b"N\r\n")
+        process.stdin.flush()
         process.wait(timeout=20)
     output = log.read_text(encoding="utf-8", errors="replace")
     assert "Application shutdown completed" in output, output
-    assert "Services stopped" in output and "Terminate batch job" not in output
+    assert output.count("建议输入 N") == 1
+    assert output.index("Services stopped") < output.index("建议输入 N")
     assert all(not process_alive(int(pid)) for pid in re.findall(r"process started \(PID (\d+)\)", output))
     for family, host, port in [(socket.AF_INET, "127.0.0.1", 8000),
                                (socket.AF_INET, "127.0.0.1", 5173), (socket.AF_INET6, "::1", 5173)]:
@@ -122,6 +131,49 @@ def test_second_ctrl_c_forces_only_owned_children(tmp_path: Path) -> None:
     output = log.read_text(encoding="utf-8", errors="replace")
     assert "强制退出：结果可能未保存" in output
     assert "Terminate batch job" not in output
+
+
+@pytest.mark.parametrize("cmd_entry,stop_count,exit_code", [
+    (True, 0, 1), (False, 1, 0), (True, 1, 0), (True, 2, 130),
+])
+def test_launcher_confirmation_matches_entry_and_stop_request(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    cmd_entry: bool, stop_count: int, exit_code: int,
+) -> None:
+    from scripts import start_app
+
+    def finish_run(launcher: start_app.AppLauncher) -> int:
+        for _ in range(stop_count):
+            launcher.request_stop(signal.SIGINT, None)
+        return 1 if stop_count == 0 else 0
+
+    monkeypatch.setattr(sys, "argv", ["start_app.py", *(["--cmd-entry"] if cmd_entry else [])])
+    monkeypatch.setattr(start_app.signal, "signal", lambda *_: None)
+    monkeypatch.setattr(start_app.AppLauncher, "run", finish_run)
+    assert start_app.main() == exit_code
+    output = capsys.readouterr().out
+    assert output.count("建议输入 N") == int(cmd_entry and stop_count > 0)
+    if stop_count == 2:
+        assert "Services stopped" not in output
+
+
+def test_launcher_confirmation_does_not_hide_shutdown_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from scripts import start_app
+
+    def fail_shutdown(launcher: start_app.AppLauncher) -> int:
+        launcher.request_stop(signal.SIGINT, None)
+        raise OSError("signal delivery failed")
+
+    monkeypatch.setattr(sys, "argv", ["start_app.py", "--cmd-entry"])
+    monkeypatch.setattr(start_app.signal, "signal", lambda *_: None)
+    monkeypatch.setattr(start_app.AppLauncher, "run", fail_shutdown)
+    with pytest.raises(OSError, match="signal delivery failed"):
+        start_app.main()
+    output = capsys.readouterr().out
+    assert output.count("建议输入 N") == 1
+    assert "Services stopped" not in output
 
 
 def test_failed_migration_never_starts_services(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

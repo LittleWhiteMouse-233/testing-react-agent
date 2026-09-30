@@ -6,6 +6,7 @@ application cleanup. No application modules are imported by this launcher.
 """
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
 import shutil
@@ -132,17 +133,29 @@ class AppLauncher:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Start local development services.")
+    parser.add_argument("--cmd-entry", action="store_true", help="Explain CMD confirmation after interruption.")
+    arguments = parser.parse_args()
     if os.name != "nt":
         print("This launcher requires Windows.", flush=True)
         return 1
     launcher = AppLauncher()
     signal.signal(signal.SIGINT, launcher.request_stop)
     signal.signal(signal.SIGBREAK, launcher.request_stop)
-    result = launcher.run()
-    if launcher.force_requested:
-        return 130
-    print("[launcher] Services stopped.", flush=True)
-    return result
+    try:
+        result = launcher.run()
+        if launcher.force_requested:
+            return 130
+        print("[launcher] Services stopped.", flush=True)
+        return result
+    finally:
+        if arguments.cmd_entry and launcher.stop_requested:
+            print(
+                "[launcher] 若随后出现“终止批处理操作吗(Y/N)?”：\n"
+                "[launcher] 建议输入 N 并回车，让启动脚本完成目录恢复和退出码传递。\n"
+                "[launcher] Y 会跳过剩余脚本收尾；两者都不会重新启动服务，也不会改变此前的关闭结果。",
+                flush=True,
+            )
 
 
 if __name__ == "__main__":

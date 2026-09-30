@@ -85,7 +85,7 @@ def test_install_always_delegates_incremental_updates_then_checks(tmp_path: Path
     check = next(index for index, line in enumerate(calls) if "import alembic" in line)
     assert installation < check
     assert any("install --include=dev" in line for line in calls)
-    assert "start.ps1" in result.stdout
+    assert "start.cmd" in result.stdout
 
 
 def test_install_failure_stops_before_frontend_and_preserves_stage(tmp_path: Path) -> None:
@@ -99,37 +99,34 @@ def test_frontend_install_failure_reports_its_stage(tmp_path: Path) -> None:
     env = script_environment(tmp_path, npm_failure="install")
     result = run_script(tmp_path, env, "install.cmd")
     assert result.returncode == 1 and "Frontend installation failed" in result.stdout
-    assert "start.ps1" not in result.stdout
+    assert "Start with:" not in result.stdout
 
 
-@pytest.mark.parametrize("script", ["start.ps1", "start.cmd"])
-def test_start_stops_after_failed_basic_check(tmp_path: Path, script: str) -> None:
+def test_start_stops_after_failed_basic_check(tmp_path: Path) -> None:
+    script = "start.cmd"
     shutil.copyfile(ROOT / script, tmp_path / script)
     (tmp_path / "check-dependencies.cmd").write_text("@echo off\necho fixture check failed\nexit /b 1\n", encoding="ascii")
     result = subprocess.run(
-        (["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(tmp_path / script)]
-         if script.endswith(".ps1") else [os.environ["COMSPEC"], "/d", "/c", str(tmp_path / script)]),
+        [os.environ["COMSPEC"], "/d", "/c", str(tmp_path / script)],
         capture_output=True, text=True, errors="replace", timeout=20,
     )
     assert result.returncode == 1
     assert "fixture check failed" in result.stdout and "[startup] FAIL" not in result.stdout
 
 
-@pytest.mark.parametrize("script", ["start.ps1", "start.cmd"])
-def test_start_uses_python_from_path_without_conda(tmp_path: Path, script: str) -> None:
+def test_start_uses_python_from_path_without_conda(tmp_path: Path) -> None:
+    script = "start.cmd"
     env = script_environment(tmp_path)
     env.pop("CONDA_PREFIX", None)
     shutil.copyfile(ROOT / script, tmp_path / script)
-    powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     result = subprocess.run(
-        ([str(powershell), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(tmp_path / script)]
-         if script.endswith(".ps1") else [os.environ["COMSPEC"], "/d", "/c", str(tmp_path / script)]),
+        [os.environ["COMSPEC"], "/d", "/c", str(tmp_path / script)],
         cwd=tmp_path, env=env, capture_output=True, text=True, errors="replace", timeout=20,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     calls = (tmp_path / "calls.txt").read_text().splitlines()
     assert any("import alembic" in call for call in calls)
-    assert any(call.startswith("python ") and "start_app.py" in call for call in calls)
+    assert any(call.startswith("python ") and "start_app.py" in call and "--cmd-entry" in call for call in calls)
 
 
 def test_cmd_start_passes_encoding_and_preserves_launcher_exit_code(tmp_path: Path) -> None:

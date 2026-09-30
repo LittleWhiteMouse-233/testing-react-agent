@@ -48,5 +48,5 @@ if errorlevel 1 (
     echo [install] FAIL: Frontend post-install check failed.
     exit /b 1
 )
-echo [install] Installation and basic checks completed. Start with: .\start.ps1
+echo [install] Installation and basic checks completed. Start with: .\start.cmd
 exit /b 0

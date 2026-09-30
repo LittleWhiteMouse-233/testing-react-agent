@@ -52,8 +52,7 @@ MCP 服务独立管理运行环境、依赖和配置；应用仅负责协议接�
 |---|---|
 | `install.cmd` | 检查基础工具，增量安装前后端依赖，并在每端安装后执行基础自检 |
 | `check-dependencies.cmd` | 离线、只读的基础依赖自检，可单独运行 |
-| `start.ps1` | PowerShell 启动入口，自检后启动前后端 |
-| `start.cmd` | CMD 启动入口，也可从 PowerShell 调用 |
+| `start.cmd` | 统一启动入口，自检后启动前后端，可从 CMD 或 PowerShell 调用 |
 
 快捷安装（PowerShell 示例）：
 
@@ -95,23 +94,22 @@ python -m pip check
 
 此检查不作为应用启动门槛。安装和基础自检是短时批处理，手动中断它们时可能出现 Windows 的批处理确认。
 
-### 2. PowerShell 启动入口
+### 2. 启动应用
 
 完成依赖安装并激活目标 Python 环境后，在仓库根目录运行：
 
 ```powershell
-.\start.ps1
+.\start.cmd
 ```
 
-#### 脚本执行策略限制
+`start.cmd` 不受 PowerShell 脚本执行策略限制，也不会初始化 Conda 或切换环境，使用当前 PATH 中的 `python`。
 
-若脚本执行策略阻止启动，可使用仅对本次进程生效的命令，不修改用户或系统策略：
+在 CMD 或 Miniconda/Anaconda Prompt 中使用 Conda 的示例：
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
+```cmd
+conda activate llm-dev
+start.cmd
 ```
-
-这条命令只处理 `start.ps1` 的执行策略限制，不会初始化 Conda 或选择 Python 环境；它继承父终端的 PATH，仍须确保 PATH 中的 `python` 来自目标环境。不想使用 PowerShell 脚本入口时，也可使用下节的 `start.cmd`。
 
 #### Conda 无法激活环境
 
@@ -121,7 +119,7 @@ PowerShell 中能运行 `conda` 不代表能使用 `conda activate`：激活环�
 python -c "import sys; print(sys.executable)"
 ```
 
-不想修改 PowerShell 执行策略时，可使用下节的 CMD 方式（需能识别 `conda`，也可使用 Miniconda/Anaconda Prompt），或在 PowerShell 中直接执行：
+无需修改 PowerShell 执行策略或在当前终端激活环境，只要能识别 `conda`，即可在 PowerShell 中执行：
 
 ```powershell
 $env:PYTHONUTF8 = "1"
@@ -140,28 +138,13 @@ conda run --no-capture-output -n llm-dev .\start.cmd
 
 日志以 `backend` / `frontend` 区分；任一服务意外退出时另一个也会停止。端口被占用时直接报错，不会自动切换端口。
 
-通过 `start.ps1` 启动时，首次 Ctrl+C 立即显示停止提示，停止 Vite 并请求后端正常关闭，不需要回车或 Y/N。后端最多等待三秒让已有 HTTP 请求结束，随后中断仍打开的 SSE，进入应用关闭流程，取消运行、保存终态并清理 MCP。三秒不包含业务收尾时间，正常运行的 SSE 不受影响。
+首次 Ctrl+C 立即显示停止提示，停止 Vite 并请求后端正常关闭；服务关闭流程不需要等待 Y/N 确认。后端最多等待三秒让已有 HTTP 请求结束，随后中断仍打开的 SSE，进入应用关闭流程，取消运行、保存终态并清理 MCP。三秒不包含业务收尾时间，正常运行的 SSE 不受影响。
 
 关闭时页面可能收不到最终取消事件，重启后可查询持久化结果；取消收尾故障仍按现有规则记录为 BLOCKED，已经完成的运行不会被改写。再次 Ctrl+C 会明确提示并强制结束本次启动的进程树，结果可能未保存。
 
-### 3. CMD 启动入口
+启动器收到停止信号后，会在退出、控制权返回 CMD 前解释批处理确认。若随后出现“终止批处理操作吗(Y/N)?”，建议输入 `N` 并回车，让脚本完成目录恢复和退出码传递；`Y` 会跳过剩余脚本收尾。两者都不会重新启动服务，也不会改变此前的关闭结果。此询问来自 CMD，不代表应用清理成功，应以前面的关闭日志为准；`Services stopped.` 只表示启动器已等待服务进程退出。第二次 Ctrl+C 强制退出后也会显示选项说明，但不打印正常停止提示。依赖自检失败时启动器尚未运行，不显示此说明。
 
-在 CMD 中激活已安装依赖的 Python 环境后运行。使用 Conda 的示例：
-
-```cmd
-conda activate llm-dev
-start.cmd
-```
-
-也可在已激活目标环境的 PowerShell 中运行：
-
-```powershell
-.\start.cmd
-```
-
-与 `start.ps1` 相比，`start.cmd` 无需修改 PowerShell 执行策略，但也不会初始化 Conda 或切换 Python 环境。两者复用相同的基础自检、Python 启动器和关闭处理，启动顺序、端口、日志及服务联动停止行为相同；CMD 在 Ctrl+C 时可能额外询问是否终止批处理（Y/N）。
-
-### 4. 前后端分别用命令行启动
+### 3. 前后端分别用命令行启动
 
 完成上述环境准备后，也可直接启动各服务。后端终端先激活自己准备的应用 Python 环境；以下两个终端均从仓库根目录开始：
 
@@ -215,7 +198,7 @@ TEST_AGENT_EXECUTION_MODEL_ID=vision
 
 `mcp_servers/mcp.json` 使用 `mcpServers`，每个连接支持 `command`、`args`、`env`、`cwd`，首版仅 stdio。`cwd` 相对于配置文件解析；命令直接启动，不经过 shell。MCP SDK 继承其标准进程环境，再应用显式 `env`。不同服务的工具加服务名前缀。
 
-按服务文档设置启动命令和工作目录。`command: "python"` 使用启动进程 PATH 中的 Python；通过 `start.ps1` 启动时继承终端已激活的环境。服务使用独立 Python 环境时，将 `command` 设为该环境解释器的绝对路径。
+按服务文档设置启动命令和工作目录。`command: "python"` 使用启动进程 PATH 中的 Python；通过 `start.cmd` 启动时继承终端已激活或 `conda run` 为本次启动选择的环境。服务使用独立 Python 环境时，将 `command` 设为该环境解释器的绝对路径。
 
 连接在一次运行内复用；运行开始冻结实际工具目录，运行中不热加载。Planning 和历史查询不连接 MCP；配置/连接/发现失败时创建运行接口返回 502。只启用此次运行需要的服务。
 
