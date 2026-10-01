@@ -13,6 +13,31 @@ ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows startup scripts")
 
 
+@pytest.mark.parametrize("inspector_exit_code", [0, 7])
+def test_mcp_inspector_uses_service_config_and_inherits_environment(
+    tmp_path: Path, inspector_exit_code: int,
+) -> None:
+    service_root = tmp_path / "service directory"
+    service_root.mkdir()
+    shutil.copyfile(ROOT / "mcp_servers/inspect-mcp.cmd", service_root / "inspect-mcp.cmd")
+    config_text = '{"mcpServers":{"fake":{"command":"python","cwd":"fake_mcp"}}}'
+    (service_root / "mcp.json").write_text(config_text, encoding="utf-8")
+    (service_root / "npx.cmd").write_text(
+        '@echo off\necho %CD%\necho %*\necho %PYTHONUTF8%\necho %CONDA_PREFIX%\n'
+        f'exit /b {inspector_exit_code}\n', encoding="ascii",
+    )
+    result = run_script(
+        tmp_path, {**os.environ, "CONDA_PREFIX": "selected-python-environment"},
+        "service directory/inspect-mcp.cmd",
+    )
+    assert result.returncode == inspector_exit_code, result.stdout + result.stderr
+    assert str(service_root) in result.stdout
+    assert "@modelcontextprotocol/inspector@latest" in result.stdout
+    assert '--config "mcp.json"' in result.stdout
+    assert "\n1\nselected-python-environment\n" in result.stdout
+    assert (service_root / "mcp.json").read_text(encoding="utf-8") == config_text
+
+
 def script_environment(root: Path, *, python_failure: str = "", npm_failure: str = "") -> dict[str, str]:
     for name in ("check-dependencies.cmd", "install.cmd"):
         shutil.copyfile(ROOT / name, root / name)

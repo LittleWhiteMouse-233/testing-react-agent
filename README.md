@@ -204,6 +204,7 @@ TEST_AGENT_EXECUTION_MODEL_ID=vision
 
 ## MCP 服务文档
 
+- [MCP Inspector 调试入口](mcp_servers/README.md)
 - [ATV MCP](mcp_servers/atv_mcp/README.md)
 - [Fake MCP](mcp_servers/fake_mcp/README.md)
 
