@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 set "PYTHONUTF8=1"
 
 if not "%~2"=="" goto usage
@@ -34,7 +34,7 @@ if errorlevel 1 (
 )
 call python -c "from importlib.metadata import version; version('android-tv-test-agent'); import alembic, uvicorn"
 if errorlevel 1 (
-    echo [backend] FAIL: Basic project dependencies are missing or invalid. Run install.cmd.
+    echo [backend] FAIL: Basic project dependencies are missing or invalid. Run user_scripts\install.cmd from the project root.
     exit /b 1
 )
 echo [backend] PASS: Basic dependency check passed.
@@ -57,18 +57,18 @@ call npm.cmd --prefix frontend ls --depth=0 --include=dev >"%dependency_log%" 2>
 if errorlevel 1 (
     type "%dependency_log%"
     del "%dependency_log%"
-    echo [frontend] FAIL: Direct dependencies are missing or invalid. Run install.cmd.
+    echo [frontend] FAIL: Direct dependencies are missing or invalid. Run user_scripts\install.cmd from the project root.
     exit /b 1
 )
 del "%dependency_log%"
 node frontend\node_modules\vite\bin\vite.js --version
 if errorlevel 1 (
-    echo [frontend] FAIL: Vite cannot start. Run install.cmd and inspect the error above.
+    echo [frontend] FAIL: Vite cannot start. Run user_scripts\install.cmd from the project root and inspect the error above.
     exit /b 1
 )
 echo [frontend] PASS: Basic dependency check passed.
 exit /b 0
 
 :usage
-echo Usage: check-dependencies.cmd [backend^|frontend]
+echo Usage: user_scripts\check-dependencies.cmd [backend^|frontend]
 exit /b 2

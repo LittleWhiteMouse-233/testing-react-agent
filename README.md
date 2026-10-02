@@ -23,6 +23,8 @@
 - `backend/app/tools.py`：标准 stdio MCP 配置、会话和 LangChain 工具导入；不理解设备或工具参数语义。
 - `backend/app/event_stream/`：共享有界 EventBus；执行事件经 RunEventWriter 提交后通知，规划事件仅在连接中发送。慢订阅队列溢出会断开，执行流可从数据库补拉，规划流不保留历史。
 - `frontend/`：计划编辑、实时运行、历史和报告。
+- `backend/scripts/` 和 `frontend/scripts/`：开发用契约生成工具。
+- `user_scripts/`：安装、启动和独立能力检测工具，见[用户脚本文档](user_scripts/README.md)。
 - `mcp_servers/`：独立 MCP 服务，使用说明见下方[服务文档](#mcp-服务文档)。
 - `mcp_servers/mcp.json`：宿主连接配置；`data/`：忽略的运行数据库、checkpoint、证据和导出。
 
@@ -30,141 +32,21 @@
 
 MCP 服务独立管理运行环境、依赖和配置；应用仅负责协议接入。安装和使用方式见各服务文档。
 
-## 安装和启动
+## 启动应用
 
-以下示例均从仓库根目录开始，使用当前环境的 `python`，不要求特定环境名称。
-
-### 1. 环境准备
-
-#### 运行环境与配置
-
-- Python 3.12 或 3.13：使用自己选择的环境管理方式创建和激活 Python 环境；若终端已自动激活目标环境，无需重复激活。
-- Node.js/npm：当前锁定的 Vite 要求 Node.js `^20.19.0 || >=22.12.0`，确保 `node` 和 `npm.cmd` 在 PATH 中可用。
-- 首次使用时，复制 `.env.example` 为 `.env`，并复制 `models.example.toml` 为 `models.toml`。在 `models.toml` 中配置各模型的连接、API key 和参数，在 `.env` 中选择规划与执行模型并配置 MCP。模型配置变更后需重启。
-
-默认 scripted 模型只用于测试；没有显式执行场景时返回 blocked，不会猜测工具名称或伪造截图。
-
-#### 依赖安装与快捷脚本
-
-仓库提供以下本地开发快捷脚本。运行前须先激活自己的 Python 环境；脚本均使用当前 PATH 中的 `python`，不依赖 Conda、不选择或切换环境。
-
-| 脚本 | 用途 |
-|---|---|
-| `install.cmd` | 检查基础工具，增量安装前后端依赖，并在每端安装后执行基础自检 |
-| `check-dependencies.cmd` | 离线、只读的基础依赖自检，可单独运行 |
-| `start.cmd` | 统一启动入口，自检后启动前后端，可从 CMD 或 PowerShell 调用 |
-
-快捷安装（PowerShell 示例）：
-
-```powershell
-.\install.cmd
-```
-
-也可直接执行安装命令：
-
-```powershell
-$env:PYTHONUTF8 = "1"
-python -m pip install -e "./backend[dev]"
-npm.cmd --prefix frontend install --include=dev
-```
-
-后端安装开发依赖，前端包含 Vite 等开发依赖。PowerShell 示例使用 `npm.cmd`，避免 `npm.ps1` 的执行策略限制。
-
-安装脚本先检查当前 Python 和 Node/npm，再始终执行两端增量安装，由包管理器判断需要更新的依赖；每端安装后复用基础自检。不清空环境或 `node_modules`，安装中止后可重新运行；editable 注册可能重新生成。失败时保留包管理器诊断并指出阶段。
-
-`install.cmd` 仅安装应用依赖；MCP 服务请按[服务文档](#mcp-服务文档)单独准备。
-
-#### 基础自检与依赖排查
-
-```powershell
-.\check-dependencies.cmd
-# 也可只检查一端
-.\check-dependencies.cmd backend
-.\check-dependencies.cmd frontend
-```
-
-`check-dependencies.cmd` 只做离线、只读的基础自检：检查基础工具、后端项目安装记录与 Alembic/Uvicorn 导入、前端直接依赖与 Vite 入口。无参数检查两端并汇总，也支持 `backend` 或 `frontend`；退出码 0 为通过、1 为失败、2 为参数错误。它不加载应用，不验证模型配置、凭据、数据库、端口、MCP、电视或完整依赖文件，不承担保证应用可用的责任。启动检查失败不会自动安装，按提示补齐前置工具或运行 `install.cmd`。
-
-需要排查当前 Python 环境的依赖冲突时，可单独运行：
-
-```powershell
-$env:PYTHONUTF8 = "1"
-python -m pip check
-```
-
-此检查不作为应用启动门槛。安装和基础自检是短时批处理，手动中断它们时可能出现 Windows 的批处理确认。
-
-### 2. 启动应用
-
-完成依赖安装并激活目标 Python 环境后，在仓库根目录运行：
+完成依赖安装和[宿主配置](#宿主配置)，并激活目标 Python 环境后，在仓库根目录运行统一启动入口：
 
 ```powershell
 .\start.cmd
 ```
 
-`start.cmd` 不受 PowerShell 脚本执行策略限制，也不会初始化 Conda 或切换环境，使用当前 PATH 中的 `python`。
-
-在 CMD 或 Miniconda/Anaconda Prompt 中使用 Conda 的示例：
-
-```cmd
-conda activate llm-dev
-start.cmd
-```
-
-#### Conda 无法激活环境
-
-PowerShell 中能运行 `conda` 不代表能使用 `conda activate`：激活环境需要加载 Conda 的 PowerShell 初始化代码。未执行过 `conda init powershell`、未加载终端配置，或执行策略禁止加载 `Conda.psm1` 时，激活可能失败；仅能找到 `conda.bat` 也不代表当前 PowerShell 已切换环境。可用以下命令检查实际使用的 Python 路径：
-
-```powershell
-python -c "import sys; print(sys.executable)"
-```
-
-无需修改 PowerShell 执行策略或在当前终端激活环境，只要能识别 `conda`，即可在 PowerShell 中执行：
-
-```powershell
-$env:PYTHONUTF8 = "1"
-conda run --no-capture-output -n llm-dev .\start.cmd
-```
-
-`conda run` 为本次启动选择环境，无需在当前 PowerShell 中执行 `conda activate`；`start.cmd` 仍会完成依赖自检并调用 Python 启动器。`llm-dev` 只是环境名示例，请替换成已安装项目依赖的环境。直接运行 `start.cmd` 本身不会自动切换到 `llm-dev`。
-
-#### 启动后会执行的操作与停止方式
-
-入口自动设置 Python UTF-8，沿用终端已经激活的 Python 环境，并依次执行：
-
-1. 运行基础依赖自检，失败则停止，不自动安装依赖。
-2. 调用 Python 启动器执行数据库迁移，迁移失败不会启动服务。
-3. 启动后端和前端。打开 http://localhost:5173 使用应用，后端监听 `127.0.0.1:8000`（单 worker）。
-
-日志以 `backend` / `frontend` 区分；任一服务意外退出时另一个也会停止。端口被占用时直接报错，不会自动切换端口。
-
-首次 Ctrl+C 立即显示停止提示，停止 Vite 并请求后端正常关闭；服务关闭流程不需要等待 Y/N 确认。后端最多等待三秒让已有 HTTP 请求结束，随后中断仍打开的 SSE，进入应用关闭流程，取消运行、保存终态并清理 MCP。三秒不包含业务收尾时间，正常运行的 SSE 不受影响。
-
-关闭时页面可能收不到最终取消事件，重启后可查询持久化结果；取消收尾故障仍按现有规则记录为 BLOCKED，已经完成的运行不会被改写。再次 Ctrl+C 会明确提示并强制结束本次启动的进程树，结果可能未保存。
-
-启动器收到停止信号后，会在退出、控制权返回 CMD 前解释批处理确认。若随后出现“终止批处理操作吗(Y/N)?”，建议输入 `N` 并回车，让脚本完成目录恢复和退出码传递；`Y` 会跳过剩余脚本收尾。两者都不会重新启动服务，也不会改变此前的关闭结果。此询问来自 CMD，不代表应用清理成功，应以前面的关闭日志为准；`Services stopped.` 只表示启动器已等待服务进程退出。第二次 Ctrl+C 强制退出后也会显示选项说明，但不打印正常停止提示。依赖自检失败时启动器尚未运行，不显示此说明。
-
-### 3. 前后端分别用命令行启动
-
-完成上述环境准备后，也可直接启动各服务。后端终端先激活自己准备的应用 Python 环境；以下两个终端均从仓库根目录开始：
-
-```powershell
-# 后端终端
-$env:PYTHONUTF8 = "1"
-cd backend
-python -m alembic upgrade head
-python -m uvicorn app.main:app --port 8000
-```
-
-```powershell
-# 前端终端
-cd frontend
-npm.cmd run dev
-```
-
-分别启动时需自行执行数据库迁移，并在两个终端分别停止服务。
+启动后打开 http://localhost:5173 使用应用。环境准备、安装与依赖自检、其他启动方式、停止与排障，以及 MCP/LLM 诊断工具的详细说明见[用户脚本文档](user_scripts/README.md)。
 
 ## 宿主配置
+
+首次使用时，复制 `.env.example` 为 `.env`，并复制 `models.example.toml` 为 `models.toml`。在 `models.toml` 中配置各模型的连接、API key 和参数，在 `.env` 中选择规划与执行模型并配置 MCP。模型配置变更后需重启。
+
+默认 scripted 模型只用于测试；没有显式执行场景时返回 blocked，不会猜测工具名称或伪造截图。
 
 | 配置 | 默认值 / 作用 |
 |---|---|
@@ -204,7 +86,6 @@ TEST_AGENT_EXECUTION_MODEL_ID=vision
 
 ## MCP 服务文档
 
-- [MCP Inspector 调试入口](mcp_servers/README.md)
 - [ATV MCP](mcp_servers/atv_mcp/README.md)
 - [Fake MCP](mcp_servers/fake_mcp/README.md)
 

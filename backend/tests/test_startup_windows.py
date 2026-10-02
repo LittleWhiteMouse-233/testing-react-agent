@@ -140,7 +140,7 @@ def test_launcher_confirmation_matches_entry_and_stop_request(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     cmd_entry: bool, stop_count: int, exit_code: int,
 ) -> None:
-    from scripts import start_app
+    from user_scripts import start_app
 
     def finish_run(launcher: start_app.AppLauncher) -> int:
         for _ in range(stop_count):
@@ -160,7 +160,7 @@ def test_launcher_confirmation_matches_entry_and_stop_request(
 def test_launcher_confirmation_does_not_hide_shutdown_error(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from scripts import start_app
+    from user_scripts import start_app
 
     def fail_shutdown(launcher: start_app.AppLauncher) -> int:
         launcher.request_stop(signal.SIGINT, None)
@@ -177,7 +177,7 @@ def test_launcher_confirmation_does_not_hide_shutdown_error(
 
 
 def test_failed_migration_never_starts_services(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from scripts.start_app import AppLauncher
+    from user_scripts.start_app import AppLauncher
     launcher = AppLauncher()
     original_start = launcher.start
     started: list[str] = []
@@ -206,7 +206,7 @@ def test_service_port_conflict_stops_peer(tmp_path: Path, service: str) -> None:
             occupied = sockets.enter_context(socket.socket(family))
             occupied.bind((host, port))
             occupied.listen()
-        with console_process([sys.executable, str(ROOT / "backend/scripts/start_app.py")], log, env=env) as process:
+        with console_process([sys.executable, str(ROOT / "user_scripts/start_app.py")], log, env=env) as process:
             process.wait(timeout=30)
             assert process.returncode == 1
         output = log.read_text(encoding="utf-8", errors="replace")
@@ -313,8 +313,8 @@ if __name__ == "__main__":
     if sys.argv[1] == "server":
         run_server(Path(sys.argv[2]), int(sys.argv[3]), sys.argv[4])
     else:
-        sys.path.insert(0, str(ROOT / "backend"))
-        from scripts.start_app import AppLauncher
+        sys.path.insert(0, str(ROOT))
+        from user_scripts.start_app import AppLauncher
         launcher = AppLauncher()
         signal.signal(signal.SIGINT, launcher.request_stop)
         signal.signal(signal.SIGBREAK, launcher.request_stop)

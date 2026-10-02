@@ -2,7 +2,8 @@
   "include": [
     "backend/app",
     "backend/scripts",
-    "backend/tests"
+    "backend/tests",
+    "user_scripts"
   ],
   "exclude": [
     "backend/alembic",

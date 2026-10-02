@@ -1,6 +1,6 @@
 @echo off
 setlocal
-pushd "%~dp0"
+pushd "%~dp0..\mcp_servers"
 if errorlevel 1 exit /b 1
 set "PYTHONUTF8=1"
 

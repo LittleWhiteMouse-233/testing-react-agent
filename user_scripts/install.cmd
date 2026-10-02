@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 set "PYTHONUTF8=1"
 
 echo [install] Checking installation prerequisites...
@@ -31,7 +31,7 @@ if errorlevel 1 (
     echo [install] FAIL: Backend installation failed. See the package manager output above.
     exit /b 1
 )
-call check-dependencies.cmd backend
+call "%~dp0check-dependencies.cmd" backend
 if errorlevel 1 (
     echo [install] FAIL: Backend post-install check failed.
     exit /b 1
@@ -43,7 +43,7 @@ if errorlevel 1 (
     echo [install] FAIL: Frontend installation failed. See the package manager output above.
     exit /b 1
 )
-call check-dependencies.cmd frontend
+call "%~dp0check-dependencies.cmd" frontend
 if errorlevel 1 (
     echo [install] FAIL: Frontend post-install check failed.
     exit /b 1

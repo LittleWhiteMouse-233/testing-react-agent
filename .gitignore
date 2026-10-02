@@ -23,15 +23,6 @@ models.toml
 # Runtime data
 /data/
 
-# Script sources are explicitly allowed; other local files stay untracked.
-# Add new maintained scripts/docs here. Prefer /data/scripts/ for runtime output.
-/backend/scripts/*
-!/backend/scripts/export_openapi.py
-!/backend/scripts/start_app.py
-# !/backend/scripts/README.md
-# !/backend/scripts/check_llm_capabilities.py
-# !/backend/scripts/llm-capabilities-requirements.txt
-
 # External Resources
 /mcp_servers/external/
 

@@ -38,5 +38,6 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+pythonpath = [".."]
 testpaths = ["tests"]
 addopts = "-p no:cacheprovider"
