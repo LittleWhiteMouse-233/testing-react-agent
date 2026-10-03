@@ -22,6 +22,7 @@ models.toml
 
 # Runtime data
 /data/
+/user_scripts/*_llm_check_*/
 
 # External Resources
 /mcp_servers/external/

@@ -13,7 +13,7 @@
 
 命令示例从仓库根目录开始；明确写出 `cd` 的后续命令按切换后的目录执行。
 工具使用当前选定的 Python 环境，不会自动选择或切换环境。批处理入口和应用启动器用于 Windows。
-应用依赖、LLM 检测工具的专用依赖、各 MCP 服务的依赖分别准备，安装应用不会安装后两者。
+LLM 检测依赖随应用一并安装；各 MCP 服务的依赖仍由服务自行准备。
 
 ## 安装和启动
 
@@ -173,98 +173,125 @@ Inspector 会建立自己的 MCP 会话；它用于手动调试，不显示 Agen
 
 ## LLM 供应商能力检测
 
-`check_llm_capabilities.py` 是独立的人工检测工具，不加载应用配置、不调用 MCP、
-不使用真实设备，也不生成报告文件。真实请求会产生供应商调用费用。
+`check_llm_capabilities.py` 是独立的供应商适配性检测工具，不加载应用配置或业务代码，
+不调用 MCP 或真实设备。真实检测会产生供应商调用费用。
 
 ### 安装与运行
 
-以下示例使用 Conda 环境 `llm-dev`，均从仓库根目录运行；可替换成自己的工具环境：
+依赖统一由 `backend/pyproject.toml` 声明，包含 LangChain OpenAI/Anthropic 集成和 LangGraph，
+不再需要单独的 requirements 文件。以下命令从仓库根目录运行：
 
 ```powershell
 $env:PYTHONUTF8 = "1"
-conda run --no-capture-output -n llm-dev python -m pip install -r user_scripts/llm-capabilities-requirements.txt
+conda run --no-capture-output -n llm-dev python -m pip install -e "./backend[dev]"
 conda run --no-capture-output -n llm-dev python user_scripts/check_llm_capabilities.py --list
-conda run --no-capture-output -n llm-dev python user_scripts/check_llm_capabilities.py --base-url https://provider.example --model your-model
+conda run --no-capture-output -n llm-dev python user_scripts/check_llm_capabilities.py
 ```
 
-脚本专用依赖文件锁定了验证版本；安装会同步更新当前环境中的这些包，
-不会修改应用的依赖声明。未安装 `langchain-anthropic` 时，Messages 检测会标明客户端缺失，
-其他协议仍可运行。
-
-运行时隐藏输入令牌。`--base-url` 是公共接口根地址，不包含 `/v1`、具体接口路径或查询参数；
-网关公共前缀可以保留，例如 `https://provider.example/gateway`。
-三个协议使用同一模型和令牌，分别访问根地址下的 `/v1/chat/completions`、
-`/v1/responses`、`/v1/messages`。认证由各 LangChain 集成按其协议处理，
-不自动尝试其他认证方式。网关不支持某一接口、模型名称或认证时，终端保留实际错误。
-
-可筛选协议和场景，每个参数可以重复：
+未提供的模型名称、公共根地址、API Key 会逐项提示输入；API Key 隐藏输入。
+也可使用 `--model`、`--base-url`、`--api-key` 提供参数。检测不读取应用的模型配置。
+`--list` 仅列出协议和 case，不要求凭据、不发起请求。
 
 ```powershell
-conda run --no-capture-output -n llm-dev python user_scripts/check_llm_capabilities.py --base-url https://provider.example --model your-model --protocol chat --protocol responses --scenario tools_json --scenario tools_schema --timeout 60
+$env:PYTHONUTF8 = "1"
+conda run --no-capture-output -n llm-dev python user_scripts/check_llm_capabilities.py --base-url https://provider.example --model your-model --protocol chat responses --case case2.2 case4.2 --timeout 60
 ```
 
-协议名称为 `chat`、`responses`、`messages`。默认遍历全部协议和场景，
-每次请求上限 2048 个输出 token、超时 60 秒，无自动重试。中途按 Ctrl+C 停止。
-脚本主动关闭 LangSmith tracing，避免使用当前环境的 tracing 配置发送检测内容。
+`--protocol` 和 `--case` 均接受列表，也可重复提供；去重后按规格顺序执行。
+不指定筛选时运行全部三个协议和 11 个 case。旧 `--scenario` 已替换为 `--case`。
 
-### 图片配置与输入
+`--base-url` 是公共根地址，不包含 `/v1`、具体接口路径、凭据或查询参数；
+网关公共前缀可以保留，例如 `https://provider.example/gateway`。
+三个协议使用同一模型和令牌，分别访问根地址下的 `/v1/chat/completions`、
+`/v1/responses`、`/v1/messages`，认证由各 LangChain 集成处理。
 
-直接编辑脚本顶部的 `IMAGE_BASE64` 和 `IMAGE_MIME_TYPE`，例如：
+默认每次模型调用超时 60 秒、最多 2048 个输出 token，`max_retries=0`。
+初始化、绑定、调用中的 `UserWarning` 直接作为异常记录，不重试、不降级。
+Responses 关闭远端存储和自动历史 ID 关联；脚本关闭 LangSmith tracing。
 
-```python
-IMAGE_BASE64 = """这里粘贴数字图片的原始 Base64，可换行"""
-IMAGE_MIME_TYPE = "image/png"
-```
+### 预制素材与 case
 
-不要包含 `data:image/...;base64,` 前缀。支持 PNG、JPEG、WebP、GIF 的 MIME。
-脚本仅验证 Base64 与 MIME 配置，图片能否被模型解码和识别由真实请求检测。
-图片未填或配置无效时跳过图片组，纯文本组始终使用 `[12, 7, 25]`。
-图片场景要求按从上到下、从左到右提取数字。
+脚本顶部集中定义数字序列 `NUMBERS = [12, 7, 25]`、显示这些数字的 PNG Base64、
+识别要求和处理要求。识别要求明确回复必须包含文本，并先简短说明收到的内容，
+即便本轮需要调用工具，也要先完成说明再调用工具。
+可以修改 `IMAGE_BASE64`、`IMAGE_MIME_TYPE`，Base64 可换行，
+但不能带 `data:` 前缀。支持 PNG、JPEG、WebP、GIF 的 MIME。
 
-内置工具 `X(numbers)` 返回数字总和加 1，`Y(numbers)` 返回数字总和减 1。
-纯文本组的结果分别为 45 和 43。提示词及模型可见工具描述不泄露算法。
-模型默认自主选择工具；调用记录才是是否使用 X/Y 的依据，最终数值仅辅助核对。
+素材按 case 需要校验。空序列、非数字或非有限数字、空或非法 Base64 等配置错误记为 ERROR，
+不发送模型请求，继续检测其他 case。本地校验 Base64 编码及非空内容，图像解码和识别能力由供应商检测。
+工具 A/B 分别返回数字之和加一、减一，模型可见工具描述不透露算法。
 
-### 场景与输出解读
-
-| 场景 | 检测内容 |
+| Case ID | 检测内容 |
 |---|---|
-| `understanding` | 描述输入、提取数字，无工具 |
-| `prompt_json` | 仅提示词要求 JSON，正文按 Schema 检查 |
-| `json_mode` | 原生 JSON 模式 |
-| `json_schema` | 原生 JSON Schema，明确指定方法 |
-| `tools` | 提供 X/Y，要求进行 X 处理并说明理解与依据 |
-| `tools_json` | 原生工具 + JSON 模式正文 |
-| `tools_schema` | 原生工具 + JSON Schema 正文 |
-| `multi_tools` | 同轮进行 X 和 Y 处理 |
-| `assistant_tail` | 无调用的非空 AI 回复放在历史末尾，再次请求 |
-| `image_retention` | 删除历史图片、保留实际 AI 文字，再要求 X 处理，仅图片组 |
+| `case1` | 图片识别；自动检查正文非空，内容正确性人工核验 |
+| `case1a` | 图片替换成占位文字后，保留真实 AI 回复并询问数字总数 |
+| `case2.1` | 系统提示词要求 JSON |
+| `case2.2` | 系统格式提示词 + 原生 json_mode |
+| `case2.3` | 原生 json_schema |
+| `case3` | 要求工具 B |
+| `case3a` | 要求同时进行 A、B 处理 |
+| `case4.1` | 同次回复包含 JSON 正文和工具 B，格式由提示词要求 |
+| `case4.2` | 同次回复包含 JSON 正文和工具 B，使用 json_mode |
+| `case4.3` | 同次回复包含 JSON 正文和工具 B，使用 json_schema |
+| `case5` | 以预制 AI 消息结尾；观察 AI Tail 行为，只作人工检查 |
 
-除图片回收外，每个场景均有纯文本和图片两组。Messages 没有独立 `json_object` 模式，
-相应场景标明不支持，不自动改成 Schema。框架发出可能导致模式变化的 UserWarning 时停止该场景，
-不会把回退后的结果记为原模式成功。
+JSON 结构为 `{"description":"内容说明","num":[12,7,25],"sum":44}`。
+结构校验仅检查结构与类型，不评分数字识别或求和是否正确。框架解析通过后，另外检查整段正文是否为纯 JSON：
+两端空白不影响 PASS；前后说明、Markdown 代码围栏等非纯 JSON 输出记为 WARNING。
+结构或工具校验失败仍为 FAIL，格式提醒与结构失败统一保存在 JSON 校验项中。Case2.1/2.2/4.1/4.2 使用
+`PydanticOutputParser.get_format_instructions()` 生成系统格式要求，与应用 planning 相同。
+解析沿用框架行为，不自行修复或重写原始正文。
 
-Chat Completions 的 `tools_json` 因 LangChain 所用解析接口的要求，必须绑定 `strict=True`
-工具；Responses 的同一场景不要求它。两种 OpenAI 协议的 `tools_schema` 都启用 strict。
-这些设置会在终端打印，比较时应同时考虑正文格式和工具 Schema 的差异。
+工具用例绑定 A、B，不限制调用数量、不强制工具选择；用真实 ToolNode 检查参数与工具执行结果。
+工具结果只写记录，不再回传模型。Case4 系列分别记录 JSON、工具的校验结果；
+仅有工具调用而没有 JSON 正文时，JSON 校验失败。
 
-工具场景最多两次模型调用：第一轮调用本地工具、第二轮观察结果使用。
-没有调用时直接记录；第二轮仍要求调用时只展示，不继续执行。
-图片回收最多三次调用（先观察，再处理，再使用工具结果）；每次都显式发送历史，
-Responses 关闭存储和自动历史 ID 关联。若前置观察没有非空正文则跳过后续，绝不补写观察。
+每个普通 case 只调用模型一次。Case1a 在同一协议内有成功 Case1 记录时复用对话，
+替换图片并新增一次调用；没有 Case1 记录时自行完成两次调用，全部属于 Case1a，
+不会补选或生成 Case1 结果。原 Case1 记录保持不变。
 
-终端展示输入文字和角色、实际方法、原始内容块、工具参数和结果、框架解析结果、
-正文格式检查、响应元信息、token 用量及耗时。图片只显示 MIME 和字节数；
-令牌及配置的图片 Base64 会脱敏。格式完整不代表视觉理解或理由正确。
-无正文但有工具调用会正常执行，不要求补写说明。
+已有 Case1 失败记录时 Case1a 为 NA；已有 Case3 失败记录时 Case3a/Case4 系列为 NA。
+未选择 Case3 时，Case3a/Case4 系列独立执行。记录只在本次运行、同一协议内生效，不读取旧报告。
 
-接口错误带 HTTP 状态；没有 HTTP 状态的异常单独标记，不能直接推断为供应商拒绝。
-单场景失败不会终止其他检测。末尾汇总仅描述这次观察，不推断永久能力。
-正常完成检测返回退出码 0（即使部分探测失败），命令行参数错误为 2，中断为 130。
+当前 Anthropic 集成的 json_mode 会发出降级警告，Case2.2/4.2 因而直接记录 ERROR，
+不会向供应商发送这个请求或替换为 Schema 模式。OpenAI Case4.2 使用工具绑定与 json_object 组合，
+其中 Chat Completions 按 SDK 解析要求启用 strict 工具；Case4.3 使用原生 Schema 与工具的公开绑定接口。
 
-框架依据：[ChatOpenAI structured output](https://reference.langchain.com/python/langchain-openai/chat_models/base/BaseChatOpenAI/with_structured_output)、
-[ChatAnthropic](https://reference.langchain.com/python/langchain-anthropic)、
-[Anthropic structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs)。
+### 输出与结果
+
+终端显示每个 case 的开始状态与简述、结束状态、记录文件位置，以及结束时的总览。
+失败项会附上校验项、错误类别与异常类型，例如 `FAIL [json: validation/OutputParserException]`；
+HTTP 错误同时显示实际状态码，例如 `ERROR [http/BadRequestError (HTTP 400)]`。
+完整错误原文仍保存在 JSON 中。
+格式提醒会显示为 `WARNING [json: WARNING validation/JSONDecodeError]`。
+
+| 状态 | 含义 |
+|---|---|
+| PASS | 通过该 case 的自动检查，不表示所有内容正确或供应商永久支持该能力 |
+| WARNING | JSON 可通过框架结构校验，但正文不是纯 JSON，包含额外文本或格式标记 |
+| FAIL | 模型输出未通过结构、非空正文或工具调用校验 |
+| ERROR | 素材配置、客户端、HTTP、连接、超时或工具执行异常 |
+| NA | 被同协议中已有的失败 case 记录跳过 |
+| MANUAL | Case5 已返回，需查看原始记录人工判断 |
+
+每次运行在脚本目录下生成一个 `<安全化模型名>_llm_check_<微秒时间戳>/` 目录，
+按 `<protocol>/<case_id>.json` 保存各 case，包含失败和跳过的 case。
+整个运行目录已加入 Git 忽略规则，可按运行集中查看或删除。
+
+记录包含 case ID 与简述（`case_description`）、调用输入、原始 AIMessage、工具调用、
+ToolNode 结果、校验结果、耗时和原始错误。简述来自注册表，作为本次运行的说明快照保存。
+每次调用输入分别快照保存，因此 Case1a 的图片替换可复核。绑定失败时也会保留准备好的输入，
+这不代表已经发送了 HTTP 请求。框架返回 AIMessage 前发生错误时，不伪造缺失的模型回复。
+
+`checks` 中某项的空诊断列表表示该项通过，缺少该项表示未检查；最终状态从记录推导。
+每条诊断使用 `ProbeDiagnostic` 保存，`severity` 为 `error` 或 `warning`，默认是 `error`。
+JSON 结构校验和全文检查统一由 `validate_json_response` 完成，格式提醒写入 `checks["json"]`，
+保留全文解码异常的类型与原文；异常和校验失败优先于 WARNING。
+异常按类型与 HTTP 状态分类，保留异常类型、原文和实际状态码，不根据文案猜测供应商能力，
+也不把输出解析错误写成 HTTP 拒绝。记录不序列化客户端、API Key 参数或认证头。
+
+检测正常结束退出码为 0，即使有部分 FAIL/ERROR/WARNING；参数错误为 2，Ctrl+C/输入中断为 130。
+记录文件写入失败时展示原始错误并以 1 退出，停止后续检测。
 
 ### 无网络验证
 
@@ -274,5 +301,6 @@ conda run --no-capture-output -n llm-dev python -m pytest -q backend/tests/test_
 conda run --no-capture-output -n llm-dev python -m pyright user_scripts/check_llm_capabilities.py backend/tests/test_llm_capabilities.py
 ```
 
-测试在 HTTP 传输边界返回模拟响应，仍使用真实 LangChain 集成进行序列化、解析及工具执行。
-它们验证脚本行为，不代替真实模型检测。
+测试按上述 case 契约设计，使用真实 LangChain 客户端、Pydantic 解析器与 ToolNode，
+仅在 HTTP 传输边界提供模拟响应，不访问供应商、凭据、MCP 或真实设备。
+消息断言检查角色、内容块类型和历史保留关系，不依赖提示词或图片占位符的具体文案。
