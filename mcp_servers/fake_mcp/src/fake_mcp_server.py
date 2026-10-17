@@ -27,7 +27,7 @@ class ReplayCall(BaseModel):
 
 
 class ReplayScenario(BaseModel):
-    """Tool discovery and ordered protocol responses for one server session."""
+    """Tool discovery and ordered responses across framework-owned sessions."""
 
     model_config = ConfigDict(extra="forbid")
     tools: list[Tool]
@@ -38,7 +38,10 @@ class ReplayScenario(BaseModel):
 async def serve(scenario_path: Path, record_path: Path) -> None:
     scenario = ReplayScenario.model_validate_json(scenario_path.read_text(encoding="utf-8"))
     server = Server("scripted-mcp", version="0.1.0")
-    next_call = 0
+    next_call = sum(
+        json.loads(line)["phase"] == "started"
+        for line in record_path.read_text(encoding="utf-8").splitlines()
+    ) if record_path.exists() else 0
 
     def record(phase: str, **facts: JsonValue) -> None:
         with record_path.open("a", encoding="utf-8") as stream:

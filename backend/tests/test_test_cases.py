@@ -248,22 +248,20 @@ def test_accepted_start_blocks_archive_during_mcp_preparation_and_execution(tmp_
         assert client.portal is not None
         entered, release = asyncio.Event(), asyncio.Event()
         executing, finish = asyncio.Event(), asyncio.Event()
-        original_connect = container.tools.connect
+        original_discover = container.tools.discover_tools
         original_run = container.executor.run
 
-        @asynccontextmanager
-        async def connect(**kwargs):
+        async def discover_tools():
             entered.set()
             await release.wait()
-            async with original_connect(**kwargs) as tools:
-                yield tools
+            return await original_discover()
 
         async def run(*args, **kwargs):
             executing.set()
             await finish.wait()
             return await original_run(*args, **kwargs)
 
-        monkeypatch.setattr(container.tools, "connect", connect)
+        monkeypatch.setattr(container.tools, "discover_tools", discover_tools)
         monkeypatch.setattr(container.executor, "run", run)
         pending: asyncio.Task | None = None
 

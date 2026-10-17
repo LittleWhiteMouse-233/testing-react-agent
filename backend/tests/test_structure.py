@@ -96,7 +96,7 @@ def run_environment_snapshot() -> RunEnvironmentSnapshot:
         act_prompt_version="act-v1",
         judge_prompt_version="judge-v1",
         app_version="0.1.0",
-        execution_protocol_version="3",
+        execution_protocol_version="4",
     )
 
 
@@ -494,7 +494,7 @@ def test_graph_state_and_event_vocabulary_have_no_parallel_protocol() -> None:
     assert set(TaskAgentGraphState.__annotations__) == {
         "messages",
         "cycle_count",
-        "model_attempt",
+        "model_response_attempt",
         "completion",
         "route",
     }

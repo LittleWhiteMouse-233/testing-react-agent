@@ -30,7 +30,7 @@ from app.domain.errors import PlanningUserInputRequired, TestCaseBusy, TestCaseH
 from app.domain.planning import TestCase, TestCaseContent, TestPlan
 from app.domain.planning.events import PlanningEvent
 from app.reporting import TestRunReport
-from app.execution.run_service import RunConflict, RunResourcesUnavailable
+from app.execution.run_service import RunConflict
 from app.tools import MCPConnectionError
 
 
@@ -229,8 +229,6 @@ async def create_test_run(
         raise problem(502, "mcp_unavailable", str(exc)) from exc
     except RunConflict as exc:
         raise problem(409, "active_run_exists", str(exc)) from exc
-    except RunResourcesUnavailable as exc:
-        raise problem(409, "run_resources_unavailable", str(exc)) from exc
     except LookupError as exc:
         raise problem(404, "run_input_not_found", str(exc)) from exc
     except TestCaseBusy as exc:

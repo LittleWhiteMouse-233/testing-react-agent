@@ -969,7 +969,7 @@ export interface components {
              * Execution Protocol Version
              * @constant
              */
-            execution_protocol_version: "3";
+            execution_protocol_version: "4";
             /** Judge Max Cycles */
             judge_max_cycles: number;
             /** Judge Prompt Version */

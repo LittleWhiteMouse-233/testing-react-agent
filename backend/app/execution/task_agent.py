@@ -18,19 +18,17 @@ from langchain_core.messages import (
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.config import get_stream_writer
-from langgraph.errors import GraphBubbleUp
+from langgraph.errors import NodeError, NodeTimeoutError
 from langgraph.graph import END, START, MessagesState, StateGraph, add_messages
 from langgraph.graph.message import Messages
 from langgraph.prebuilt import ToolNode
-from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command, RetryPolicy
+# Documented public API; LangGraph 1.2.9 omits this re-export from its type declarations.
+from langgraph.types import default_retry_on  # type: ignore[reportPrivateImportUsage]
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from app.domain.errors import (
-    TaskAgentCancelled,
     ToolCallError,
-    ToolCleanupError,
     ModelContextBudgetExceeded,
     ModelProfileMismatch,
     ModelCallTimeout,
@@ -44,30 +42,19 @@ from app.domain.execution import (
     TaskRunStatus,
 )
 from app.domain.resources.llm import LLMProfileSnapshot
-from app.domain.ids import ArtifactId, TaskRunId
+from app.domain.ids import ArtifactId, MessageId, TaskRunId, ToolCallId
 from app.domain.planning import TestTask, TestTaskType
-from app.execution.signals import MessageValidationSignal, ToolStartedSignal
 from app.artifacts import ArtifactStore
 from app.llm import ChatModelClient, ModelProvider
 from app.prompts import PromptDefinition
-from app.tools import wait_for_tool_cleanup
 
 
-_FRAMEWORK_DEFAULT_RETRY = RetryPolicy().retry_on
 _JSON_VALUE = TypeAdapter(JsonValue)
-
-
-def contains_graph_control(exception: BaseException) -> bool:
-    """Return tool control exceptions to the enclosing graph unchanged."""
-    return isinstance(exception, GraphBubbleUp) or (
-        isinstance(exception, BaseExceptionGroup)
-        and exception.subgroup(GraphBubbleUp) is not None
-    )
 
 
 class TaskAgentGraphState(MessagesState):
     cycle_count: int
-    model_attempt: int
+    model_response_attempt: int
     completion: TaskAgentCompletion | None
     route: Literal["guard", "model", "tools", "end"]
 
@@ -107,21 +94,21 @@ class TaskAgentFactory:
     def __init__(
         self, *, artifacts: ArtifactStore, model_provider: ModelProvider,
         act_prompt: PromptDefinition, judge_prompt: PromptDefinition,
-        tool_call_timeout_seconds: float = 120, tool_cleanup_timeout_seconds: float = 30,
+        tool_call_timeout_seconds: float = 120,
         model_call_max_attempts: int = 3, model_response_max_attempts: int = 3,
     ) -> None:
         self.artifacts = artifacts
         self.model_provider = model_provider
         self.prompts_by_task_type = {TestTaskType.ACT: act_prompt, TestTaskType.JUDGE: judge_prompt}
         self.tool_call_timeout_seconds = tool_call_timeout_seconds
-        self.tool_cleanup_timeout_seconds = tool_cleanup_timeout_seconds
         self.model_call_max_attempts = model_call_max_attempts
         self.model_response_max_attempts = model_response_max_attempts
 
     async def build(
         self, *, task_input: TaskAgentInput, tools: tuple[BaseTool, ...],
         run_cancellation_event: asyncio.Event, checkpointer: BaseCheckpointSaver[Any] | None,
-        on_cleanup_failure: Callable[[BaseException], None] | None = None,
+        on_message_validation: Callable[[MessageId, int, str], Awaitable[None]],
+        on_tool_started: Callable[[ToolCallId], Awaitable[None]],
     ) -> tuple[Any, TaskAgentGraphState]:
         try:
             model_client = self.model_provider.client_by_id(task_input.expected_model_profile.profile_id)
@@ -137,9 +124,7 @@ class TaskAgentFactory:
             task_input=task_input,
             tools=tools, model_client=model_client, prompt_definition=prompt,
             model_response_max_attempts=self.model_response_max_attempts,
-            tool_call_timeout_seconds=self.tool_call_timeout_seconds,
-            tool_cleanup_timeout_seconds=self.tool_cleanup_timeout_seconds,
-            on_cleanup_failure=on_cleanup_failure,
+            on_message_validation=on_message_validation, on_tool_started=on_tool_started,
         )
         graph = StateGraph(TaskAgentGraphState)
         graph.add_node("initialize", runtime.initialize)
@@ -150,7 +135,11 @@ class TaskAgentFactory:
         ))
         graph.add_node("validate", runtime.validate_message)
         graph.add_node("announce_tool", runtime.announce_tool)
-        graph.add_node("tools", ToolNode([*tools, finish_task], awrap_tool_call=runtime.execute_tool_call))
+        graph.add_node(
+            "tools", ToolNode([*tools, finish_task]), timeout=self.tool_call_timeout_seconds,
+            # LangGraph 1.2.9 supports NodeError injection but omits it from StateNode's type.
+            error_handler=runtime.handle_tool_error,  # type: ignore[reportArgumentType]
+        )
         graph.add_node("after_tools", runtime.after_tools)
         graph.add_edge(START, "initialize")
         graph.add_edge("initialize", "guard")
@@ -162,7 +151,7 @@ class TaskAgentFactory:
         graph.add_edge("tools", "after_tools")
         graph.add_conditional_edges("after_tools", lambda state: state["route"], {"guard": "guard", "end": END})
         return graph.compile(checkpointer=checkpointer), {
-            "messages": [], "cycle_count": 0, "model_attempt": 0, "completion": None, "route": "guard",
+            "messages": [], "cycle_count": 0, "model_response_attempt": 0, "completion": None, "route": "guard",
         }
 
 
@@ -173,11 +162,7 @@ def _retry_model_error(exc: Exception) -> bool:
         return False
     if isinstance(exc, TimeoutError):
         return True
-    if isinstance(_FRAMEWORK_DEFAULT_RETRY, type):
-        return isinstance(exc, _FRAMEWORK_DEFAULT_RETRY)
-    if callable(_FRAMEWORK_DEFAULT_RETRY):
-        return _FRAMEWORK_DEFAULT_RETRY(exc)
-    return isinstance(exc, tuple(_FRAMEWORK_DEFAULT_RETRY))
+    return default_retry_on(exc)
 
 
 @dataclass
@@ -189,9 +174,8 @@ class _TaskRuntime:
     model_client: ChatModelClient
     prompt_definition: PromptDefinition
     model_response_max_attempts: int
-    tool_call_timeout_seconds: float
-    tool_cleanup_timeout_seconds: float = 30
-    on_cleanup_failure: Callable[[BaseException], None] | None = None
+    on_message_validation: Callable[[MessageId, int, str], Awaitable[None]]
+    on_tool_started: Callable[[ToolCallId], Awaitable[None]]
     bound_model: Any = field(default=None, init=False)
 
     async def initialize(self, state: TaskAgentGraphState) -> dict[str, object]:
@@ -225,7 +209,7 @@ class _TaskRuntime:
         if not isinstance(response, AIMessage):
             raise TypeError("chat model must return AIMessage")
         return {"messages": [response], "cycle_count": state["cycle_count"] + 1,
-                "model_attempt": state["model_attempt"] + 1}
+                "model_response_attempt": state["model_response_attempt"] + 1}
 
     async def validate_message(self, state: TaskAgentGraphState) -> dict[str, object]:
         message = state["messages"][-1]
@@ -249,86 +233,42 @@ class _TaskRuntime:
         if reason is None:
             return {"route": "tools"}
         assert message.id is not None
-        get_stream_writer()(MessageValidationSignal(message_id=message.id, attempt=state["model_attempt"], reason=reason).model_dump(mode="json"))
-        if state["cycle_count"] >= self.task_input.max_cycles:
-            repairs = [ToolMessage(content=reason, tool_call_id=call["id"], name=call["name"], status="error")
-                       for call in message.tool_calls if call.get("id")]
-            return {"messages": repairs, "route": "guard"}
-        if state["model_attempt"] >= self.model_response_max_attempts:
-            repairs = [ToolMessage(content=reason, tool_call_id=call["id"], name=call["name"], status="error")
-                       for call in message.tool_calls if call.get("id")]
-            return {"messages": repairs,
-                    **self._completion(TaskRunStatus.BLOCKED, ReasonCode.INVALID_MODEL_RESPONSE, reason, state)}
+        await self.on_message_validation(message.id, state["model_response_attempt"], reason)
         repairs: list[BaseMessage] = [ToolMessage(content=reason, tool_call_id=call["id"], name=call["name"], status="error")
                                     for call in message.tool_calls if call.get("id")]
+        if self.run_cancellation_event.is_set():
+            return {"messages": repairs,
+                    **self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state)}
+        if state["cycle_count"] >= self.task_input.max_cycles:
+            return {"messages": repairs, "route": "guard"}
+        if state["model_response_attempt"] >= self.model_response_max_attempts:
+            return {"messages": repairs,
+                    **self._completion(TaskRunStatus.BLOCKED, ReasonCode.INVALID_MODEL_RESPONSE, reason, state)}
         repairs.append(HumanMessage(content=f"Return one allowed tool call with a new id. {reason}"))
         return {"messages": repairs, "route": "guard"}
 
     async def announce_tool(self, state: TaskAgentGraphState) -> dict[str, object]:
         call = _latest_ai_call(state["messages"])
+        if not self.run_cancellation_event.is_set():
+            await self.on_tool_started(call["id"])
         if self.run_cancellation_event.is_set():
             return {"messages": [ToolMessage(content="Cancelled before execution", tool_call_id=call["id"], name=call["name"], status="error")],
                     **self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled before tool execution", state)}
-        get_stream_writer()(ToolStartedSignal(call_id=call["id"]).model_dump(mode="json"))
         return {"route": "tools"}
 
-    async def execute_tool_call(
-        self, request: ToolCallRequest,
-        execute: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
-    ) -> ToolMessage | Command:
-        """Bound the generic invocation, including lazy session acquisition."""
-        invocation = asyncio.ensure_future(execute(request))
-        cancellation = asyncio.create_task(self.run_cancellation_event.wait())
-        cleanup_started = False
-        try:
-            try:
-                done, _ = await asyncio.wait(
-                    {invocation, cancellation}, timeout=self.tool_call_timeout_seconds,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if invocation in done:
-                    result = invocation.result()  # An actual failure wins over cancellation.
-                    if self.run_cancellation_event.is_set():
-                        raise TaskAgentCancelled("Cancelled after tool invocation")
-                    return result
-                cleanup_started = True
-                await self._settle_tool_cancellation(invocation)
-            except asyncio.CancelledError as cancellation_error:
-                if not cleanup_started:
-                    try:
-                        await self._settle_tool_cancellation(invocation)
-                    except BaseException as cleanup_error:
-                        if isinstance(cleanup_error, asyncio.CancelledError):
-                            if cleanup_error.__cause__ is not None:
-                                raise cancellation_error from cleanup_error.__cause__
-                            raise cancellation_error
-                        raise cancellation_error from cleanup_error
-                raise
-        finally:
-            cancellation.cancel()
-            await asyncio.gather(cancellation, return_exceptions=True)
-
-        if self.run_cancellation_event.is_set():
-            raise TaskAgentCancelled("Cancelled after tool interruption cleanup")
-        return ToolMessage(
+    def handle_tool_error(
+        self, state: TaskAgentGraphState, error: NodeError,
+    ) -> Command[Literal["after_tools"]]:
+        """Return only node timeouts to the model; other failures reach the executor."""
+        if not isinstance(error.error, NodeTimeoutError):
+            raise error.error
+        call = _latest_ai_call(state["messages"])
+        return Command(update={"messages": [ToolMessage(
             content=("Tool execution timed out; the operation may have partially executed. "
                      "Unreceived results are unconfirmed. No operation was automatically replayed. "
                      "Observe the target before deciding the next action."),
-            tool_call_id=request.tool_call["id"], name=request.tool_call["name"], status="error",
-        )
-
-    async def _settle_tool_cancellation(self, invocation: asyncio.Task[ToolMessage | Command]) -> None:
-        if not invocation.done() and not invocation.cancelling():
-            invocation.cancel()
-        try:
-            await wait_for_tool_cleanup(
-                invocation, deadline=asyncio.get_running_loop().time() + self.tool_cleanup_timeout_seconds,
-                on_cleanup_failure=self.on_cleanup_failure,
-            )
-        except Exception as exc:
-            if contains_graph_control(exc) or isinstance(exc, ToolCleanupError):
-                raise
-            raise ToolCleanupError("Tool interruption cleanup failed") from exc
+            tool_call_id=call["id"], name=call["name"], status="error",
+        )]}, goto="after_tools")
 
     async def _prepare_tool_result(self, result: ToolMessage) -> ToolMessage:
         """Save evidence and project content; application failures propagate."""
@@ -397,10 +337,10 @@ class _TaskRuntime:
             update.update(self._completion(status, reason, terminal.summary, state, evidence=evidence))
         elif tool_message.status == "error":
             if (state["cycle_count"] < self.task_input.max_cycles
-                    and state["model_attempt"] >= self.model_response_max_attempts):
+                    and state["model_response_attempt"] >= self.model_response_max_attempts):
                 update.update(self._completion(TaskRunStatus.BLOCKED, ReasonCode.TOOL_FAILED, tool_message.text, state))
         else:
-            update["model_attempt"] = 0
+            update["model_response_attempt"] = 0
         return update
 
     @staticmethod

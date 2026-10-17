@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from functools import partial
 from typing import Any, cast
 
 from langchain_core.messages import BaseMessage
@@ -10,10 +10,10 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import add_messages
 from langsmith import tracing_context
+from mcp import McpError
 
 from app.domain.errors import (
     describe_exception,
-    TaskAgentCancelled,
     ToolCallError,
     ModelContextBudgetExceeded,
     ModelProfileMismatch,
@@ -35,11 +35,6 @@ from app.domain.execution import (
     aggregate_test_run_verdict,
 )
 from app.domain.planning import TestTask, TestTaskType
-from app.execution.signals import (
-    GRAPH_SIGNAL_ADAPTER,
-    MessageValidationSignal,
-    ToolStartedSignal,
-)
 from app.execution.task_agent import TaskAgentFactory, TaskAgentInput
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.event_stream.projector import project_run_message
@@ -62,7 +57,6 @@ class RunExecutor:
         test_run_id: str,
         run_cancellation_event: asyncio.Event,
         tools: tuple[BaseTool, ...],
-        on_cleanup_failure: Callable[[BaseException], None] | None = None,
     ) -> None:
         active_task: TaskRun | None = None
         remaining_after_active_task: list[TestTask] = []
@@ -108,7 +102,6 @@ class RunExecutor:
                             tools=tools,
                             run_cancellation_event=run_cancellation_event,
                             checkpointer=checkpointer,
-                            on_cleanup_failure=on_cleanup_failure,
                         )
                         await self.repository.finish_task(
                             active_task.id,
@@ -138,9 +131,8 @@ class RunExecutor:
             verdict = (TestRunVerdict.CANCELLED if cancellation_completed
                        else aggregate_test_run_verdict(task_runs))
         except Exception as exc:
-            cancelled = isinstance(exc, TaskAgentCancelled)
-            reason = ReasonCode.USER_CANCELLED if cancelled else self._reason_for_exception(exc)
-            summary = str(exc) if cancelled else describe_exception(exc, phase="Task agent failed")
+            reason = self._reason_for_exception(exc)
+            summary = describe_exception(exc, phase="Task agent failed")
             if active_task is not None:
                 latest = await self.repository.list_task_runs(test_run_id)
                 current = next(
@@ -149,7 +141,7 @@ class RunExecutor:
                 if current.status == TaskRunStatus.RUNNING:
                     await self.repository.finish_task(
                         current.id,
-                        status=TaskRunStatus.CANCELLED if cancelled else TaskRunStatus.BLOCKED,
+                        status=TaskRunStatus.BLOCKED,
                         result=TaskRunResult(
                             reason_code=reason,
                             summary=summary,
@@ -157,14 +149,13 @@ class RunExecutor:
                         ),
                         cycle_count=current.cycle_count,
                     )
-                    if remaining_after_active_task and not cancelled:
+                    if remaining_after_active_task:
                         await self.repository.skip_remaining(
                             test_run_id,
                             remaining_after_active_task,
                         )
-            if not cancelled:
-                await self._report_execution_error(test_run_id, reason, summary)
-            verdict = TestRunVerdict.CANCELLED if cancelled else TestRunVerdict.BLOCKED
+            await self._report_execution_error(test_run_id, reason, summary)
+            verdict = TestRunVerdict.BLOCKED
 
         # Commit once outside execution error handling. A persistence failure
         # must propagate, not trigger another report or terminal write.
@@ -181,32 +172,29 @@ class RunExecutor:
         tools: tuple[BaseTool, ...],
         run_cancellation_event: asyncio.Event,
         checkpointer: BaseCheckpointSaver[Any],
-        on_cleanup_failure: Callable[[BaseException], None] | None = None,
     ) -> TaskAgentCompletion:
         graph, initial = await self.agent_factory.build(
             task_input=task_input,
             tools=tools,
             run_cancellation_event=run_cancellation_event,
             checkpointer=checkpointer,
-            on_cleanup_failure=on_cleanup_failure,
+            on_message_validation=partial(self._report_message_validation, test_run_id, task_input.task_run_id),
+            on_tool_started=partial(self._report_tool_started, test_run_id, task_input.task_run_id),
         )
         completion: TaskAgentCompletion | None = None
         async for part in graph.astream(
             initial,
             config={"configurable": {"thread_id": f"task-run:{task_input.task_run_id}"},
                     "recursion_limit": task_input.max_cycles * 8 + 20},
-            stream_mode=["updates", "custom"],
+            # LangGraph 1.2.9 re-raises handled errors with custom streams (#8608).
+            # Product events are awaited directly; framework State uses updates only.
+            stream_mode="updates",
             version="v2",
             durability="exit",
         ):
-            mode = part["type"]
-            data = part["data"]
-            if mode == "updates":
-                completion = await self._consume_updates(
-                    test_run_id, task_input.task_run_id, data, completion
-                )
-            elif mode == "custom":
-                await self._consume_signal(test_run_id, task_input.task_run_id, data)
+            completion = await self._consume_updates(
+                test_run_id, task_input.task_run_id, part["data"], completion
+            )
         if completion is None:
             raise RuntimeError("TaskAgent ended without TaskAgentCompletion")
         return completion
@@ -261,30 +249,22 @@ class RunExecutor:
                 )
         return completion
 
-    async def _consume_signal(
-        self, test_run_id: str, task_run_id: str, data: object
+    async def _report_message_validation(
+        self, test_run_id: str, task_run_id: str, message_id: str, attempt: int, reason: str,
     ) -> None:
-        signal = GRAPH_SIGNAL_ADAPTER.validate_python(data)
-        if isinstance(signal, MessageValidationSignal):
-            event = MessageValidationFailedEvent(
-                test_run_id=test_run_id,
-                task_run_id=task_run_id,
-                message_id=signal.message_id,
-                attempt=signal.attempt,
-                reason=signal.reason,
-            )
-            suffix = f"validation:{signal.message_id}:{signal.attempt}"
-        elif isinstance(signal, ToolStartedSignal):
-            event = ToolStartedEvent(
-                test_run_id=test_run_id,
-                task_run_id=task_run_id,
-                call_id=signal.call_id,
-            )
-            suffix = f"tool.started:{signal.call_id}"
-        else:
-            raise TypeError(f"unsupported graph signal: {type(signal).__name__}")
         await self.repository.append_event(
-            event, dedup_key=f"{test_run_id}:{task_run_id}:{suffix}"
+            MessageValidationFailedEvent(
+                test_run_id=test_run_id, task_run_id=task_run_id,
+                message_id=message_id, attempt=attempt, reason=reason,
+            ), dedup_key=f"{test_run_id}:{task_run_id}:validation:{message_id}:{attempt}",
+        )
+
+    async def _report_tool_started(
+        self, test_run_id: str, task_run_id: str, call_id: str,
+    ) -> None:
+        await self.repository.append_event(
+            ToolStartedEvent(test_run_id=test_run_id, task_run_id=task_run_id, call_id=call_id),
+            dedup_key=f"{test_run_id}:{task_run_id}:tool.started:{call_id}",
         )
 
     async def _report_execution_error(
@@ -310,6 +290,6 @@ class RunExecutor:
             return ReasonCode.MODEL_PROFILE_MISMATCH
         if isinstance(exc, ModelContextBudgetExceeded):
             return ReasonCode.MODEL_CONTEXT_EXCEEDED
-        if isinstance(exc, (ToolCallError, TimeoutError)):
+        if isinstance(exc, (ToolCallError, McpError, TimeoutError)):
             return ReasonCode.TOOL_FAILED
         return ReasonCode.UNEXPECTED_ERROR

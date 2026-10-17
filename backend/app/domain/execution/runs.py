@@ -92,7 +92,7 @@ class TestRunEnvironmentSnapshot(BaseModel):
     act_prompt_version: str = Field(min_length=1)
     judge_prompt_version: str = Field(min_length=1)
     app_version: str = Field(min_length=1)
-    execution_protocol_version: Literal["3"]
+    execution_protocol_version: Literal["4"]
 
 
 class TestRun(BaseModel):

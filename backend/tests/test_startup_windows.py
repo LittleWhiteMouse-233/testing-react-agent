@@ -214,7 +214,7 @@ def test_service_port_conflict_stops_peer(tmp_path: Path, service: str) -> None:
         assert all(not process_alive(int(pid)) for pid in re.findall(r"process started \(PID (\d+)\)", output))
 
 
-@pytest.mark.parametrize("phase", ["idle", "tool", "model", "cleanup"])
+@pytest.mark.parametrize("phase", ["idle", "tool", "model"])
 def test_uvicorn_shutdown_with_open_sse_saves_run_and_closes_mcp(tmp_path: Path, phase: str) -> None:
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
@@ -245,11 +245,11 @@ def test_uvicorn_shutdown_with_open_sse_saves_run_and_closes_mcp(tmp_path: Path,
         if run_id:
             with sqlite3.connect(tmp_path / "app.db") as connection:
                 status, verdict = connection.execute("select status, verdict from test_runs where id = ?", (run_id,)).fetchone()
-                assert status == "finished" and verdict == ("PASS" if phase == "cleanup" else "CANCELLED"), output
+                assert status == "finished" and verdict == "CANCELLED", output
                 event_types = [row[0] for row in connection.execute(
                     "select type from run_events where test_run_id = ? order by sequence", (run_id,),
                 )]
-                terminal = "run.finished" if phase == "cleanup" else "run.cancelled"
+                terminal = "run.cancelled"
                 assert event_types[-1] == terminal and event_types.count(terminal) == 1
                 assert "execution.error" not in event_types
             from mcp_support import read_records
@@ -268,7 +268,7 @@ def run_server(root: Path, port: int, phase: str) -> None:
     from app.llm import ScriptedChatModel
     from mcp_support import build_client, replay_call
 
-    client = build_client(root, calls=[replay_call(delay=60 if phase == "tool" else 0)])
+    client = build_client(root, calls=[replay_call(delay=8 if phase == "tool" else 0)])
     app = cast(FastAPI, client.app)
     original_lifespan = app.router.lifespan_context
 
@@ -291,17 +291,6 @@ def run_server(root: Path, port: int, phase: str) -> None:
                     return RunnableLambda(invoke)
 
                 ScriptedChatModel.bind_tools = delayed_bind
-            if phase == "cleanup":
-                original_connect = container.tools.connect
-
-                @asynccontextmanager
-                async def delayed_cleanup(**kwargs):
-                    async with original_connect(**kwargs) as tools:
-                        yield tools
-                        (root / "phase.txt").write_text("cleanup")
-                        await asyncio.sleep(5)
-
-                container.tools.connect = delayed_cleanup
             yield
 
     app.router.lifespan_context = lifespan

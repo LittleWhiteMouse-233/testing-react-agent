@@ -1914,7 +1914,7 @@
             "$ref": "#/components/schemas/LLMProfileSnapshot"
           },
           "execution_protocol_version": {
-            "const": "3",
+            "const": "4",
             "title": "Execution Protocol Version",
             "type": "string"
           },

@@ -26,26 +26,14 @@ class RunConflict(RuntimeError):
         self.active_run_id = active_run_id
 
 
-class RunResourcesUnavailable(RuntimeError):
-    """The process must be restarted after an unsafe resource cleanup."""
-
-
 @dataclass(eq=False)
 class _RunWork:
-    """One slot from preparation through MCP cleanup; ID exists only after creation."""
+    """One active run from discovery through terminal persistence."""
 
     test_case_id: str
     task: asyncio.Task[None] | None = None
     test_run_id: str | None = None
     cancellation: asyncio.Event = field(default_factory=asyncio.Event)
-    cleanup_failure: BaseException | None = None
-
-    def mark_resources_unavailable(self, failure: BaseException) -> None:
-        if self.cleanup_failure is None:
-            self.cleanup_failure = failure
-        elif self.task is not None and self.task.done() and failure is not self.cleanup_failure:
-            logger.error("Late tool cleanup failure: %s", self.test_run_id,
-                         exc_info=(type(failure), failure, failure.__traceback__))
 
 
 class RunService:
@@ -90,10 +78,6 @@ class RunService:
         if assumptions_confirmed is not True:
             raise ValueError("plan assumptions must be confirmed")
         async with self._start_lock:
-            if self._work is not None and self._work.cleanup_failure is not None:
-                raise RunResourcesUnavailable(
-                    "Run resources could not be released. Inspect residual resources and restart the service."
-                ) from self._work.cleanup_failure
             if self._closing:
                 raise RuntimeError("Application is shutting down")
             active_run_id = self._work.test_run_id if self._work is not None else None
@@ -112,20 +96,17 @@ class RunService:
             )
 
             def release_work(completed: asyncio.Task[None]) -> None:
-                # Startup failures use prepared_run. Execution reporting failures
-                # and post-execution resource cleanup failures are logged once.
+                # Startup failures use prepared_run; unreportable execution failures are logged once.
                 try:
                     completed.result()
-                except asyncio.CancelledError as exc:
-                    if exc.__cause__ is not None or (exc.__context__ is not None and not exc.__suppress_context__):
-                        logger.error("Run externally cancelled with unreported cleanup failure: %s", work.test_run_id,
-                                     exc_info=(type(exc), exc, exc.__traceback__))
+                except asyncio.CancelledError:
+                    pass
                 except BaseException as exc:
-                    logger.error("Background execution finalization or MCP cleanup failed: %s", work.test_run_id,
+                    logger.error("Background execution finalization failed: %s", work.test_run_id,
                                  exc_info=(type(exc), exc, exc.__traceback__))
                 if not prepared_run.done():
                     prepared_run.cancel()
-                if self._work is work and work.cleanup_failure is None:
+                if self._work is work:
                     self._work = None
                     self.test_case_lock.release(work.test_case_id, "running")
 
@@ -147,38 +128,37 @@ class RunService:
     ) -> None:
         run: TestRun | None = None
         try:
-            async with self.tools.connect(on_cleanup_failure=work.mark_resources_unavailable) as tools:
-                environment = TestRunEnvironmentSnapshot(
-                    tool_catalog=snapshot_tools(tools),
-                    execution_model=self.model_provider.client_for_activity(
-                        AgentActivity.EXECUTION
-                    ).profile_snapshot,
-                    act_max_cycles=self.act_max_cycles,
-                    judge_max_cycles=self.judge_max_cycles,
-                    screenshot_history_rounds=self.screenshot_history_rounds,
-                    act_prompt_version=self.act_prompt.version,
-                    judge_prompt_version=self.judge_prompt.version,
-                    app_version=self.app_version,
-                    execution_protocol_version="3",
-                )
+            tools = await self.tools.discover_tools()
+            environment = TestRunEnvironmentSnapshot(
+                tool_catalog=snapshot_tools(tools),
+                execution_model=self.model_provider.client_for_activity(
+                    AgentActivity.EXECUTION
+                ).profile_snapshot,
+                act_max_cycles=self.act_max_cycles,
+                judge_max_cycles=self.judge_max_cycles,
+                screenshot_history_rounds=self.screenshot_history_rounds,
+                act_prompt_version=self.act_prompt.version,
+                judge_prompt_version=self.judge_prompt.version,
+                app_version=self.app_version,
+                execution_protocol_version="4",
+            )
+            try:
+                creation = asyncio.create_task(self.repository.create_test_run(
+                    test_plan_id=test_plan_id, environment=environment,
+                ))
                 try:
-                    creation = asyncio.create_task(self.repository.create_test_run(
-                        test_plan_id=test_plan_id, environment=environment,
-                    ))
-                    try:
-                        run = await asyncio.shield(creation)
-                    except asyncio.CancelledError:
-                        # A committed run must acquire an executor even when its
-                        # HTTP caller disappears before receiving the result.
-                        work.cancellation.set()
-                        run = await creation
-                except ActiveRunExists as exc:
-                    raise RunConflict(exc.active_run_id) from exc
-                assert run is not None
-                work.test_run_id = run.id
-                prepared_run.set_result(run)
-                await self.executor.run(run.id, work.cancellation, tools,
-                                        on_cleanup_failure=work.mark_resources_unavailable)
+                    run = await asyncio.shield(creation)
+                except asyncio.CancelledError:
+                    # A committed run must acquire an executor even when its
+                    # HTTP caller disappears before receiving the result.
+                    work.cancellation.set()
+                    run = await creation
+            except ActiveRunExists as exc:
+                raise RunConflict(exc.active_run_id) from exc
+            assert run is not None
+            work.test_run_id = run.id
+            prepared_run.set_result(run)
+            await self.executor.run(run.id, work.cancellation, tools)
         except Exception as exc:
             if not prepared_run.done():
                 prepared_run.set_exception(exc)
@@ -189,7 +169,7 @@ class RunService:
         self._closing = True
         work = self._work
         if work is not None and work.task is not None:
-            logger.info("Requesting run cancellation and waiting for cleanup: %s", work.test_run_id)
+            logger.info("Requesting run cancellation at the next safe boundary: %s", work.test_run_id)
             work.cancellation.set()
             if work.test_run_id is None and not work.task.cancelling():
                 work.task.cancel()

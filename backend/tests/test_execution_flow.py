@@ -169,155 +169,123 @@ def test_tool_errors_keep_partial_images_and_are_not_automatically_replayed(tmp_
 
 def test_disconnect_stops_without_retry(tmp_path: Path) -> None:
     with build_client(tmp_path, calls=[replay_call(disconnect=True)], turns=[tool_turn(1)],
-                      tool_call_timeout_seconds=2) as client:
+                      tool_call_timeout_seconds=5) as client:
         detail = wait_for_run(client, start_run(client, create_plan(client)))
         assert detail["run"]["verdict"] == "BLOCKED"
         assert detail["task_runs"][0]["result"]["reason_code"] == "tool_failed", detail["task_runs"][0]["result"]
         assert len([entry for entry in read_records(tmp_path) if entry["phase"] == "started"]) == 1
 
 
-@pytest.mark.parametrize('cooperative', [True, False])
-def test_timeout_rebuilds_after_cleanup_or_blocks_cleanup_failure(tmp_path: Path, cooperative: bool) -> None:
-    delayed = {**replay_call(delay=3), 'cooperative_cancellation': cooperative}
-    with build_client(tmp_path, calls=[replay_call(), delayed],
+@pytest.mark.parametrize("cooperative", [True, False])
+def test_timeout_returns_to_model_and_late_images_are_unconfirmed(tmp_path: Path, cooperative: bool) -> None:
+    delayed = {**replay_call(delay=10), "cooperative_cancellation": cooperative}
+    with build_client(tmp_path, calls=[replay_call(), delayed, replay_call()],
                       turns=[tool_turn(1), tool_turn(2), finish_turn(3), tool_turn(4), finish_turn(5)],
-                      tool_call_timeout_seconds=2) as client:
+                      tool_call_timeout_seconds=5) as client:
         run_id = start_run(client, create_plan(client, task_count=2))
         detail = wait_for_run(client, run_id)
-        assert detail['run']['verdict'] == ('PASS' if cooperative else 'BLOCKED'), detail['task_runs'][0]['result']
-        if cooperative:
-            assert [task['cycle_count'] for task in detail['task_runs']] == [3, 2]
-        else:
-            assert detail['task_runs'][0]['result']['reason_code'] == 'tool_failed'
-            assert detail['task_runs'][1]['status'] == 'skipped'
-        report = client.get(f'/api/runs/{run_id}').json()
-        assert len(report['artifacts']) == (2 if cooperative else 1)  # late image is not accepted
+        assert detail["run"]["verdict"] == "PASS", detail["task_runs"]
+        assert [task["cycle_count"] for task in detail["task_runs"]] == [3, 2]
+        report = client.get(f"/api/runs/{run_id}").json()
+        assert len(report["artifacts"]) == 2
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
         model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
-        if cooperative:
-            assert any(isinstance(message, ToolMessage) and 'partially executed' in message.text
-                       for invocation in model.invocations for message in invocation)
-        else:
-            assert 'cleanup failed' in detail['task_runs'][0]['result']['summary']
-            denied = client.post('/api/runs', json={
-                'test_plan_id': detail['test_plan']['id'], 'assumptions_confirmed': True,
-            })
-            assert denied.status_code == 409 and denied.json()['code'] == 'run_resources_unavailable'
-    records = read_records(tmp_path)
-    started = [entry for entry in records if entry['phase'] == 'started']
-    assert len(started) == (3 if cooperative else 2)
-    assert started[0]['pid'] == started[1]['pid']
-    if cooperative:
-        assert started[1]['pid'] != started[2]['pid']
-    if cooperative:
-        assert sum(entry['phase'] == 'closed' for entry in records) == 2
-    else:
-        # SDK process termination may preempt the remote finally block.
-        assert sum(entry['phase'] == 'closed' for entry in records) <= 1
-    assert sum(entry['phase'] == 'completed' for entry in records) == 2
+        timeout = next(message for invocation in model.invocations for message in invocation
+                       if isinstance(message, ToolMessage) and "unconfirmed" in message.text)
+        assert timeout.tool_call_id == "call-2" and timeout.status == "error"
+        returned = [entry["event"]["message"] for entry in report["events"]
+                    if entry["event"]["type"] == "message.appended"
+                    and entry["event"]["message"]["role"] == "tool"
+                    and entry["event"]["message"]["tool_call_id"] == "call-2"]
+        assert len(returned) == 1 and returned[0]["status"] == "error"
+        assert not any(entry["event"]["type"] == "execution.error" for entry in report["events"])
+    started = [entry for entry in read_records(tmp_path) if entry["phase"] == "started"]
+    assert len(started) == 3
+    assert [entry["index"] for entry in started] == [0, 1, 2]
 
 
-@pytest.mark.parametrize('with_image', [False, True])
-@pytest.mark.parametrize('max_cycles', [2, 3])
-def test_timeout_budget_priority_and_no_unneeded_rebuild(tmp_path: Path, with_image: bool, max_cycles: int) -> None:
+@pytest.mark.parametrize("with_image", [False, True])
+@pytest.mark.parametrize("max_cycles", [2, 3])
+def test_timeout_budget_priority_without_replaying_call(tmp_path: Path, with_image: bool, max_cycles: int) -> None:
     initial = replay_call(content=[image_block()] if with_image else [text_block()])
     with build_client(tmp_path, calls=[initial, replay_call(delay=10)], turns=[tool_turn(1), tool_turn(2)],
-                      tool_call_timeout_seconds=2, execution_model_response_max_attempts=1, act_max_cycles=max_cycles) as client:
+                      tool_call_timeout_seconds=5, execution_model_response_max_attempts=1, act_max_cycles=max_cycles) as client:
         detail = wait_for_run(client, start_run(client, create_plan(client)))
-        reason = 'cycle_limit' if max_cycles == 2 else 'tool_failed'
-        assert detail['task_runs'][0]['result']['reason_code'] == reason
-        assert detail['task_runs'][0]['cycle_count'] == 2
-        assert detail['run']['verdict'] == 'BLOCKED'
-    assert len({entry['pid'] for entry in read_records(tmp_path)}) == 1
+        reason = "cycle_limit" if max_cycles == 2 else "tool_failed"
+        assert detail["task_runs"][0]["result"]["reason_code"] == reason
+        assert detail["task_runs"][0]["cycle_count"] == 2
+        assert detail["run"]["verdict"] == "BLOCKED"
+    assert sum(entry["phase"] == "started" for entry in read_records(tmp_path)) == 2
 
 
-def test_failed_rebuild_blocks_without_replaying_call(tmp_path: Path) -> None:
-    # Change only the independent replay scenario between processes; the host
-    # connection settings and startup tool catalog remain fixed.
-    with build_client(tmp_path, calls=[replay_call(delay=10)], turns=[tool_turn(1), tool_turn(2)],
-                      tool_call_timeout_seconds=2) as client:
-        run_id = start_run(client, create_plan(client))
-        for _ in range(300):
-            if any(entry['phase'] == 'started' for entry in read_records(tmp_path)):
-                break
-            time.sleep(0.01)
-        (tmp_path / 'scenario.json').write_text('invalid', encoding='utf-8')
-        detail = wait_for_run(client, run_id)
-        assert detail['task_runs'][0]['result']['reason_code'] == 'tool_failed'
-        assert detail['task_runs'][0]['cycle_count'] == 2
-    assert sum(entry['phase'] == 'started' for entry in read_records(tmp_path)) == 1
+def test_call_failure_after_timeout_blocks_without_replay(tmp_path: Path) -> None:
+    with build_client(tmp_path, calls=[replay_call(delay=10), replay_call(disconnect=True)],
+                      turns=[tool_turn(1), tool_turn(2)], tool_call_timeout_seconds=5) as client:
+        detail = wait_for_run(client, start_run(client, create_plan(client)))
+        assert detail["task_runs"][0]["result"]["reason_code"] == "tool_failed"
+        assert detail["task_runs"][0]["cycle_count"] == 2
+    assert sum(entry["phase"] == "started" for entry in read_records(tmp_path)) == 2
 
 
-def test_model_can_correct_parameters_after_timeout(tmp_path: Path) -> None:
+@pytest.mark.parametrize("failure_kind", ["timeout", "parameters"])
+def test_model_can_correct_tool_parameters(tmp_path: Path, failure_kind: str) -> None:
     first, corrected = tool_turn(1), tool_turn(2)
-    first.tool_calls[0]['args'] = {'wait_seconds': 10}
-    corrected.tool_calls[0]['args'] = {'wait_seconds': 0}
-    delayed = {**replay_call(delay=10), 'arguments': {'wait_seconds': 10}}
-    with build_client(tmp_path, calls=[delayed], turns=[first, corrected, finish_turn(3)],
-                      tool_call_timeout_seconds=2) as client:
-        scenario_path = tmp_path / 'scenario.json'
-        scenario = json.loads(scenario_path.read_text(encoding='utf-8'))
-        scenario['tools'][0]['inputSchema'] = {'type': 'object', 'properties': {'wait_seconds': {'type': 'integer'}}}
-        scenario_path.write_text(json.dumps(scenario), encoding='utf-8')
+    first.tool_calls[0]["args"] = {"wait_seconds": 10 if failure_kind == "timeout" else "invalid"}
+    corrected.tool_calls[0]["args"] = {"wait_seconds": 0}
+    calls = ([{**replay_call(delay=10), "arguments": {"wait_seconds": 10}}] if failure_kind == "timeout" else [])
+    calls.append({**replay_call(), "arguments": {"wait_seconds": 0}})
+    with build_client(tmp_path, calls=calls, turns=[first, corrected, finish_turn(3)],
+                      tool_call_timeout_seconds=5) as client:
+        scenario_path = tmp_path / "scenario.json"
+        scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
+        scenario["tools"][0]["inputSchema"] = {
+            "type": "object", "properties": {"wait_seconds": {"type": "integer"}}, "required": ["wait_seconds"],
+        }
+        scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
         run_id = start_run(client, create_plan(client))
-        for _ in range(300):
-            if any(entry['phase'] == 'started' for entry in read_records(tmp_path)):
-                break
-            time.sleep(0.01)
-        scenario['calls'] = [{**replay_call(), 'arguments': {'wait_seconds': 0}}]
-        scenario_path.write_text(json.dumps(scenario), encoding='utf-8')
         detail = wait_for_run(client, run_id)
-        assert detail['run']['verdict'] == 'PASS'
-        assert detail['task_runs'][0]['cycle_count'] == 3
-        assert len(client.get(f'/api/runs/{run_id}').json()['artifacts']) == 1
-    records = read_records(tmp_path)
-    started = [entry for entry in records if entry['phase'] == 'started']
-    assert [entry['arguments'] for entry in started] == [{'wait_seconds': 10}, {'wait_seconds': 0}]
-    assert started[0]['pid'] != started[1]['pid']
-    closed = [entry for entry in records if entry['phase'] == 'closed']
-    assert len(closed) == 2
-    elapsed = started[1]['time_seconds'] - closed[0]['time_seconds']
-    (tmp_path / 'recovery-seconds.json').write_text(json.dumps({'cleanup_to_next_call_seconds': elapsed}))
+        assert detail["run"]["verdict"] == "PASS"
+        assert detail["task_runs"][0]["cycle_count"] == 3
+        report = client.get(f"/api/runs/{run_id}").json()
+        assert len(report["artifacts"]) == 1
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        correction_messages = [message for message in model.invocations[2] if isinstance(message, ToolMessage)]
+        assert correction_messages[-1].status == "error" and correction_messages[-1].tool_call_id == "call-1"
+    started = [entry for entry in read_records(tmp_path) if entry["phase"] == "started"]
+    assert [entry["arguments"] for entry in started] == (
+        [{"wait_seconds": 10}, {"wait_seconds": 0}] if failure_kind == "timeout" else [{"wait_seconds": 0}]
+    )
 
 
-def test_cancellation_during_rebuild_keeps_run_slot_until_cleanup(tmp_path: Path) -> None:
-    with build_client(tmp_path, calls=[replay_call(delay=10)], turns=[tool_turn(1), tool_turn(2)],
-                      tool_call_timeout_seconds=4) as client:
+@pytest.mark.parametrize("delay", [0.5, 10])
+def test_cancel_waits_for_call_or_timeout_and_never_executes_next_call(tmp_path: Path, delay: float) -> None:
+    with build_client(tmp_path, calls=[replay_call(delay=delay), replay_call()],
+                      turns=[tool_turn(1), tool_turn(2)], tool_call_timeout_seconds=5) as client:
         plan = create_plan(client)
         run_id = start_run(client, plan)
         for _ in range(300):
-            if any(entry['phase'] == 'started' for entry in read_records(tmp_path)):
-                break
-            time.sleep(0.01)
-        scenario_path = tmp_path / 'scenario.json'
-        scenario = json.loads(scenario_path.read_text(encoding='utf-8'))
-        scenario['startup_delay_seconds'] = 10
-        scenario_path.write_text(json.dumps(scenario), encoding='utf-8')
-        for _ in range(800):
-            if sum(entry['phase'] == 'opened' for entry in read_records(tmp_path)) == 2:
-                break
-            time.sleep(0.01)
-        assert sum(entry['phase'] == 'opened' for entry in read_records(tmp_path)) == 2
-        assert client.post('/api/runs', json={'test_plan_id': plan['id'], 'assumptions_confirmed': True}).status_code == 409
-        assert client.post(f'/api/runs/{run_id}/cancel').status_code == 202
-        assert wait_for_run(client, run_id)['run']['verdict'] == 'CANCELLED'
-    assert sum(entry['phase'] == 'started' for entry in read_records(tmp_path)) == 1
-
-
-def test_cancel_inflight_tool_closes_run_without_executing_next_call(tmp_path: Path) -> None:
-    with build_client(tmp_path, calls=[replay_call(delay=10), replay_call()], turns=[tool_turn(1), tool_turn(2)]) as client:
-        run_id = start_run(client, create_plan(client))
-        for _ in range(200):
             if any(entry["phase"] == "started" for entry in read_records(tmp_path)):
                 break
-            time.sleep(0.02)
-        response = client.post(f"/api/runs/{run_id}/cancel")
-        assert response.status_code == 202
+            time.sleep(0.01)
+        assert any(entry["phase"] == "started" for entry in read_records(tmp_path))
+        assert client.post("/api/runs", json={"test_plan_id": plan["id"], "assumptions_confirmed": True}).status_code == 409
+        assert client.post(f"/api/runs/{run_id}/cancel").status_code == 202
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "CANCELLED"
         assert detail["task_runs"][0]["status"] == "cancelled"
-    assert len([entry for entry in read_records(tmp_path) if entry["phase"] == "started"]) == 1
-    assert not [entry for entry in read_records(tmp_path) if entry["phase"] == "completed"]
+        assert detail["task_runs"][0]["cycle_count"] == 1
+        report = client.get(f"/api/runs/{run_id}").json()
+        assert len(report["artifacts"]) == (1 if delay < 5 else 0)
+        assert not any(entry["event"]["type"] == "execution.error" for entry in report["events"])
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        assert len(model.invocations) == 2  # planning and the first execution decision
+        assert client.post(f"/api/runs/{run_id}/cancel").status_code == 202
+        assert client.get(f"/api/runs/{run_id}").json()["detail"] == detail
+    records = read_records(tmp_path)
+    assert sum(entry["phase"] == "started" for entry in records) == 1
+    assert sum(entry["phase"] == "completed" for entry in records) == (1 if delay < 5 else 0)
 
 
 def test_planning_does_not_connect_to_mcp(tmp_path: Path) -> None:
@@ -470,7 +438,7 @@ def test_model_transport_retry_does_not_consume_a_decision_round(tmp_path: Path)
         assert len([entry for entry in read_records(tmp_path) if entry["phase"] == "started"]) == 1
 
 
-def test_running_session_ignores_config_changes_and_holds_the_single_run_slot(tmp_path: Path) -> None:
+def test_run_tools_ignore_config_changes_and_hold_the_single_run_slot(tmp_path: Path) -> None:
     with build_client(tmp_path, calls=[replay_call(delay=0.5), replay_call()],
                       turns=[tool_turn(1), tool_turn(2), finish_turn(3)]) as client:
         plan = create_plan(client)
@@ -480,8 +448,7 @@ def test_running_session_ignores_config_changes_and_holds_the_single_run_slot(tm
         assert conflict.status_code == 409
         assert wait_for_run(client, run_id)["run"]["verdict"] == "PASS"
     records = read_records(tmp_path)
-    assert len({entry["pid"] for entry in records}) == 1
-    assert sum(entry["phase"] == "discovery" for entry in records) == 1
+    assert len({entry["pid"] for entry in records}) == 3
     assert sum(entry["phase"] == "completed" for entry in records) == 2
 
 
@@ -582,7 +549,7 @@ def test_slow_evidence_save_is_outside_tool_timeout_and_precedes_publication(
     observed_unsaved_events: list[dict[str, Any]] = []
 
     with build_client(tmp_path, calls=[replay_call()], turns=[tool_turn(1), finish_turn(2)],
-                      tool_call_timeout_seconds=2) as client:
+                      tool_call_timeout_seconds=5) as client:
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
         original_append = container.repository.append_events
 
@@ -600,7 +567,7 @@ def test_slow_evidence_save_is_outside_tool_timeout_and_precedes_publication(
             runs = (await api_repository.list_test_runs(container.sessions, RunPageQuery(limit=1))).items
             events = await api_repository.list_events(container.sessions, runs[0].id)
             observed_unsaved_events.extend(entry.event.model_dump(mode="json") for entry in events)
-            await asyncio.sleep(2.1)
+            await asyncio.sleep(5.1)
             return await original_save(store, **kwargs)
 
         monkeypatch.setattr(container.repository, "append_events", append_events)
@@ -618,22 +585,37 @@ def test_slow_evidence_save_is_outside_tool_timeout_and_precedes_publication(
         assert started < returned < finished
 
 
-def test_tool_event_write_failure_stops_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    with build_client(tmp_path, calls=[replay_call()], turns=[tool_turn(1), finish_turn(2)]) as client:
+@pytest.mark.parametrize("event_stage", ["validation", "started", "result"])
+def test_event_write_failure_stops_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, event_stage: str,
+) -> None:
+    first_turn = AIMessage(content="invalid") if event_stage == "validation" else tool_turn(1)
+    with build_client(tmp_path, calls=[replay_call()], turns=[first_turn, finish_turn(2)]) as client:
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        original_append = container.repository.append_events
+        original_append_many = container.repository.append_events
+        original_append = container.repository.append_event
 
         async def append_events(events):
-            if any(event.type == "message.appended" and event.message.role == "tool" for event, _ in events):
+            if event_stage == "result" and any(
+                event.type == "message.appended" and event.message.role == "tool" for event, _ in events
+            ):
                 raise OSError("event storage unavailable")
-            return await original_append(events)
+            return await original_append_many(events)
+
+        async def append_event(event, **kwargs):
+            if ((event_stage == "validation" and event.type == "message.validation_failed")
+                    or (event_stage == "started" and event.type == "tool.started")):
+                raise OSError("event storage unavailable")
+            return await original_append(event, **kwargs)
 
         monkeypatch.setattr(container.repository, "append_events", append_events)
+        monkeypatch.setattr(container.repository, "append_event", append_event)
         detail = wait_for_run(client, start_run(client, create_plan(client)))
         assert detail["run"]["verdict"] == "BLOCKED"
         assert "event storage unavailable" in detail["task_runs"][0]["result"]["summary"]
         model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
-        assert len(model.invocations) == 2  # planning, then the first execution decision
+        assert len(model.invocations) == 2
+        assert sum(entry["phase"] == "started" for entry in read_records(tmp_path)) == (1 if event_stage == "result" else 0)
 
 
 @pytest.mark.parametrize("recover", [False, True])
@@ -646,7 +628,7 @@ def test_tool_correction_budget_is_shared_and_success_resets_it(tmp_path: Path, 
     else:
         calls = [replay_call(error=True), replay_call(delay=10)]
         turns = [invalid, tool_turn(2), tool_turn(3), finish_turn(4)]
-    with build_client(tmp_path, calls=calls, turns=turns, tool_call_timeout_seconds=2) as client:
+    with build_client(tmp_path, calls=calls, turns=turns, tool_call_timeout_seconds=5) as client:
         run_id = start_run(client, create_plan(client))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == ("PASS" if recover else "BLOCKED")
