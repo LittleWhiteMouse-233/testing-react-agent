@@ -103,7 +103,7 @@
       },
       "CycleStartedEvent": {
         "additionalProperties": false,
-        "description": "TaskAgent 开始一个新观察 cycle 的计数事实。",
+        "description": "TaskAgent 在首次模型请求前开始逻辑决策轮；开始即计轮，传输重试不另计。",
         "properties": {
           "cycle_count": {
             "minimum": 1.0,
@@ -1914,7 +1914,7 @@
             "$ref": "#/components/schemas/LLMProfileSnapshot"
           },
           "execution_protocol_version": {
-            "const": "4",
+            "const": "5",
             "title": "Execution Protocol Version",
             "type": "string"
           },

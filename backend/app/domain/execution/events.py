@@ -49,7 +49,7 @@ class TaskLifecycleEvent(RunEventBase):
 
 
 class CycleStartedEvent(RunEventBase):
-    """TaskAgent 开始一个新观察 cycle 的计数事实。"""
+    """TaskAgent 在首次模型请求前开始逻辑决策轮；开始即计轮，传输重试不另计。"""
 
     type: Literal["cycle.started"] = "cycle.started"
     cycle_count: int = Field(ge=1)

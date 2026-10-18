@@ -140,7 +140,7 @@ class RunService:
                 act_prompt_version=self.act_prompt.version,
                 judge_prompt_version=self.judge_prompt.version,
                 app_version=self.app_version,
-                execution_protocol_version="4",
+                execution_protocol_version="5",
             )
             try:
                 creation = asyncio.create_task(self.repository.create_test_run(

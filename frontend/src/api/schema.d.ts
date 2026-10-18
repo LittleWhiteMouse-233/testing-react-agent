@@ -306,7 +306,7 @@ export interface components {
         ArtifactType: "screenshot" | "json_export" | "html_export";
         /**
          * CycleStartedEvent
-         * @description TaskAgent 开始一个新观察 cycle 的计数事实。
+         * @description TaskAgent 在首次模型请求前开始逻辑决策轮；开始即计轮，传输重试不另计。
          */
         CycleStartedEvent: {
             /** Cycle Count */
@@ -969,7 +969,7 @@ export interface components {
              * Execution Protocol Version
              * @constant
              */
-            execution_protocol_version: "4";
+            execution_protocol_version: "5";
             /** Judge Max Cycles */
             judge_max_cycles: number;
             /** Judge Prompt Version */

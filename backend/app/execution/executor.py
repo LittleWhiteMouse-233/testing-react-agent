@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from functools import partial
 from typing import Any, cast
 
 from langchain_core.messages import BaseMessage
@@ -23,10 +22,8 @@ from app.domain.errors import (
 from app.domain.execution import (
     ExecutionErrorEvent,
     MessageAppendedEvent,
-    MessageValidationFailedEvent,
     ReasonCode,
     RunEvent,
-    ToolStartedEvent,
     TaskAgentCompletion,
     TaskRun,
     TaskRunResult,
@@ -36,6 +33,7 @@ from app.domain.execution import (
 )
 from app.domain.planning import TestTask, TestTaskType
 from app.execution.task_agent import TaskAgentFactory, TaskAgentInput
+from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.event_stream.projector import project_run_message
 
@@ -178,8 +176,9 @@ class RunExecutor:
             tools=tools,
             run_cancellation_event=run_cancellation_event,
             checkpointer=checkpointer,
-            on_message_validation=partial(self._report_message_validation, test_run_id, task_input.task_run_id),
-            on_tool_started=partial(self._report_tool_started, test_run_id, task_input.task_run_id),
+            event_recorder=TaskAgentEventRecorder(
+                repository=self.repository, test_run_id=test_run_id, task_run_id=task_input.task_run_id,
+            ),
         )
         completion: TaskAgentCompletion | None = None
         async for part in graph.astream(
@@ -213,7 +212,7 @@ class RunExecutor:
             # ToolNode first writes raw results to State;
             # after_tools saves evidence and returns the same-ID public version.
             if not isinstance(update, dict) or node_name not in {
-                "initialize", "guard", "model", "validate", "announce_tool", "after_tools",
+                "initialize", "cycle_guard", "model", "validate", "announce_tool", "after_tools",
             }:
                 continue
             messages = update.get("messages", [])
@@ -237,9 +236,6 @@ class RunExecutor:
                 )
             if message_events:
                 await self.repository.append_events(message_events)
-            cycle_count = update.get("cycle_count")
-            if isinstance(cycle_count, int) and cycle_count > 0:
-                await self.repository.update_cycle(task_run_id, cycle_count)
             value = update.get("completion")
             if value is not None:
                 completion = (
@@ -248,24 +244,6 @@ class RunExecutor:
                     else TaskAgentCompletion.model_validate(value)
                 )
         return completion
-
-    async def _report_message_validation(
-        self, test_run_id: str, task_run_id: str, message_id: str, attempt: int, reason: str,
-    ) -> None:
-        await self.repository.append_event(
-            MessageValidationFailedEvent(
-                test_run_id=test_run_id, task_run_id=task_run_id,
-                message_id=message_id, attempt=attempt, reason=reason,
-            ), dedup_key=f"{test_run_id}:{task_run_id}:validation:{message_id}:{attempt}",
-        )
-
-    async def _report_tool_started(
-        self, test_run_id: str, task_run_id: str, call_id: str,
-    ) -> None:
-        await self.repository.append_event(
-            ToolStartedEvent(test_run_id=test_run_id, task_run_id=task_run_id, call_id=call_id),
-            dedup_key=f"{test_run_id}:{task_run_id}:tool.started:{call_id}",
-        )
 
     async def _report_execution_error(
         self, test_run_id: str, reason: ReasonCode, message: str

@@ -26,7 +26,7 @@ export function runReport(verdict: TestRunVerdict | null = "PASS"): TestRunRepor
         content: { title: "设置页面计划", setup_steps: ["准备测试环境"], assumptions: ["电视已开机"],
           tasks: [{ test_task_id: runId, definition: { title: "检查固件版本", type: "judge", goal: "确认版本信息", success_criteria: ["版本号完整可见"] } }] } },
       environment: { tool_catalog: { tools: [{ name: "fixture_inspect", source: "fixture", description: "读取观察", input_schema: { type: "object" }, annotations: {} }] },
-        execution_model: profile, act_prompt_version: "act-v1", judge_prompt_version: "judge-v1", act_max_cycles: 30, judge_max_cycles: 10, screenshot_history_rounds: 3, app_version: "0.1.0", execution_protocol_version: "4" },
+        execution_model: profile, act_prompt_version: "act-v1", judge_prompt_version: "judge-v1", act_max_cycles: 30, judge_max_cycles: 10, screenshot_history_rounds: 3, app_version: "0.1.0", execution_protocol_version: "5" },
       task_runs: [{ id: taskRunId, test_run_id: runId, test_task_id: runId, status, cycle_count: 2,
         started_at: createdAt, finished_at: verdict ? "2026-09-14T02:23:47Z" : null,
         result: verdict ? { summary: "已根据截图检查版本号", reason_code: verdict === "CANCELLED" ? "user_cancelled" : verdict === "BLOCKED" ? "tool_failed" : verdict === "FAIL" ? "assertion_failed" : "completed", evidence_artifact_ids: [screenshotId] } : null }]

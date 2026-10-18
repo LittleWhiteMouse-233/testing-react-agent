@@ -12,6 +12,7 @@ from typing import Any, cast
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphBubbleUp, GraphInterrupt
 from langgraph.types import interrupt
@@ -22,6 +23,7 @@ from app.domain.activity import AgentActivity
 from app.event_stream.projector import project_run_message
 from app.execution.task_agent import TaskAgentGraphState, _TaskRuntime
 from app.llm import ScriptedChatModelClient
+from app.llm.test_fake import ScriptedChatModel
 from mcp_support import (
     PNG_BASE64, build_client, create_plan, finish_turn, image_block, read_records,
     replay_call, start_run, text_block, tool_turn, wait_for_run,
@@ -70,16 +72,34 @@ def test_configured_cycle_limits_by_task_type(
         container.run_service.judge_max_cycles = 50
         stored = client.get(f"/api/runs/{run_id}").json()["detail"]
         assert stored["environment"] == detail["environment"]
+        events = client.get(f"/api/runs/{run_id}").json()["events"]
+        for task_run in detail["task_runs"]:
+            assert [entry["event"]["cycle_count"] for entry in events
+                    if entry["event"]["type"] == "cycle.started" and entry["event"]["task_run_id"] == task_run["id"]] == list(
+                        range(1, task_run["cycle_count"] + 1)
+                    )
 
 
 def test_act_and_judge_share_tools_and_model(tmp_path: Path) -> None:
-    with build_client(tmp_path) as client:
-        detail = wait_for_run(client, start_run(client, create_plan(client, task_count=2)))
-        assert detail["run"]["verdict"] == "PASS"
-        assert [task["cycle_count"] for task in detail["task_runs"]] == [2, 2]
+    with build_client(tmp_path, calls=[replay_call() for _ in range(4)],
+                      turns=[tool_turn(1), finish_turn(2), tool_turn(3), finish_turn(4)] * 2) as client:
+        plan = create_plan(client, task_count=2)
+        for _ in range(2):
+            run_id = start_run(client, plan)
+            detail = wait_for_run(client, run_id)
+            assert detail["run"]["verdict"] == "PASS"
+            assert [task["cycle_count"] for task in detail["task_runs"]] == [2, 2]
+            events = [entry["event"] for entry in client.get(f"/api/runs/{run_id}").json()["events"]]
+            for task_run in detail["task_runs"]:
+                task_events = [event for event in events if event["task_run_id"] == task_run["id"]]
+                assert all(event["test_run_id"] == run_id for event in task_events)
+                assert [event["cycle_count"] for event in task_events if event["type"] == "cycle.started"] == [1, 2]
+                assert [event["call_id"] for event in task_events if event["type"] == "tool.started"] == (
+                    ["call-1", "finish-2"] if task_run == detail["task_runs"][0] else ["call-3", "finish-4"]
+                )
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
         model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
-        assert len(model.invocations) == 5  # one planning call, four execution replies
+        assert len(model.invocations) == 9  # one planning call, eight execution replies across two runs
 
 
 @pytest.mark.parametrize("control_kind", ["bubble", "group", "interrupt"])
@@ -432,10 +452,123 @@ def test_visual_retention_reaches_state_and_terminal_checkpoint(
 
 def test_model_transport_retry_does_not_consume_a_decision_round(tmp_path: Path) -> None:
     with build_client(tmp_path, turns=[TimeoutError("transient"), tool_turn(1), finish_turn(2)]) as client:
-        detail = wait_for_run(client, start_run(client, create_plan(client)))
+        run_id = start_run(client, create_plan(client))
+        detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "PASS"
         assert detail["task_runs"][0]["cycle_count"] == 2
+        events = [entry["event"] for entry in client.get(f"/api/runs/{run_id}").json()["events"]]
+        assert [event["cycle_count"] for event in events if event["type"] == "cycle.started"] == [1, 2]
+        starts = [index for index, event in enumerate(events) if event["type"] == "cycle.started"]
+        replies = [index for index, event in enumerate(events)
+                   if event["type"] == "message.appended" and event["message"]["role"] == "ai"]
+        assert starts[0] < replies[0] < starts[1] < replies[1]
         assert len([entry for entry in read_records(tmp_path) if entry["phase"] == "started"]) == 1
+
+
+def test_cycle_is_persisted_while_model_response_is_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with build_client(tmp_path) as client:
+        plan = create_plan(client)
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+
+        async def exercise() -> None:
+            model_entered, release_model = asyncio.Event(), asyncio.Event()
+            original_bind_tools = ScriptedChatModel.bind_tools
+
+            def bind_tools(model: ScriptedChatModel, tools: Any, **kwargs: Any):
+                bound_model = original_bind_tools(model, tools, **kwargs)
+
+                async def invoke(messages):
+                    model_entered.set()
+                    await release_model.wait()
+                    return await bound_model.ainvoke(messages)
+
+                return RunnableLambda(invoke)
+
+            monkeypatch.setattr(ScriptedChatModel, "bind_tools", bind_tools)
+            run = await container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True)
+            work = container.run_service._work
+            assert work is not None and work.task is not None
+            try:
+                await asyncio.wait_for(model_entered.wait(), 10)
+                detail = await container.repository.get_test_run_detail(run.id)
+                assert detail.task_runs[0].cycle_count == 1
+                events = await api_repository.list_events(container.sessions, run.id)
+                starts = [entry.event for entry in events if entry.event.type == "cycle.started"]
+                assert len(starts) == 1 and starts[0].cycle_count == 1
+                assert starts[0].task_run_id == detail.task_runs[0].id
+                assert not any(entry.event.type == "message.appended" and entry.event.message.role == "ai"
+                               for entry in events)
+            finally:
+                release_model.set()
+                await asyncio.wait_for(work.task, 10)
+
+        assert client.portal is not None
+        client.portal.call(exercise)
+
+
+@pytest.mark.parametrize("failure_kind", ["retry_exhausted", "non_retryable"])
+def test_failed_model_call_retains_started_cycle(tmp_path: Path, failure_kind: str) -> None:
+    turns = [TimeoutError("model unavailable")] * 3 if failure_kind == "retry_exhausted" else [ValueError("invalid request")]
+    with build_client(tmp_path, turns=turns) as client:
+        run_id = start_run(client, create_plan(client, task_count=2))
+        detail = wait_for_run(client, run_id)
+        assert detail["run"]["verdict"] == "BLOCKED"
+        assert [task["status"] for task in detail["task_runs"]] == ["blocked", "skipped"]
+        assert [task["cycle_count"] for task in detail["task_runs"]] == [1, 0]
+        events = [entry["event"] for entry in client.get(f"/api/runs/{run_id}").json()["events"]]
+        assert [event["cycle_count"] for event in events if event["type"] == "cycle.started"] == [1]
+        assert sum(event["type"] == "execution.error" for event in events) == 1
+
+
+def test_cancellation_during_cycle_publication_prevents_model_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with build_client(tmp_path) as client:
+        plan = create_plan(client)
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        prior_invocations = len(model.invocations)
+        original_commit = container.run_event_writer.commit
+
+        async def commit(event, mutation, **kwargs):
+            result = await original_commit(event, mutation, **kwargs)
+            if event.type == "cycle.started":
+                assert container.run_service._work is not None
+                container.run_service._work.cancellation.set()
+            return result
+
+        monkeypatch.setattr(container.run_event_writer, "commit", commit)
+        run_id = start_run(client, plan)
+        detail = wait_for_run(client, run_id)
+        assert detail["run"]["verdict"] == "CANCELLED"
+        assert detail["task_runs"][0]["cycle_count"] == 1
+        assert len(model.invocations) == prior_invocations
+        events = [entry["event"] for entry in client.get(f"/api/runs/{run_id}").json()["events"]]
+        assert [event["cycle_count"] for event in events if event["type"] == "cycle.started"] == [1]
+        assert not any(event["type"] == "tool.started" for event in events)
+
+
+def test_failed_cycle_transaction_rolls_back_count_and_event(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with build_client(tmp_path) as client:
+        plan = create_plan(client)
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        prior_invocations = len(model.invocations)
+        original_stage = container.run_event_writer._stage
+
+        async def stage(session, event, **kwargs):
+            row = await original_stage(session, event, **kwargs)
+            if event.type == "cycle.started":
+                raise OSError("cycle event storage unavailable")
+            return row
+
+        monkeypatch.setattr(container.run_event_writer, "_stage", stage)
+        run_id = start_run(client, plan)
+        detail = wait_for_run(client, run_id)
+        assert detail["run"]["verdict"] == "BLOCKED"
+        assert detail["task_runs"][0]["cycle_count"] == 0
+        assert len(model.invocations) == prior_invocations
+        events = [entry["event"] for entry in client.get(f"/api/runs/{run_id}").json()["events"]]
+        assert not any(event["type"] == "cycle.started" for event in events)
+        assert sum(event["type"] == "execution.error" for event in events) == 1
 
 
 def test_run_tools_ignore_config_changes_and_hold_the_single_run_slot(tmp_path: Path) -> None:

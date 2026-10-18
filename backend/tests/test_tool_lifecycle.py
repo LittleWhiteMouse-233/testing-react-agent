@@ -16,13 +16,10 @@ from app.artifacts import ArtifactStore
 from app.domain import planning
 from app.domain.errors import ToolCallError, describe_exception
 from app.execution.task_agent import TaskAgentFactory, TaskAgentGraphState, TaskAgentInput, _TaskRuntime
+from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.llm import ModelProvider, ScriptedChatModelClient
 from app.prompts import load_prompt
 from mcp_support import finish_turn, tool_turn
-
-
-async def discard_event(*arguments: object) -> None:
-    pass
 
 
 @pytest.fixture
@@ -44,7 +41,7 @@ def task_runtime() -> _TaskRuntime:
         ),
         tools=(), model_client=model_client,
         prompt_definition=prompt, model_response_max_attempts=3,
-        on_message_validation=discard_event, on_tool_started=discard_event,
+        event_recorder=create_autospec(TaskAgentEventRecorder, instance=True),
     )
 
 
@@ -56,7 +53,7 @@ def initial_tool_state() -> TaskAgentGraphState:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("boundary", ["invalid_response", "tool_start"])
+@pytest.mark.parametrize("boundary", ["before_cycle", "cycle_start", "invalid_response", "tool_start"])
 async def test_cancellation_at_model_or_event_boundary_prevents_further_calls(
     task_runtime: _TaskRuntime, boundary: str,
 ) -> None:
@@ -70,6 +67,16 @@ async def test_cancellation_at_model_or_event_boundary_prevents_further_calls(
     async def request_cancel(*arguments: object) -> None:
         task_runtime.run_cancellation_event.set()
 
+    event_recorder = create_autospec(TaskAgentEventRecorder, instance=True)
+    if boundary == "before_cycle":
+        task_runtime.run_cancellation_event.set()
+    elif boundary == "cycle_start":
+        event_recorder.record_cycle_started.side_effect = request_cancel
+    elif boundary == "invalid_response":
+        event_recorder.record_message_validation_failed.side_effect = request_cancel
+    else:
+        event_recorder.record_tool_started.side_effect = request_cancel
+
     model = ScriptedChatModelClient(turns=[
         AIMessage(content="invalid") if boundary == "invalid_response" else tool_turn(1, "observe"),
     ])
@@ -82,15 +89,16 @@ async def test_cancellation_at_model_or_event_boundary_prevents_further_calls(
         task_input=task_runtime.task_input,
         tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"),),
         run_cancellation_event=task_runtime.run_cancellation_event, checkpointer=None,
-        on_message_validation=request_cancel if boundary == "invalid_response" else discard_event,
-        on_tool_started=request_cancel if boundary == "tool_start" else discard_event,
+        event_recorder=event_recorder,
     )
     with tracing_context(enabled=False):
         final_state = await graph.ainvoke(initial)
     assert final_state["completion"].status.value == "cancelled"
     assert final_state["completion"].result.reason_code.value == "user_cancelled"
     assert calls == 0
-    assert len(model.invocations) == 1
+    assert final_state["cycle_count"] == (0 if boundary == "before_cycle" else 1)
+    assert final_state["completion"].cycle_count == final_state["cycle_count"]
+    assert len(model.invocations) == (0 if boundary in {"before_cycle", "cycle_start"} else 1)
 
 
 @pytest.mark.asyncio
@@ -121,7 +129,7 @@ async def test_native_timeout_returns_to_model_without_waiting_for_late_result(t
         task_input=task_runtime.task_input,
         tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"),),
         run_cancellation_event=task_runtime.run_cancellation_event, checkpointer=None,
-        on_message_validation=discard_event, on_tool_started=discard_event,
+        event_recorder=task_runtime.event_recorder,
     )
     try:
         with tracing_context(enabled=False):

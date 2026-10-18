@@ -655,7 +655,7 @@ it("shows the saved planning input in the online report", async () => {
       id: "run", test_plan_id: plan.id, status: "finished", verdict: "PASS",
       created_at: plan.created_at, started_at: plan.created_at, finished_at: plan.created_at
     }, environment: { execution_model: plan.planning_context.planning_model, tool_catalog: { tools: [] },
-      act_prompt_version: "act-v1", judge_prompt_version: "judge-v1", app_version: "0.1.0", execution_protocol_version: "4", act_max_cycles: 30, judge_max_cycles: 10, screenshot_history_rounds: 3
+      act_prompt_version: "act-v1", judge_prompt_version: "judge-v1", app_version: "0.1.0", execution_protocol_version: "5", act_max_cycles: 30, judge_max_cycles: 10, screenshot_history_rounds: 3
     }, task_runs: [] },
     artifacts: [], events: []
   };

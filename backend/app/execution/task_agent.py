@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
@@ -42,8 +42,9 @@ from app.domain.execution import (
     TaskRunStatus,
 )
 from app.domain.resources.llm import LLMProfileSnapshot
-from app.domain.ids import ArtifactId, MessageId, TaskRunId, ToolCallId
+from app.domain.ids import ArtifactId, TaskRunId
 from app.domain.planning import TestTask, TestTaskType
+from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.artifacts import ArtifactStore
 from app.llm import ChatModelClient, ModelProvider
 from app.prompts import PromptDefinition
@@ -56,7 +57,7 @@ class TaskAgentGraphState(MessagesState):
     cycle_count: int
     model_response_attempt: int
     completion: TaskAgentCompletion | None
-    route: Literal["guard", "model", "tools", "end"]
+    route: Literal["cycle_guard", "model", "tools", "end"]
 
 
 class FinishTaskRunToolInput(BaseModel):
@@ -107,8 +108,7 @@ class TaskAgentFactory:
     async def build(
         self, *, task_input: TaskAgentInput, tools: tuple[BaseTool, ...],
         run_cancellation_event: asyncio.Event, checkpointer: BaseCheckpointSaver[Any] | None,
-        on_message_validation: Callable[[MessageId, int, str], Awaitable[None]],
-        on_tool_started: Callable[[ToolCallId], Awaitable[None]],
+        event_recorder: TaskAgentEventRecorder,
     ) -> tuple[Any, TaskAgentGraphState]:
         try:
             model_client = self.model_provider.client_by_id(task_input.expected_model_profile.profile_id)
@@ -124,11 +124,11 @@ class TaskAgentFactory:
             task_input=task_input,
             tools=tools, model_client=model_client, prompt_definition=prompt,
             model_response_max_attempts=self.model_response_max_attempts,
-            on_message_validation=on_message_validation, on_tool_started=on_tool_started,
+            event_recorder=event_recorder,
         )
         graph = StateGraph(TaskAgentGraphState)
         graph.add_node("initialize", runtime.initialize)
-        graph.add_node("guard", runtime.guard)
+        graph.add_node("cycle_guard", runtime.cycle_guard)
         graph.add_node("model", runtime.call_model, retry_policy=RetryPolicy(
             initial_interval=0.25, backoff_factor=2, max_interval=1,
             max_attempts=self.model_call_max_attempts, jitter=False, retry_on=_retry_model_error,
@@ -142,16 +142,16 @@ class TaskAgentFactory:
         )
         graph.add_node("after_tools", runtime.after_tools)
         graph.add_edge(START, "initialize")
-        graph.add_edge("initialize", "guard")
-        graph.add_conditional_edges("guard", lambda state: state["route"], {"model": "model", "end": END})
+        graph.add_edge("initialize", "cycle_guard")
+        graph.add_conditional_edges("cycle_guard", lambda state: state["route"], {"model": "model", "end": END})
         graph.add_edge("model", "validate")
         graph.add_conditional_edges("validate", lambda state: state["route"],
-                                    {"tools": "announce_tool", "guard": "guard", "end": END})
+                                    {"tools": "announce_tool", "cycle_guard": "cycle_guard", "end": END})
         graph.add_conditional_edges("announce_tool", lambda state: state["route"], {"tools": "tools", "end": END})
         graph.add_edge("tools", "after_tools")
-        graph.add_conditional_edges("after_tools", lambda state: state["route"], {"guard": "guard", "end": END})
+        graph.add_conditional_edges("after_tools", lambda state: state["route"], {"cycle_guard": "cycle_guard", "end": END})
         return graph.compile(checkpointer=checkpointer), {
-            "messages": [], "cycle_count": 0, "model_response_attempt": 0, "completion": None, "route": "guard",
+            "messages": [], "cycle_count": 0, "model_response_attempt": 0, "completion": None, "route": "cycle_guard",
         }
 
 
@@ -174,8 +174,7 @@ class _TaskRuntime:
     model_client: ChatModelClient
     prompt_definition: PromptDefinition
     model_response_max_attempts: int
-    on_message_validation: Callable[[MessageId, int, str], Awaitable[None]]
-    on_tool_started: Callable[[ToolCallId], Awaitable[None]]
+    event_recorder: TaskAgentEventRecorder
     bound_model: Any = field(default=None, init=False)
 
     async def initialize(self, state: TaskAgentGraphState) -> dict[str, object]:
@@ -186,15 +185,20 @@ class _TaskRuntime:
                 "max_cycles": self.task_input.max_cycles,
                 "previous_task_runs": [run.model_dump(mode="json") for run in self.task_input.previous_task_runs],
             }, ensure_ascii=False)),
-        ], "route": "guard"}
+        ], "route": "cycle_guard"}
 
-    async def guard(self, state: TaskAgentGraphState) -> dict[str, object]:
+    async def cycle_guard(self, state: TaskAgentGraphState) -> dict[str, object]:
         if self.run_cancellation_event.is_set():
-            return self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state)
+            return self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"])
         if state["cycle_count"] >= self.task_input.max_cycles:
             return self._completion(TaskRunStatus.BLOCKED, ReasonCode.CYCLE_LIMIT,
-                                    "Decision round limit reached", state)
-        return {"route": "model"}
+                                    "Decision round limit reached", state["cycle_count"])
+        cycle_count = state["cycle_count"] + 1
+        await self.event_recorder.record_cycle_started(cycle_count)
+        update: dict[str, object] = {"cycle_count": cycle_count, "route": "model"}
+        if self.run_cancellation_event.is_set():
+            update.update(self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", cycle_count))
+        return update
 
     async def call_model(self, state: TaskAgentGraphState) -> dict[str, object]:
         if self.bound_model is None:
@@ -208,8 +212,7 @@ class _TaskRuntime:
             raise ModelCallTimeout("Model call timed out") from exc
         if not isinstance(response, AIMessage):
             raise TypeError("chat model must return AIMessage")
-        return {"messages": [response], "cycle_count": state["cycle_count"] + 1,
-                "model_response_attempt": state["model_response_attempt"] + 1}
+        return {"messages": [response], "model_response_attempt": state["model_response_attempt"] + 1}
 
     async def validate_message(self, state: TaskAgentGraphState) -> dict[str, object]:
         message = state["messages"][-1]
@@ -233,27 +236,27 @@ class _TaskRuntime:
         if reason is None:
             return {"route": "tools"}
         assert message.id is not None
-        await self.on_message_validation(message.id, state["model_response_attempt"], reason)
+        await self.event_recorder.record_message_validation_failed(message.id, state["model_response_attempt"], reason)
         repairs: list[BaseMessage] = [ToolMessage(content=reason, tool_call_id=call["id"], name=call["name"], status="error")
                                     for call in message.tool_calls if call.get("id")]
         if self.run_cancellation_event.is_set():
             return {"messages": repairs,
-                    **self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state)}
+                    **self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"])}
         if state["cycle_count"] >= self.task_input.max_cycles:
-            return {"messages": repairs, "route": "guard"}
+            return {"messages": repairs, "route": "cycle_guard"}
         if state["model_response_attempt"] >= self.model_response_max_attempts:
             return {"messages": repairs,
-                    **self._completion(TaskRunStatus.BLOCKED, ReasonCode.INVALID_MODEL_RESPONSE, reason, state)}
+                    **self._completion(TaskRunStatus.BLOCKED, ReasonCode.INVALID_MODEL_RESPONSE, reason, state["cycle_count"])}
         repairs.append(HumanMessage(content=f"Return one allowed tool call with a new id. {reason}"))
-        return {"messages": repairs, "route": "guard"}
+        return {"messages": repairs, "route": "cycle_guard"}
 
     async def announce_tool(self, state: TaskAgentGraphState) -> dict[str, object]:
         call = _latest_ai_call(state["messages"])
         if not self.run_cancellation_event.is_set():
-            await self.on_tool_started(call["id"])
+            await self.event_recorder.record_tool_started(call["id"])
         if self.run_cancellation_event.is_set():
             return {"messages": [ToolMessage(content="Cancelled before execution", tool_call_id=call["id"], name=call["name"], status="error")],
-                    **self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled before tool execution", state)}
+                    **self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled before tool execution", state["cycle_count"])}
         return {"route": "tools"}
 
     def handle_tool_error(
@@ -325,31 +328,31 @@ class _TaskRuntime:
         # Product visual retention policy; add_messages replaces these messages
         # by ID without mutating earlier State snapshots or persisted events.
         replacements = _collect_expired_screenshot_updates(messages, self.task_input.screenshot_history_rounds)
-        update: dict[str, object] = {"route": "guard", "messages": [*replacements, tool_message]}
+        update: dict[str, object] = {"route": "cycle_guard", "messages": [*replacements, tool_message]}
         if self.run_cancellation_event.is_set():
-            update.update(self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state))
+            update.update(self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"]))
         elif (call := _latest_ai_call(state["messages"]))["name"] == finish_task.name and tool_message.status != "error":
             terminal = FinishTaskRunToolInput.model_validate(call["args"])
             status = TaskRunStatus(terminal.status)
             reason = {TaskRunStatus.PASSED: ReasonCode.COMPLETED, TaskRunStatus.BLOCKED: ReasonCode.AGENT_BLOCKED,
                       TaskRunStatus.FAILED: ReasonCode.GOAL_UNREACHABLE if self.task_input.task.definition.type == TestTaskType.ACT else ReasonCode.ASSERTION_FAILED}[status]
             evidence = _latest_artifact_ids(messages) if status != TaskRunStatus.BLOCKED else []
-            update.update(self._completion(status, reason, terminal.summary, state, evidence=evidence))
+            update.update(self._completion(status, reason, terminal.summary, state["cycle_count"], evidence=evidence))
         elif tool_message.status == "error":
             if (state["cycle_count"] < self.task_input.max_cycles
                     and state["model_response_attempt"] >= self.model_response_max_attempts):
-                update.update(self._completion(TaskRunStatus.BLOCKED, ReasonCode.TOOL_FAILED, tool_message.text, state))
+                update.update(self._completion(TaskRunStatus.BLOCKED, ReasonCode.TOOL_FAILED, tool_message.text, state["cycle_count"]))
         else:
             update["model_response_attempt"] = 0
         return update
 
     @staticmethod
     def _completion(status: TaskRunStatus, reason_code: ReasonCode, summary: str,
-                    state: TaskAgentGraphState, *, evidence: list[ArtifactId] | None = None) -> dict[str, object]:
+                    cycle_count: int, *, evidence: list[ArtifactId] | None = None) -> dict[str, object]:
         return {"completion": TaskAgentCompletion(status=status,
                     result=TaskRunResult(reason_code=reason_code, summary=summary or reason_code.value,
                                          evidence_artifact_ids=evidence or []),
-                    cycle_count=state["cycle_count"]), "route": "end"}
+                    cycle_count=cycle_count), "route": "end"}
 
 
 def _count_model_request_tokens(

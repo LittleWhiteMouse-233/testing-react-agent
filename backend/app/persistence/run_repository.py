@@ -292,24 +292,18 @@ class SqlAlchemyRunRepository:
         )
         return task_run_from_row(row)
 
-    async def update_cycle(self, task_run_id: str, cycle_count: int) -> None:
-        async with self.sessions() as session:
-            current = await self._require_task_run(session, task_run_id)
-            test_run_id = current.test_run_id
-        event = CycleStartedEvent(
-            test_run_id=test_run_id,
-            task_run_id=task_run_id,
-            cycle_count=cycle_count,
-        )
+    async def start_cycle(self, event: CycleStartedEvent, *, dedup_key: str) -> None:
+        assert event.task_run_id is not None
+        task_run_id = event.task_run_id
 
         async def mutation(session: AsyncSession) -> None:
             row = await self._require_task_run(session, task_run_id)
-            row.cycle_count = cycle_count
+            row.cycle_count = event.cycle_count
 
         await self.run_event_writer.commit(
             event,
             mutation,
-            dedup_key=f"{test_run_id}:{task_run_id}:{cycle_count}:cycle.started",
+            dedup_key=dedup_key,
         )
 
     async def finish_task(
