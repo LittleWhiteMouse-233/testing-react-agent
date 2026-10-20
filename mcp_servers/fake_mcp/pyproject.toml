@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "scripted-local-mcp"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["mcp==1.30.0", "pydantic>=2.11,<3"]
+dependencies = ["mcp==2.3.0", "pydantic>=2.12,<3", "jsonschema>=4.20,<5"]
 
 [project.scripts]
 fake-mcp = "fake_mcp_server:main"

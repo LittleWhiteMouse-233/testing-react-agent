@@ -11,6 +11,7 @@ import ReportPage from "../pages/ReportPage";
 import HistoryPage from "../pages/HistoryPage";
 import CasesPage from "../pages/CasesPage";
 import { useRunReport } from "../api/useRunReport";
+import { RunResources } from "../runPresentation";
 import { caseId, runEvent, runId, runReport, taskRunId } from "./run-fixtures";
 
 vi.mock("../api/client", async (importOriginal) => {
@@ -60,6 +61,19 @@ afterEach(async () => {
 });
 
 function Location() { const location = useLocation(); return <output data-testid="location">{location.pathname}{location.search}</output>; }
+
+it("shows frozen Skill resource addresses and templates in run resources", () => {
+  report.detail.environment.resource_catalog = {
+    local_root: "D:/skills",
+    resources: [{ source_id: "mcp:docs", uri: "skill://focus/SKILL.md", name: "Focus check", description: "Focus instructions", mime_type: "text/markdown", is_skill_manifest: false }],
+    templates: [{ source_id: "mcp:docs", uri_template: "skill://focus/{path*}", name: "Attachments", description: null, mime_type: null }],
+  };
+  render(<RunResources report={report} />);
+  expect(screen.getByText("Focus check")).toBeInTheDocument();
+  expect(screen.getByText("skill://focus/SKILL.md")).toBeInTheDocument();
+  expect(screen.getByText("skill://focus/{path*}")).toBeInTheDocument();
+  expect(screen.getByText("D:/skills")).toBeInTheDocument();
+});
 function renderPage(path: string, history = false) {
   render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={[path]}><Location /><Routes>
     <Route path="/runs" element={<HistoryPage />} />

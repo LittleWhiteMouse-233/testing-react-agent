@@ -9,7 +9,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import add_messages
 from langsmith import tracing_context
-from mcp import McpError
+from mcp import MCPError
 
 from app.domain.errors import (
     describe_exception,
@@ -55,7 +55,9 @@ class RunExecutor:
         test_run_id: str,
         run_cancellation_event: asyncio.Event,
         tools: tuple[BaseTool, ...],
+        resource_tools: tuple[BaseTool, ...] = (),
     ) -> None:
+        tools = (*tools, *resource_tools)
         active_task: TaskRun | None = None
         remaining_after_active_task: list[TestTask] = []
         cancellation_completed = False
@@ -93,6 +95,7 @@ class RunExecutor:
                                 if test_task.definition.type == TestTaskType.ACT
                                 else detail.environment.judge_prompt_version
                             ),
+                            resource_catalog=detail.environment.resource_catalog,
                         )
                         completion = await self._execute_task(
                             test_run_id=test_run_id,
@@ -268,6 +271,6 @@ class RunExecutor:
             return ReasonCode.MODEL_PROFILE_MISMATCH
         if isinstance(exc, ModelContextBudgetExceeded):
             return ReasonCode.MODEL_CONTEXT_EXCEEDED
-        if isinstance(exc, (ToolCallError, McpError, TimeoutError)):
+        if isinstance(exc, (ToolCallError, MCPError, TimeoutError)):
             return ReasonCode.TOOL_FAILED
         return ReasonCode.UNEXPECTED_ERROR

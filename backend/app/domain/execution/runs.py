@@ -12,6 +12,7 @@ from app.domain.ids import ArtifactId, TaskRunId, TestPlanId, TestRunId, TestTas
 from app.domain.planning import TestPlan
 from app.domain.resources.llm import LLMProfileSnapshot
 from app.domain.resources.tools import ToolCatalogSnapshot
+from app.domain.resources.static_resources import ResourceCatalogSnapshot
 
 
 class TestRunStatus(StrEnum):
@@ -85,6 +86,7 @@ class TestRunEnvironmentSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     tool_catalog: ToolCatalogSnapshot
+    resource_catalog: ResourceCatalogSnapshot
     execution_model: LLMProfileSnapshot
     act_max_cycles: int = Field(ge=1, le=100)
     judge_max_cycles: int = Field(ge=1, le=100)
@@ -92,7 +94,7 @@ class TestRunEnvironmentSnapshot(BaseModel):
     act_prompt_version: str = Field(min_length=1)
     judge_prompt_version: str = Field(min_length=1)
     app_version: str = Field(min_length=1)
-    execution_protocol_version: Literal["5"]
+    execution_protocol_version: Literal["6"]
 
 
 class TestRun(BaseModel):

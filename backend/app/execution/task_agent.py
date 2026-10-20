@@ -42,6 +42,8 @@ from app.domain.execution import (
     TaskRunStatus,
 )
 from app.domain.resources.llm import LLMProfileSnapshot
+from app.domain.resources.static_resources import ResourceCatalogSnapshot
+from app.skill import LOAD_SKILL_TOOL_NAME, top_level_skills
 from app.domain.ids import ArtifactId, TaskRunId
 from app.domain.planning import TestTask, TestTaskType
 from app.execution.task_agent_events import TaskAgentEventRecorder
@@ -69,7 +71,7 @@ class FinishTaskRunToolInput(BaseModel):
 
 @tool(args_schema=FinishTaskRunToolInput)
 async def finish_task(status: str, summary: str) -> str:
-    """Finish the current task with an evidence-based terminal decision."""
+    """Finish this task; summary must explain observations and evidence against the success criteria."""
 
     return f"{status}: {summary}"
 
@@ -89,6 +91,7 @@ class TaskAgentInput:
     screenshot_history_rounds: int
     expected_model_profile: LLMProfileSnapshot
     expected_prompt_version: str
+    resource_catalog: ResourceCatalogSnapshot
 
 
 class TaskAgentFactory:
@@ -184,6 +187,8 @@ class _TaskRuntime:
                 "task": self.task_input.task.model_dump(mode="json"),
                 "max_cycles": self.task_input.max_cycles,
                 "previous_task_runs": [run.model_dump(mode="json") for run in self.task_input.previous_task_runs],
+                "available_skills": [entry.model_dump(include={"source_id", "uri", "name", "description"})
+                                     for entry in top_level_skills(self.task_input.resource_catalog)],
             }, ensure_ascii=False)),
         ], "route": "cycle_guard"}
 
@@ -400,9 +405,23 @@ def _select_model_message_window(
         (index + 1 for index, message in enumerate(selected) if isinstance(message, HumanMessage)),
         0,
     )
-    required = selected[:prefix_end]
-    window = required + trim_messages(
-        selected[prefix_end:],
+    # Loading a Skill makes its latest successful instructions mandatory for
+    # this task. Preserve original call/return objects and order, including any
+    # image replacements already applied by the visual retention policy.
+    calls: dict[str, tuple[int, tuple[str, str]]] = {}
+    active_skills: dict[tuple[str, str], tuple[int, int]] = {}
+    for index, message in enumerate(selected):
+        if isinstance(message, AIMessage) and len(message.tool_calls) == 1:
+            call = message.tool_calls[0]
+            if call["name"] == LOAD_SKILL_TOOL_NAME and (call_id := call.get("id")):
+                calls[call_id] = (index, (call["args"].get("source_id", ""), call["args"].get("uri", "")))
+        elif isinstance(message, ToolMessage) and message.status != "error" and message.tool_call_id in calls:
+            call_index, skill_address = calls[message.tool_call_id]
+            active_skills[skill_address] = (call_index, index)
+    required_indices = set(range(prefix_end)) | {index for pair in active_skills.values() for index in pair}
+    required = [message for index, message in enumerate(selected) if index in required_indices]
+    suffix = trim_messages(
+        [message for index, message in enumerate(selected) if index >= prefix_end and index not in required_indices],
         max_tokens=input_budget,
         token_counter=lambda candidates: token_counter([*required, *cast(list[BaseMessage], candidates)]),
         strategy="last",
@@ -411,9 +430,11 @@ def _select_model_message_window(
         start_on=("human", "ai"),
         end_on=("human", "tool"),
     )
+    suffix_objects = {id(message) for message in suffix}
+    window = [message for index, message in enumerate(selected) if index in required_indices or id(message) in suffix_objects]
     if token_counter(window) > input_budget:
         raise ModelContextBudgetExceeded(
-            "The required system prompt, task context, latest screenshot and fixed tool schemas exceed the model input budget"
+            "The required system prompt, task context, loaded Skills, latest screenshot and fixed tool schemas exceed the model input budget"
         )
     if any(isinstance(message, SystemMessage) for message in messages) and not any(
         isinstance(message, SystemMessage) for message in window

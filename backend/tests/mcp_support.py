@@ -36,15 +36,23 @@ def replay_call(*, name: str = "inspect", content: list[dict[str, Any]] | None =
             "delay_seconds": delay, "disconnect": disconnect}
 
 
-def write_mcp_config(root: Path, calls: list[dict[str, Any]], *, servers: tuple[str, ...] = ("fixture",)) -> Path:
+def write_mcp_config(root: Path, calls: list[dict[str, Any]], *, servers: tuple[str, ...] = ("fixture",),
+                     resources: list[dict[str, Any]] | None = None,
+                     templates: list[dict[str, Any]] | None = None,
+                     resource_contents: dict[str, list[dict[str, Any]]] | None = None,
+                     resource_disconnects: list[str] | None = None,
+                     tools_enabled: bool = True) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     scenario = root / "scenario.json"
     names = list(dict.fromkeys(["inspect", *[call["name"] for call in calls]]))
     scenario.write_text(json.dumps({
         "tools": [{"name": name, "description": f"Fixture {name}",
                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-                   "annotations": {"readOnlyHint": True}} for name in names],
+                   "annotations": {"readOnlyHint": True}} for name in names] if tools_enabled else [],
         "calls": calls,
+        "resources": resources or [], "resource_templates": templates or [],
+        "resource_contents": resource_contents or {},
+        "resource_disconnects": resource_disconnects or [],
     }), encoding="utf-8")
     config = root / "mcp.json"
     config.write_text(json.dumps({"mcpServers": {name: {
@@ -74,6 +82,7 @@ def build_client(root: Path, *, calls: list[dict[str, Any]] | None = None,
     model_config_path = root / "models.toml"
     model_config_path.write_text('[[profiles]]\nid = "default"\n', encoding="utf-8")
     # BaseSettings supports _env_file publicly; Pydantic's generated signature omits it.
+    overrides.setdefault("skills_dir", root / "skills")
     settings = Settings(_env_file=None, model_config_path=model_config_path,  # type: ignore[call-arg]
                         planning_model_id="default", execution_model_id="default",
                         data_dir=root, database_url=f"sqlite+aiosqlite:///{(root / 'app.db').as_posix()}",

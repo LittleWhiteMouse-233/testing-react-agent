@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from app.domain.activity import AgentActivity
+from app.domain.errors import describe_exception
 from app.domain.execution import TestRun, TestRunEnvironmentSnapshot, TestRunStatus
 from app.execution.executor import RunExecutor
 from app.llm import ModelProvider
@@ -14,6 +16,8 @@ from app.persistence.run_repository import (
 )
 from app.prompts import PromptDefinition
 from app.tools import MCPToolProvider, snapshot_tools
+from app.mcp import MCPConnectionError
+from app.skill import SkillResourceProvider
 from app.test_case_lock import TestCaseLock
 
 
@@ -50,6 +54,7 @@ class RunService:
         act_prompt: PromptDefinition,
         judge_prompt: PromptDefinition,
         tools: MCPToolProvider,
+        skills_dir: Path,
         act_max_cycles: int,
         judge_max_cycles: int,
         screenshot_history_rounds: int = 3,
@@ -65,6 +70,7 @@ class RunService:
         self.judge_max_cycles = judge_max_cycles
         self.screenshot_history_rounds = screenshot_history_rounds
         self.tools = tools
+        self.skills_dir = skills_dir
         self._start_lock = asyncio.Lock()
         self._work: _RunWork | None = None
         self._closing = False
@@ -128,9 +134,16 @@ class RunService:
     ) -> None:
         run: TestRun | None = None
         try:
-            tools = await self.tools.discover_tools()
+            try:
+                async with asyncio.timeout(self.tools.timeout_seconds):
+                    tools = await self.tools.discover_tools()
+                    skills = SkillResourceProvider(self.skills_dir, self.tools.clients)
+                    resource_catalog = await skills.discover()
+            except Exception as exc:
+                raise MCPConnectionError(describe_exception(exc, phase="Run resource discovery failed")) from exc
             environment = TestRunEnvironmentSnapshot(
                 tool_catalog=snapshot_tools(tools),
+                resource_catalog=resource_catalog,
                 execution_model=self.model_provider.client_for_activity(
                     AgentActivity.EXECUTION
                 ).profile_snapshot,
@@ -140,7 +153,7 @@ class RunService:
                 act_prompt_version=self.act_prompt.version,
                 judge_prompt_version=self.judge_prompt.version,
                 app_version=self.app_version,
-                execution_protocol_version="5",
+                execution_protocol_version="6",
             )
             try:
                 creation = asyncio.create_task(self.repository.create_test_run(
@@ -158,7 +171,7 @@ class RunService:
             assert run is not None
             work.test_run_id = run.id
             prepared_run.set_result(run)
-            await self.executor.run(run.id, work.cancellation, tools)
+            await self.executor.run(run.id, work.cancellation, tools, skills.tools())
         except Exception as exc:
             if not prepared_run.done():
                 prepared_run.set_exception(exc)

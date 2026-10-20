@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     execution_model_id: str | None = None
 
     mcp_config_path: Path = PROJECT_ROOT / "mcp_servers" / "mcp.json"
+    skills_dir: Path = PROJECT_ROOT / "skills"
     tool_call_timeout_seconds: float = Field(default=120, gt=0)
     act_max_cycles: int = Field(default=30, ge=1, le=100)
     judge_max_cycles: int = Field(default=10, ge=1, le=100)
@@ -105,6 +106,8 @@ class Settings(BaseSettings):
             self.model_config_path = (PROJECT_ROOT / self.model_config_path).resolve()
         if not self.mcp_config_path.is_absolute():
             self.mcp_config_path = (PROJECT_ROOT / self.mcp_config_path).resolve()
+        if not self.skills_dir.is_absolute():
+            self.skills_dir = (PROJECT_ROOT / self.skills_dir).resolve()
         if not self.data_dir.is_absolute():
             self.data_dir = (PROJECT_ROOT / self.data_dir).resolve()
         if self.checkpoint_path is not None and not self.checkpoint_path.is_absolute():

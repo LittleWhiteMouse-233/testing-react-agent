@@ -128,6 +128,18 @@ export function RunResources({ report }: { report: TestRunReport }) {
         <p>{tool.description}</p><pre>{JSON.stringify(tool.input_schema, null, 2)}</pre>
       </details>)}</div>
     </section>
+    <section className="resource-card"><h3>Skill 与静态资源</h3>
+      {environment.resource_catalog.local_root && <p>本地根目录：<code>{environment.resource_catalog.local_root}</code></p>}
+      <div className="resource-tools">{environment.resource_catalog.resources.map((resource) => <details key={`${resource.source_id}:${resource.uri}`}>
+        <summary>{resource.name}<small>{resource.source_id}</small></summary>
+        <code>{resource.uri}</code>{resource.description && <p>{resource.description}</p>}
+        {resource.mime_type && <p>{resource.mime_type}</p>}
+      </details>)}
+      {environment.resource_catalog.templates.map((template) => <details key={`${template.source_id}:${template.uri_template}`}>
+        <summary>{template.name}<small>{template.source_id}</small></summary>
+        <code>{template.uri_template}</code>{template.description && <p>{template.description}</p>}
+      </details>)}</div>
+    </section>
     <section className="resource-card"><h3>模型与提示词</h3><dl>
       <dt>执行模型</dt><dd>{environment.execution_model.model}</dd>
       <dt>配置</dt><dd>{environment.execution_model.profile_id}</dd>

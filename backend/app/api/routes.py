@@ -31,7 +31,7 @@ from app.domain.planning import TestCase, TestCaseContent, TestPlan
 from app.domain.planning.events import PlanningEvent
 from app.reporting import TestRunReport
 from app.execution.run_service import RunConflict
-from app.tools import MCPConnectionError
+from app.mcp import MCPConnectionError
 
 
 API_ERROR_RESPONSE: dict[str, Any] = {"model": ApiError}

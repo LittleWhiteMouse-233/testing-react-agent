@@ -219,6 +219,40 @@ def test_system_prompt_is_never_silently_trimmed() -> None:
         )
 
 
+def skill_messages(call_id: str, body: str, *, uri: str = "skill://parent/SKILL.md", status: str = "success") -> list[AnyMessage]:
+    return [AIMessage(id=f"ai-{call_id}", content="", tool_calls=[{
+        "id": call_id, "name": "load_skill", "args": {"source_id": "mcp:fixture", "uri": uri},
+    }]), ToolMessage(id=f"tool-{call_id}", name="load_skill", tool_call_id=call_id, content=body, status=status)]  # type: ignore[arg-type]
+
+
+def test_loaded_skills_survive_trimming_with_latest_successful_version() -> None:
+    messages: list[AnyMessage] = [SystemMessage(id="system", content="rules"), HumanMessage(id="task", content="task")]
+    messages.extend(skill_messages("old", "superseded body" * 800))
+    messages.extend(skill_messages("current", "Current Skill instructions"))
+    messages.extend(skill_messages("child", "Child Skill instructions", uri="skill://parent/child/SKILL.md"))
+    messages.extend(skill_messages("failed", "Cannot load", status="error"))
+    messages.extend([
+        AIMessage(id="history-ai", content="", tool_calls=[{"id": "history", "name": "observe", "args": {}}]),
+        ToolMessage(id="history-tool", content="Old observations" * 1_500, tool_call_id="history"),
+        AIMessage(id="latest-ai", content="", tool_calls=[{"id": "latest", "name": "observe", "args": {}}]),
+        ToolMessage(id="latest-tool", content="Latest observation", tool_call_id="latest"),
+    ])
+    window = _select_model_message_window(messages, tools=(), model_profile=model_profile(context_window_tokens=3_000))
+    ids = {entry.id for entry in window}
+    assert {"ai-current", "tool-current", "ai-child", "tool-child", "latest-ai", "latest-tool"} <= ids
+    assert "tool-old" not in ids and "history-tool" not in ids
+    assert [entry.id for entry in window] == [entry.id for entry in messages if entry.id in ids]
+
+
+def test_loaded_skill_over_budget_blocks_instead_of_losing_instructions() -> None:
+    messages: list[AnyMessage] = [SystemMessage(content="rules"), HumanMessage(content="task")]
+    messages.extend(skill_messages("large", "Required instructions" * 1_000))
+    messages.extend([AIMessage(content="", tool_calls=[{"id": "latest", "name": "observe", "args": {}}]),
+                     ToolMessage(content="Latest observation", tool_call_id="latest")])
+    with pytest.raises(ModelContextBudgetExceeded):
+        _select_model_message_window(messages, tools=(), model_profile=model_profile(context_window_tokens=3_000))
+
+
 @pytest.mark.parametrize("history_rounds", [1, 3])
 def test_visual_retention_replaces_expired_messages_without_mutating_history(history_rounds: int) -> None:
     messages: list[AnyMessage] = [SystemMessage(content='rules'), HumanMessage(content='task')]

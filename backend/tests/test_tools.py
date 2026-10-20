@@ -3,10 +3,10 @@ from pathlib import Path
 
 import pytest
 from langchain_core.messages import ToolMessage
-from langchain_mcp_adapters.client import MultiServerMCPClient
 from langsmith import tracing_context
 
-from app.tools import MCPConnectionError, MCPToolProvider, snapshot_tools
+from app.mcp import MCPConnectionError
+from app.tools import MCPToolProvider, snapshot_tools
 from mcp_support import image_block, read_records, replay_call, text_block, write_mcp_config
 
 
@@ -16,11 +16,8 @@ async def test_replay_scenario_continues_across_framework_sessions(tmp_path: Pat
         replay_call(content=[text_block("first observation")]),
         replay_call(content=[text_block("second observation")]),
     ])
-    connections = json.loads(config.read_text(encoding="utf-8"))["mcpServers"]
-    for connection in connections.values():
-        connection["transport"] = "stdio"
     with tracing_context(enabled=False):
-        tools = await MultiServerMCPClient(connections, tool_name_prefix=True).get_tools()
+        tools = await MCPToolProvider(config).discover_tools()
         responses = [await tools[0].ainvoke({
             "name": tools[0].name, "args": {}, "id": str(index), "type": "tool_call",
         }) for index in range(2)]

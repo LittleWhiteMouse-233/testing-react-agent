@@ -11,8 +11,9 @@ from typing import Annotated, Literal
 import anyio
 from anyio.lowlevel import checkpoint
 import yaml
-from mcp.server.fastmcp import FastMCP
-from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
+from fastmcp import FastMCP
+from fastmcp.tools.base import ToolResult
+from mcp_types import ImageContent, TextContent, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from atv_adb_ctrl import ATVController, ATVControlSettings, RemoteKey
@@ -69,11 +70,11 @@ Operation = Annotated[PressKeyOperation | ScreenshotOperation | WaitOperation | 
 
 
 def build_server(settings: ATVServerSettings) -> FastMCP:
-    server = FastMCP("android-tv", dependencies=[])
+    server = FastMCP("android-tv")
     controller = ATVController(settings)
     execution_lock = asyncio.Lock()
 
-    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @server.tool(annotations=ToolAnnotations(read_only_hint=True))
     async def get_device_capabilities() -> dict:
         """Discover supported remote key values and descriptions, target identity and operation limits."""
         async with execution_lock:
@@ -84,8 +85,8 @@ def build_server(settings: ATVServerSettings) -> FastMCP:
             "limits": settings.model_dump(exclude={"adb_path", "ip_address"}),
         }
 
-    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False), structured_output=False)
-    async def execute_operations(operations: list[Operation]) -> CallToolResult:
+    @server.tool(annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=False), output_schema=None)
+    async def execute_operations(operations: list[Operation]) -> ToolResult:
         """Execute an ordered queue of press_key, screenshot, wait and text operations.
 
         Discover valid keys and limits with get_device_capabilities. Consecutive
@@ -125,7 +126,7 @@ def build_server(settings: ATVServerSettings) -> FastMCP:
                             if isinstance(operation, ScreenshotOperation):
                                 image = await controller.screenshot()
                                 encoded = await asyncio.to_thread(lambda: base64.b64encode(image).decode("ascii"))
-                                content.append(ImageContent(type="image", data=encoded, mimeType="image/png"))
+                                content.append(ImageContent(type="image", data=encoded, mime_type="image/png"))
                             elif isinstance(operation, PressKeyOperation):
                                 await controller.press_key(operation.key)
                                 content.append(TextContent(type="text", text=f"{position + 1}: Pressed {operation.key}"))
@@ -144,7 +145,7 @@ def build_server(settings: ATVServerSettings) -> FastMCP:
                                 last = content[-1]
                                 assert isinstance(last, TextContent)
                                 last.text += f"; settled for {settings.post_action_wait_ms} ms"
-            return CallToolResult(content=list(content))
+            return ToolResult(content=list(content))
         except (ValueError, RuntimeError, OSError, TimeoutError) as exc:
             failure = (
                 f"Queue stopped at operation {position + 1}; remaining operations were not executed"
@@ -153,7 +154,7 @@ def build_server(settings: ATVServerSettings) -> FastMCP:
             )
             reason = str(exc) or type(exc).__name__
             content.append(TextContent(type="text", text=f"{failure}: {reason}"))
-            return CallToolResult(isError=True, content=list(content))
+            return ToolResult(is_error=True, content=list(content))
 
     return server
 

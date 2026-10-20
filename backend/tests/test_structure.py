@@ -37,6 +37,7 @@ from app.domain.planning import (
 )
 from app.domain.resources.llm import LLMProfileSnapshot
 from app.domain.resources.tools import ToolCatalogSnapshot
+from app.domain.resources.static_resources import ResourceCatalogSnapshot
 from app.event_stream import EventBus, RunEventWriter, project_run_message
 from app.execution.task_agent import TaskAgentGraphState
 from app.execution import RunExecutor, RunService, TaskAgentFactory
@@ -90,13 +91,14 @@ def model_snapshot() -> LLMProfileSnapshot:
 def run_environment_snapshot() -> RunEnvironmentSnapshot:
     return RunEnvironmentSnapshot(
         tool_catalog=ToolCatalogSnapshot(tools=[]),
+        resource_catalog=ResourceCatalogSnapshot(),
         execution_model=model_snapshot(),
         act_max_cycles=30,
         judge_max_cycles=10,
         act_prompt_version="act-v1",
         judge_prompt_version="judge-v1",
         app_version="0.1.0",
-        execution_protocol_version="5",
+        execution_protocol_version="6",
     )
 
 

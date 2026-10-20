@@ -719,6 +719,143 @@
         "title": "ReportExportRequest",
         "type": "object"
       },
+      "ResourceCatalogSnapshot": {
+        "additionalProperties": false,
+        "description": "One metadata catalog; package relationships and initial summaries are derived.",
+        "properties": {
+          "local_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Root"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceDefinitionSnapshot"
+            },
+            "title": "Resources",
+            "type": "array"
+          },
+          "templates": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceTemplateSnapshot"
+            },
+            "title": "Templates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "local_root",
+          "resources",
+          "templates"
+        ],
+        "title": "ResourceCatalogSnapshot",
+        "type": "object"
+      },
+      "ResourceDefinitionSnapshot": {
+        "additionalProperties": false,
+        "description": "One concrete resource address, readable without template expansion.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "is_skill_manifest": {
+            "default": false,
+            "title": "Is Skill Manifest",
+            "type": "boolean"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "uri": {
+            "title": "Uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "uri",
+          "name"
+        ],
+        "title": "ResourceDefinitionSnapshot",
+        "type": "object"
+      },
+      "ResourceTemplateSnapshot": {
+        "additionalProperties": false,
+        "description": "A URI pattern needing expansion, distinct from a concrete resource.\n\nSimilar descriptive fields belong to different MCP protocol entities;\npreserving that boundary prevents passing an unexpanded pattern to read.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "uri_template": {
+            "title": "Uri Template",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "uri_template",
+          "name"
+        ],
+        "title": "ResourceTemplateSnapshot",
+        "type": "object"
+      },
       "ReviseTestPlanRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1914,7 +2051,7 @@
             "$ref": "#/components/schemas/LLMProfileSnapshot"
           },
           "execution_protocol_version": {
-            "const": "5",
+            "const": "6",
             "title": "Execution Protocol Version",
             "type": "string"
           },
@@ -1929,6 +2066,9 @@
             "title": "Judge Prompt Version",
             "type": "string"
           },
+          "resource_catalog": {
+            "$ref": "#/components/schemas/ResourceCatalogSnapshot"
+          },
           "screenshot_history_rounds": {
             "default": 3,
             "minimum": 1.0,
@@ -1941,6 +2081,7 @@
         },
         "required": [
           "tool_catalog",
+          "resource_catalog",
           "execution_model",
           "act_max_cycles",
           "judge_max_cycles",

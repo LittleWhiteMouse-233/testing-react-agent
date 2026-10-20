@@ -2,6 +2,8 @@
 
 Independent, trusted Android TV MCP service. The host connects through stdio and does not import this package or read its configuration. Host tests do not install, launch or test it.
 
+The service uses standalone FastMCP 4.1.1 and MCP SDK 2.3.0. Tool results use FastMCP's public `ToolResult`; partial errors retain ordered text/images and the standard MCP `isError` flag. This replaces the older SDK-bundled `mcp.server.fastmcp` without changing device configuration or operation semantics.
+
 With the dependencies declared in `pyproject.toml` available, first copy `config.example.yaml` to `config.yaml` in this directory (PowerShell: `Copy-Item config.example.yaml config.yaml`). Do this only for initial setup; keep an existing local configuration. Configure `ip_address` and ADB settings in `config.yaml`, then run directly from this directory without installing the ATV package:
 
 ```text

@@ -581,7 +581,9 @@ def test_run_tools_ignore_config_changes_and_hold_the_single_run_slot(tmp_path: 
         assert conflict.status_code == 409
         assert wait_for_run(client, run_id)["run"]["verdict"] == "PASS"
     records = read_records(tmp_path)
-    assert len({entry["pid"] for entry in records}) == 3
+    # Tool and resource capability discovery each close their own session,
+    # followed by the two independent business calls.
+    assert len({entry["pid"] for entry in records}) == 4
     assert sum(entry["phase"] == "completed" for entry in records) == 2
 
 

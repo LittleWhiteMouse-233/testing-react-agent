@@ -24,6 +24,15 @@
     <p>规划额外输入：</p>
     <pre>{{ report.detail.test_plan.planning_context.user_input or '无' }}</pre>
     <p>执行模型：{{ report.detail.environment.execution_model.profile_id }}</p>
+    <h3>Skill 与静态资源</h3>
+    {% if report.detail.environment.resource_catalog.local_root %}<p>本地根目录：{{ report.detail.environment.resource_catalog.local_root }}</p>{% endif %}
+    {% for resource in report.detail.environment.resource_catalog.resources %}
+      <p><strong>{{ resource.name }}</strong> · {{ resource.source_id }} · <code>{{ resource.uri }}</code></p>
+      {% if resource.description %}<p>{{ resource.description }}</p>{% endif %}
+    {% endfor %}
+    {% for template in report.detail.environment.resource_catalog.templates %}
+      <p>{{ template.name }} · {{ template.source_id }} · <code>{{ template.uri_template }}</code></p>
+    {% endfor %}
   </section>
   <section>
     <h2>任务结果</h2>

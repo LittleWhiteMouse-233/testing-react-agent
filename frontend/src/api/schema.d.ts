@@ -536,6 +536,58 @@ export interface components {
              */
             format: "json" | "html";
         };
+        /**
+         * ResourceCatalogSnapshot
+         * @description One metadata catalog; package relationships and initial summaries are derived.
+         */
+        ResourceCatalogSnapshot: {
+            /** Local Root */
+            local_root: string | null;
+            /** Resources */
+            resources: components["schemas"]["ResourceDefinitionSnapshot"][];
+            /** Templates */
+            templates: components["schemas"]["ResourceTemplateSnapshot"][];
+        };
+        /**
+         * ResourceDefinitionSnapshot
+         * @description One concrete resource address, readable without template expansion.
+         */
+        ResourceDefinitionSnapshot: {
+            /** Description */
+            description?: string | null;
+            /**
+             * Is Skill Manifest
+             * @default false
+             */
+            is_skill_manifest: boolean;
+            /** Mime Type */
+            mime_type?: string | null;
+            /** Name */
+            name: string;
+            /** Source Id */
+            source_id: string;
+            /** Uri */
+            uri: string;
+        };
+        /**
+         * ResourceTemplateSnapshot
+         * @description A URI pattern needing expansion, distinct from a concrete resource.
+         *
+         *     Similar descriptive fields belong to different MCP protocol entities;
+         *     preserving that boundary prevents passing an unexpanded pattern to read.
+         */
+        ResourceTemplateSnapshot: {
+            /** Description */
+            description?: string | null;
+            /** Mime Type */
+            mime_type?: string | null;
+            /** Name */
+            name: string;
+            /** Source Id */
+            source_id: string;
+            /** Uri Template */
+            uri_template: string;
+        };
         /** ReviseTestPlanRequest */
         ReviseTestPlanRequest: {
             content: components["schemas"]["TestPlanContent_TestTaskDefinition_"];
@@ -969,11 +1021,12 @@ export interface components {
              * Execution Protocol Version
              * @constant
              */
-            execution_protocol_version: "5";
+            execution_protocol_version: "6";
             /** Judge Max Cycles */
             judge_max_cycles: number;
             /** Judge Prompt Version */
             judge_prompt_version: string;
+            resource_catalog: components["schemas"]["ResourceCatalogSnapshot"];
             /**
              * Screenshot History Rounds
              * @default 3

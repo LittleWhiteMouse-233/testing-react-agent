@@ -69,11 +69,13 @@ def test_single_run_slot_and_shutdown_wait_for_active_call(tmp_path: Path) -> No
 
         async def exercise():
             run = await container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True)
-            for _ in range(300):
-                if any(record["phase"] == "started" for record in read_records(tmp_path)):
-                    break
-                await asyncio.sleep(0.01)
-            assert any(record["phase"] == "started" for record in read_records(tmp_path))
+            async def wait_for_active_call() -> None:
+                while not any(record["phase"] == "started" for record in read_records(tmp_path)):
+                    await asyncio.sleep(0.01)
+
+            # Process startup is not the behavior under test. Synchronize on
+            # actual execution before asserting the shutdown boundary.
+            await asyncio.wait_for(wait_for_active_call(), 15)
             with pytest.raises(RunConflict):
                 await container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True)
             shutdown = asyncio.create_task(container.run_service.shutdown())

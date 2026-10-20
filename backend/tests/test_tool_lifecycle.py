@@ -13,6 +13,7 @@ from langchain_core.tools import StructuredTool
 from langsmith import tracing_context
 
 from app.artifacts import ArtifactStore
+from app.domain.resources.static_resources import ResourceCatalogSnapshot
 from app.domain import planning
 from app.domain.errors import ToolCallError, describe_exception
 from app.execution.task_agent import TaskAgentFactory, TaskAgentGraphState, TaskAgentInput, _TaskRuntime
@@ -38,6 +39,7 @@ def task_runtime() -> _TaskRuntime:
             previous_task_runs=(), max_cycles=3, screenshot_history_rounds=1,
             expected_model_profile=model_client.profile_snapshot,
             expected_prompt_version=prompt.version,
+            resource_catalog=ResourceCatalogSnapshot(),
         ),
         tools=(), model_client=model_client,
         prompt_definition=prompt, model_response_max_attempts=3,

@@ -88,6 +88,7 @@ class Container:
             act_prompt=prompt_catalog.act,
             judge_prompt=prompt_catalog.judge,
             tools=self.tools,
+            skills_dir=settings.skills_dir,
             act_max_cycles=settings.act_max_cycles,
             judge_max_cycles=settings.judge_max_cycles,
             screenshot_history_rounds=settings.screenshot_history_rounds,

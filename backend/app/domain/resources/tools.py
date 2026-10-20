@@ -1,7 +1,7 @@
 """Immutable, credential-free projections of discovered MCP tools."""
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class ToolAnnotationsSnapshot(BaseModel):
@@ -9,10 +9,10 @@ class ToolAnnotationsSnapshot(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
     title: str | None = None
-    readOnlyHint: bool | None = None
-    destructiveHint: bool | None = None
-    idempotentHint: bool | None = None
-    openWorldHint: bool | None = None
+    readOnlyHint: bool | None = Field(default=None, validation_alias=AliasChoices("readOnlyHint", "read_only_hint"))
+    destructiveHint: bool | None = Field(default=None, validation_alias=AliasChoices("destructiveHint", "destructive_hint"))
+    idempotentHint: bool | None = Field(default=None, validation_alias=AliasChoices("idempotentHint", "idempotent_hint"))
+    openWorldHint: bool | None = Field(default=None, validation_alias=AliasChoices("openWorldHint", "open_world_hint"))
 
 
 class ToolDefinitionSnapshot(BaseModel):

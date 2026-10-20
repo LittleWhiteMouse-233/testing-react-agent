@@ -2,6 +2,10 @@
 
 Independent stdio protocol replay service. It has no Android TV or host application dependency.
 
+The service uses MCP SDK 2.3 public server callbacks. Scenarios may also declare `resources`, `resource_templates`, and `resource_contents` (URI to ordered standard text/blob resource contents). Set `tools` to an empty list for a resource-only server. Resource listings and reads have separate JSONL phases and never advance the business-tool replay index. `resource_disconnects` lists URIs whose reads terminate the process to exercise transport failure.
+
+SDK 2's low-level callbacks do not validate the advertised tool schema. The service uses public `jsonschema.validate` before replay dispatch so invalid parameters return a normal tool error without consuming an operation.
+
 Install with `python -m pip install -e .`, then start with:
 
 ```text
@@ -43,4 +47,4 @@ A scenario declares standard MCP tools and an ordered list of expected requests:
 
 The JSONL record reports discovery, received arguments, response completion, cancellation and process lifecycle, with process ID and request index. It is the external observation interface for integration tests; consumers do not import service objects.
 
-Each record also includes monotonic `time_seconds` for elapsed-time observations. Set a call's `cooperative_cancellation` to `false` to simulate a blocking external operation that cannot process cancellation during its delay; its late completion must not be treated as a confirmed host result. The scenario's optional `startup_delay_seconds` delays protocol startup to exercise initialization timeout and cancellation. Each newly started process reads the scenario file anew and continues at the request index derived from existing `started` records. Discovery does not advance the sequence; every received call advances it once, including calls that time out or disconnect. Use a fresh record path to begin a new replay sequence.
+Each record also includes monotonic `time_seconds` for elapsed-time observations. Set a call's `cooperative_cancellation` to `false` to simulate a blocking external operation that cannot process cancellation during its delay; its late completion must not be treated as a confirmed host result. The scenario's optional `startup_delay_seconds` delays protocol startup to exercise initialization timeout and cancellation. Each newly started process reads the scenario file anew and continues at the request index derived from existing `started` records. Discovery and schema-rejected requests do not advance the sequence; every valid received call advances it once, including calls that time out or disconnect. Use a fresh record path to begin a new replay sequence.
