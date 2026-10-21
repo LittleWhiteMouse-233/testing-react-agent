@@ -201,7 +201,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "type",
-            _enum("artifact_type", "screenshot", "json_export", "html_export"),
+            _enum("artifact_type", "image", "json_export", "html_export"),
             nullable=False,
         ),
         sa.Column("relative_path", sa.Text(), nullable=False),
@@ -214,7 +214,7 @@ def upgrade() -> None:
             name="ck_artifact_owner_xor",
         ),
         sa.CheckConstraint(
-            "(type = 'screenshot' AND task_run_id IS NOT NULL) OR "
+            "(type = 'image' AND task_run_id IS NOT NULL) OR "
             "(type IN ('json_export', 'html_export') AND test_run_id IS NOT NULL)",
             name="ck_artifact_type_owner",
         ),

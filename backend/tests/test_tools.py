@@ -1,13 +1,12 @@
-import json
 from pathlib import Path
 
 import pytest
 from langchain_core.messages import ToolMessage
 from langsmith import tracing_context
 
-from app.mcp import MCPConnectionError
+from app.mcp import MCPClientProvider
 from app.tools import MCPToolProvider, snapshot_tools
-from mcp_support import image_block, read_records, replay_call, text_block, write_mcp_config
+from mcp_support import image_block, load_mcp_client_provider, read_records, replay_call, text_block, write_mcp_config
 
 
 @pytest.mark.asyncio
@@ -17,7 +16,7 @@ async def test_replay_scenario_continues_across_framework_sessions(tmp_path: Pat
         replay_call(content=[text_block("second observation")]),
     ])
     with tracing_context(enabled=False):
-        tools = await MCPToolProvider(config).discover_tools()
+        tools = await MCPToolProvider(await load_mcp_client_provider(config)).discover_tools()
         responses = [await tools[0].ainvoke({
             "name": tools[0].name, "args": {}, "id": str(index), "type": "tool_call",
         }) for index in range(2)]
@@ -31,7 +30,7 @@ async def test_discovery_closes_sessions_and_tools_use_independent_calls(tmp_pat
         replay_call(content=[text_block("first"), image_block()]),
         replay_call(content=[text_block("second"), image_block()]),
     ], servers=("first", "second"))
-    tools = await MCPToolProvider(config).discover_tools()
+    tools = await MCPToolProvider(await load_mcp_client_provider(config)).discover_tools()
     assert [tool.name for tool in tools] == ["first_inspect", "second_inspect"]
     snapshot = snapshot_tools(tools)
     assert [tool.source for tool in snapshot.tools] == ["first", "second"]
@@ -59,23 +58,9 @@ async def test_discovery_closes_sessions_and_tools_use_independent_calls(tmp_pat
 @pytest.mark.asyncio
 async def test_configuration_errors_do_not_require_a_device(tmp_path: Path) -> None:
     config = tmp_path / "missing.json"
-    with pytest.raises(MCPConnectionError, match="configuration"):
-        await MCPToolProvider(config).discover_tools()
+    with pytest.raises(FileNotFoundError):
+        await MCPClientProvider(config).load_clients()
     config.write_text('{"mcpServers":{"unsupported":{"command":"unused","transport":"http"}}}', encoding="utf-8")
-    with pytest.raises(MCPConnectionError, match="configuration"):
-        await MCPToolProvider(config).discover_tools()
-
-
-@pytest.mark.asyncio
-async def test_connection_failure_is_a_public_mcp_error(tmp_path: Path) -> None:
-    config = tmp_path / "mcp.json"
-    config.write_text(json.dumps({"mcpServers": {"missing": {"command": "nonexistent-mcp-executable"}}}), encoding="utf-8")
-    with pytest.raises(MCPConnectionError, match="discovery"):
-        await MCPToolProvider(config).discover_tools()
-
-
-@pytest.mark.asyncio
-async def test_discovery_timeout_is_a_public_mcp_error(tmp_path: Path) -> None:
-    config = write_mcp_config(tmp_path, [])
-    with pytest.raises(MCPConnectionError, match="discovery"):
-        await MCPToolProvider(config, timeout_seconds=0.001).discover_tools()
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError, match="transport"):
+        await MCPClientProvider(config).load_clients()

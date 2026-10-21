@@ -1,4 +1,4 @@
-"""TaskAgent timeout feedback and evidence processing contracts."""
+"""TaskAgent timeout feedback and image processing contracts."""
 from __future__ import annotations
 
 import asyncio
@@ -36,7 +36,7 @@ def task_runtime() -> _TaskRuntime:
                 type=planning.TestTaskType.ACT, title="Observe", goal="Observe the target",
                 success_criteria=["Expected content is visible"],
             )),
-            previous_task_runs=(), max_cycles=3, screenshot_history_rounds=1,
+            previous_task_runs=(), max_cycles=3, image_history_rounds=1,
             expected_model_profile=model_client.profile_snapshot,
             expected_prompt_version=prompt.version,
             resource_catalog=ResourceCatalogSnapshot(),
@@ -52,6 +52,19 @@ def initial_tool_state() -> TaskAgentGraphState:
         "messages": [AIMessage(content="", tool_calls=[{"name": "observe", "args": {}, "id": "call"}])],
         "cycle_count": 1, "model_response_attempt": 1, "completion": None, "route": "tools",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", [{"status": "cancelled", "summary": "User requested cancellation"},
+                                       {"status": "passed", "summary": ""}])
+async def test_finish_tool_rejects_invalid_status_or_empty_summary(task_runtime: _TaskRuntime, arguments: dict[str, str]) -> None:
+    state = initial_tool_state()
+    state["messages"] = [AIMessage(id="finish-request", content="Finish based on observations", tool_calls=[{
+        "name": "finish_task", "args": arguments, "id": "finish", "type": "tool_call",
+    }])]
+    update = await task_runtime.validate_message(state)
+    assert update["route"] == "cycle_guard"
+    task_runtime.event_recorder.record_message_validation_failed.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -167,7 +180,7 @@ def test_exception_description_preserves_causes_groups_and_suppression() -> None
 
 
 @pytest.mark.asyncio
-async def test_all_evidence_processing_failures_are_reported(task_runtime: _TaskRuntime) -> None:
+async def test_all_image_processing_failures_are_reported(task_runtime: _TaskRuntime) -> None:
     message = ToolMessage(id="return", tool_call_id="call", content=[
         {"type": "text", "text": "available observation"},
         {"type": "image", "base64": "!invalid!", "mime_type": "image/png"},

@@ -24,6 +24,7 @@ from rfc3986.exceptions import ResolutionError
 from app.domain.resources.static_resources import (
     ResourceCatalogSnapshot, ResourceDefinitionSnapshot, ResourceTemplateSnapshot,
 )
+from app.mcp import MCPClientProvider
 
 
 ResourceContent = TextContentBlock | ImageContentBlock
@@ -31,8 +32,18 @@ LOAD_SKILL_TOOL_NAME = "load_skill"
 _TEXT_APPLICATION_MIMES = {"application/json", "application/xml", "application/yaml", "application/x-yaml", "application/toml", "application/javascript"}
 
 
+def _normalize_mime_type(mime_type: str | None) -> str:
+    return (mime_type or "").split(";", 1)[0].strip().lower()
+
+
 def _is_text_mime(mime_type: str | None) -> bool:
-    return bool(mime_type and (mime_type.startswith("text/") or mime_type in _TEXT_APPLICATION_MIMES))
+    media_type = _normalize_mime_type(mime_type)
+    return media_type.startswith("text/") or media_type in _TEXT_APPLICATION_MIMES
+
+
+def _is_unsupported_mime(mime_type: str | None) -> bool:
+    media_type = _normalize_mime_type(mime_type)
+    return bool(media_type and not (_is_text_mime(media_type) or media_type.startswith("image/")))
 
 
 def _is_skill_uri(source_id: str, uri: str) -> bool:
@@ -45,7 +56,7 @@ def _is_skill_uri(source_id: str, uri: str) -> bool:
     )
 
 
-def _package_contains(skill_uri: str, resource_uri: str) -> bool:
+def _is_resource_in_skill_package(skill_uri: str, resource_uri: str) -> bool:
     skill_address, resource_address = urlsplit(skill_uri), urlsplit(resource_uri)
     root_path = skill_address.path.rsplit("/", 1)[0] + "/"
     return (skill_address.scheme, skill_address.netloc) == (resource_address.scheme, resource_address.netloc) and resource_address.path.startswith(root_path)
@@ -57,39 +68,39 @@ def top_level_skills(catalog: ResourceCatalogSnapshot) -> list[ResourceDefinitio
     return [entry for entry in candidates if not any(
         ancestor.source_id == entry.source_id
         and len(urlsplit(ancestor.uri).path) < len(urlsplit(entry.uri).path)
-        and _package_contains(ancestor.uri, entry.uri)
+        and _is_resource_in_skill_package(ancestor.uri, entry.uri)
         for ancestor in candidates
     )]
 
 
-def _resolve_resource_uri(uri: str, base_url: str | None = None) -> str:
+def _resolve_relative_resource_uri(uri: str, base_uri: str | None = None) -> str:
     reference = uri_reference(uri)
     if reference.scheme:
         return uri
-    if not base_url or not uri_reference(base_url).scheme:
-        raise ToolException("Relative resource uri requires an absolute base_url (copy the document URI).")
+    if not base_uri or not uri_reference(base_uri).scheme:
+        raise ToolException("Relative resource uri requires an absolute base_uri (copy the document URI).")
     try:
-        return reference.resolve_with(base_url).unsplit()
+        return reference.resolve_with(base_uri).unsplit()
     except (ResolutionError, ValueError) as exc:
-        raise ToolException(f"Invalid resource URI or base_url: {exc}") from exc
+        raise ToolException(f"Invalid resource URI or base_uri: {exc}") from exc
 
 
 class SkillResourceProvider:
-    """A run's frozen catalog and clients; content is always read on demand."""
+    """Discover each run's metadata catalog; read content on demand."""
 
-    def __init__(self, local_root: Path, clients: dict[str, Client[Any]]) -> None:
+    def __init__(self, local_root: Path, mcp_clients: MCPClientProvider) -> None:
         self.local_root = local_root.resolve()
-        self.clients = {f"mcp:{name}": client for name, client in clients.items()}
+        self.mcp_clients = mcp_clients
         self.catalog = ResourceCatalogSnapshot(local_root=str(self.local_root))
 
-    def _local_resources(self, directory: Path) -> list[ResourceDefinitionSnapshot]:
+    def _scan_local_resource(self) -> list[ResourceDefinitionSnapshot]:
         return [ResourceDefinitionSnapshot(
             source_id="local", uri=path.as_uri(), name=path.relative_to(self.local_root).as_posix(),
             mime_type=mimetypes.guess_type(path.name)[0],
-        ) for path in sorted(directory.rglob("*"))
+        ) for path in sorted(self.local_root.rglob("*"))
             if path.is_file() and path.resolve().is_relative_to(self.local_root)]
 
-    def _local_path(self, uri: str) -> Path:
+    def _resolve_local_resource_path(self, uri: str) -> Path:
         try:
             address = urlsplit(uri)
         except ValueError as exc:
@@ -104,15 +115,16 @@ class SkillResourceProvider:
             raise ToolException("Resource path escapes the configured Skill root.")
         return path
 
-    def _client(self, source_id: str) -> Client[Any]:
-        if source_id not in self.clients:
+    def _get_mcp_client(self, source_id: str) -> Client[Any]:
+        if not source_id.startswith("mcp:") or source_id[4:] not in self.mcp_clients.clients:
             raise ToolException(f"Unknown resource source: {source_id}")
-        return self.clients[source_id]
+        return self.mcp_clients.clients[source_id[4:]]
 
-    async def discover(self) -> ResourceCatalogSnapshot:
-        resources = await asyncio.to_thread(self._local_resources, self.local_root)
+    async def discover_resources(self) -> ResourceCatalogSnapshot:
+        resources = await asyncio.to_thread(self._scan_local_resource)
         templates: list[ResourceTemplateSnapshot] = []
-        for source_id, client in self.clients.items():
+        for server_name, client in self.mcp_clients.clients.items():
+            source_id = f"mcp:{server_name}"
             async with client:
                 if client.server_capabilities is None or client.server_capabilities.resources is None:
                     continue
@@ -134,13 +146,17 @@ class SkillResourceProvider:
         catalog = ResourceCatalogSnapshot(local_root=str(self.local_root), resources=resources, templates=templates)
         summaries: dict[tuple[str, str], ResourceDefinitionSnapshot] = {}
         for entry in top_level_skills(catalog):
+            if _is_unsupported_mime(entry.mime_type):
+                continue
             if entry.source_id == "local" or not entry.name or not entry.description:
-                contents = await self._read_contents(entry.source_id, entry.uri)
+                contents = await self._read_resource_contents(entry.source_id, entry.uri)
+                if any(_is_unsupported_mime(content.mime_type) for content in contents):
+                    continue
                 document = frontmatter.loads("\n".join(content.text for content in contents if isinstance(content, TextResourceContents)))
                 name = document.get("name")
                 description = document.get("description")
                 summaries[(entry.source_id, entry.uri)] = entry.model_copy(update={
-                    "name": (name if isinstance(name, str) and name else self._local_path(entry.uri).parent.name)
+                    "name": (name if isinstance(name, str) and name else self._resolve_local_resource_path(entry.uri).parent.name)
                         if entry.source_id == "local" else entry.name or (name if isinstance(name, str) else "SKILL.md"),
                     "description": entry.description or (description if isinstance(description, str) else None),
                 })
@@ -149,9 +165,9 @@ class SkillResourceProvider:
         ]})
         return self.catalog
 
-    async def _read_contents(self, source_id: str, uri: str) -> list[TextResourceContents | BlobResourceContents]:
+    async def _read_resource_contents(self, source_id: str, uri: str) -> list[TextResourceContents | BlobResourceContents]:
         if source_id == "local":
-            path = self._local_path(uri)
+            path = self._resolve_local_resource_path(uri)
             try:
                 raw = await asyncio.to_thread(path.read_bytes)
             except OSError as exc:
@@ -165,7 +181,7 @@ class SkillResourceProvider:
                 except UnicodeDecodeError:
                     pass
             return [BlobResourceContents(uri=uri, mime_type=mime_type, blob=base64.b64encode(raw).decode("ascii"))]
-        client = self._client(source_id)
+        client = self._get_mcp_client(source_id)
         try:
             address = AnyUrl(uri)
         except ValueError as exc:
@@ -177,6 +193,8 @@ class SkillResourceProvider:
             if exc.code in {CONNECTION_CLOSED, REQUEST_TIMEOUT}:
                 raise
             raise ToolException(f"Cannot read resource {uri}: {exc}") from exc
+        if any(_is_unsupported_mime(content.mime_type) for content in contents):
+            return contents
         normalized: list[TextResourceContents | BlobResourceContents] = []
         for content in contents:
             if isinstance(content, BlobResourceContents) and _is_text_mime(content.mime_type):
@@ -189,22 +207,33 @@ class SkillResourceProvider:
                 normalized.append(content)
         return normalized
 
-    async def read_resource(self, source_id: str, uri: str, base_url: str | None = None) -> list[ResourceContent]:
-        """Read a complete URI, or resolve a relative reference against an explicit base_url.
+    async def read_resource(self, source_id: str, uri: str, base_uri: str | None = None) -> list[ResourceContent]:
+        """Read a complete URI, or resolve a relative reference against an explicit base_uri.
 
-        Copy the current document URI as base_url; directory bases must end in '/'.
+        Copy the current document URI as base_uri; directory bases must end in '/'.
         The selected source is unchanged. Returns text/images and actual content URIs.
         """
-        resolved_uri = _resolve_resource_uri(uri, base_url)
+        resolved_uri = _resolve_relative_resource_uri(uri, base_uri)
+        if source_id == "local":
+            known_mime = mimetypes.guess_type(self._resolve_local_resource_path(resolved_uri).name)[0]
+        else:
+            known_mime = next((entry.mime_type for entry in self.catalog.resources
+                               if entry.source_id == source_id and entry.uri == resolved_uri), None)
+        if _is_unsupported_mime(known_mime):
+            return [create_text_block(text=f"Unsupported binary resource type: {known_mime} ({resolved_uri}). Only text and images can be read.")]
+        contents = await self._read_resource_contents(source_id, resolved_uri)
+        for content in contents:
+            if _is_unsupported_mime(content.mime_type):
+                return [create_text_block(text=f"Unsupported binary resource type: {content.mime_type} ({content.uri}). Only text and images can be read.")]
         blocks: list[ResourceContent] = []
-        for content in await self._read_contents(source_id, resolved_uri):
+        for content in contents:
             blocks.append(create_text_block(text=json.dumps({
                 "source_id": source_id, "uri": content.uri, "mime_type": content.mime_type,
             }, ensure_ascii=False)))
             if isinstance(content, TextResourceContents):
                 blocks.append(create_text_block(text=content.text))
-            elif content.mime_type and content.mime_type.startswith("image/"):
-                blocks.append(create_image_block(base64=content.blob, mime_type=content.mime_type))
+            elif _normalize_mime_type(content.mime_type).startswith("image/"):
+                blocks.append(create_image_block(base64=content.blob, mime_type=_normalize_mime_type(content.mime_type)))
             else:
                 blocks.append(create_text_block(text=f"Unsupported binary resource type: {content.mime_type or 'unknown'}. Only text and images can be read."))
         return blocks
@@ -213,71 +242,65 @@ class SkillResourceProvider:
         """Load one SKILL.md into this task's retained instructions; never load attachments.
 
         Accepts nested Skill entries even if absent from the initial summaries.
-        References remain unchanged; use read_resource with this URI as base_url.
+        References remain unchanged; use read_resource with this URI as base_uri.
         """
         if not _is_skill_uri(source_id, uri):
             raise ToolException("load_skill requires a SKILL.md entry: local file URI or MCP skill URI.")
         return await self.read_resource(source_id, uri)
 
-    async def list_resources(self, source_id: str | None = None, skill_uri: str | None = None) -> ResourceCatalogSnapshot:
-        """List metadata, optionally scoped to a source and a recursive Skill package."""
+    async def list_resources(self, source_id: str | None = None, skill_uri: str | None = None) -> str:
+        """List resource metadata/templates, optionally for one source or recursive Skill package.
+
+        A package includes nested files and nested SKILL.md as ordinary entries.
+        Requires source_id when skill_uri is given. Listings are not read whitelists:
+        templates may permit unlisted URIs; this does not enumerate a server's filesystem.
+        """
         if skill_uri and (not source_id or not _is_skill_uri(source_id, skill_uri)):
             raise ToolException("skill_uri requires source_id and a valid SKILL.md entry URI.")
         if source_id and source_id != "local":
-            self._client(source_id)
-        resources = [entry for entry in self.catalog.resources if entry.source_id != "local"]
-        if source_id in {None, "local"}:
-            directory = self._local_path(skill_uri).parent if skill_uri else self.local_root
-            resources.extend(await asyncio.to_thread(self._local_resources, directory))
-        for entry in self.catalog.resources:
-            if not entry.is_skill_manifest or (source_id and source_id != entry.source_id):
-                continue
-            # The public FastMCP helper uses precisely this advertised URI form.
-            if not entry.uri.startswith("skill://") or not entry.uri.endswith("/_manifest"):
-                continue
-            manifest_skill_uri = entry.uri.rsplit("/", 1)[0] + "/SKILL.md"
-            if skill_uri and not (_package_contains(manifest_skill_uri, skill_uri) or _package_contains(skill_uri, entry.uri)):
-                continue
-            client = self._client(entry.source_id)
+            self._get_mcp_client(source_id)
+        if source_id == "local" and skill_uri:
+            self._resolve_local_resource_path(skill_uri)
+        resources = [entry for entry in self.catalog.resources if not source_id or entry.source_id == source_id]
+        manifests = [entry for entry in resources if entry.is_skill_manifest
+                     and entry.uri.startswith("skill://") and entry.uri.endswith("/_manifest")
+                     and not _is_unsupported_mime(entry.mime_type)]
+        top_level_manifests = [entry for entry in manifests if not any(
+            ancestor.source_id == entry.source_id and ancestor.uri != entry.uri
+            and _is_resource_in_skill_package(ancestor.uri.rsplit("/", 1)[0] + "/SKILL.md", entry.uri)
+            for ancestor in manifests
+        )]
+        expanded: list[ResourceDefinitionSnapshot] = []
+        for entry in top_level_manifests:
+            client = self._get_mcp_client(entry.source_id)
             try:
                 async with client:
                     manifest = await get_skill_manifest(client, entry.uri[len("skill://"):-len("/_manifest")])
-                resources.extend(ResourceDefinitionSnapshot(
+                expanded.extend(ResourceDefinitionSnapshot(
                     source_id=entry.source_id,
-                    uri=_resolve_resource_uri(quote(file.path, safe="/"), entry.uri), name=file.path,
+                    uri=_resolve_relative_resource_uri(quote(file.path, safe="/"), entry.uri), name=file.path,
                 ) for file in manifest.files)
             except (MCPError, ValueError) as exc:
                 if isinstance(exc, MCPError) and exc.code in {CONNECTION_CLOSED, REQUEST_TIMEOUT}:
                     raise
                 raise ToolException(f"Cannot list manifest {entry.uri}: {exc}") from exc
-        filtered = [entry for entry in resources if (not source_id or entry.source_id == source_id)
-                    and (not skill_uri or _package_contains(skill_uri, entry.uri))]
         # Prefer advertised metadata to manifest entries which know only paths.
         unique: dict[tuple[str, str], ResourceDefinitionSnapshot] = {}
-        for entry in filtered:
+        for entry in [*resources, *expanded]:
             unique.setdefault((entry.source_id, entry.uri), entry)
+        filtered = [entry for entry in unique.values()
+                    if not skill_uri or _is_resource_in_skill_package(skill_uri, entry.uri)]
         templates = [entry for entry in self.catalog.templates if (not source_id or entry.source_id == source_id)
-                     and (not skill_uri or self._template_related(skill_uri, entry.uri_template))]
-        return ResourceCatalogSnapshot(local_root=self.catalog.local_root,
-                                       resources=list(unique.values()), templates=templates)
+                     and (not skill_uri or self._template_overlaps_skill_package(skill_uri, entry.uri_template))]
+        return ResourceCatalogSnapshot(resources=filtered, templates=templates).model_dump_json(exclude={"local_root"})
 
     @staticmethod
-    def _template_related(skill_uri: str, template: str) -> bool:
+    def _template_overlaps_skill_package(skill_uri: str, template: str) -> bool:
         prefix = template.split("{", 1)[0]
         address = urlsplit(skill_uri)
         package_prefix = urlunsplit((address.scheme, address.netloc, address.path.rsplit("/", 1)[0] + "/", "", ""))
         return package_prefix.startswith(prefix) or prefix.startswith(package_prefix)
 
-    def tools(self) -> tuple[BaseTool, ...]:
-        async def list_resources(source_id: str | None = None, skill_uri: str | None = None) -> list[ResourceContent]:
-            """List resource metadata/templates, optionally for one source or Skill package.
-
-            A package includes nested files and nested SKILL.md as ordinary entries.
-            Requires source_id when skill_uri is given. Listings are not read whitelists.
-            """
-            catalog = await self.list_resources(source_id, skill_uri)
-            return [create_text_block(text=catalog.model_dump_json(exclude={"local_root"})),
-                    create_text_block(text="Only discoverable resources are listed. Templates may permit unlisted URIs; this does not enumerate the server's physical filesystem.")]
-
+    def build_resource_tools(self) -> tuple[BaseTool, ...]:
         return tuple(StructuredTool.from_function(coroutine=handler, handle_tool_error=True)
-                     for handler in (self.load_skill, self.read_resource, list_resources))
+                     for handler in (self.load_skill, self.read_resource, self.list_resources))

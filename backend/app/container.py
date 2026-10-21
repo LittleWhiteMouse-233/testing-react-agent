@@ -21,6 +21,8 @@ from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.planning import PlanningGraph, PlanningService
 from app.prompts import load_prompt_catalog
 from app.reporting import ReportService
+from app.mcp import MCPClientProvider
+from app.skill import SkillResourceProvider
 from app.tools import MCPToolProvider
 from app.test_case_lock import TestCaseLock
 
@@ -37,7 +39,9 @@ class Container:
             settings.artifacts_dir,
             self.sessions,
         )
-        self.tools = MCPToolProvider(settings.mcp_config_path, settings.tool_call_timeout_seconds)
+        self.mcp_clients = MCPClientProvider(settings.mcp_config_path)
+        self.tools = MCPToolProvider(self.mcp_clients)
+        self.skills = SkillResourceProvider(settings.skills_dir, self.mcp_clients)
         prompt_catalog = load_prompt_catalog()
         model_clients_by_id: dict[str, ChatModelClient] = {}
         for profile in settings.llm_profiles:
@@ -87,10 +91,12 @@ class Container:
             app_version=settings.app_version,
             act_prompt=prompt_catalog.act,
             judge_prompt=prompt_catalog.judge,
+            mcp_clients=self.mcp_clients,
             tools=self.tools,
-            skills_dir=settings.skills_dir,
+            skills=self.skills,
+            discovery_timeout_seconds=settings.tool_call_timeout_seconds,
             act_max_cycles=settings.act_max_cycles,
             judge_max_cycles=settings.judge_max_cycles,
-            screenshot_history_rounds=settings.screenshot_history_rounds,
+            image_history_rounds=settings.image_history_rounds,
         )
         self.reports = ReportService(partial(read_test_run_report, self.sessions), self.artifacts)

@@ -64,7 +64,6 @@ from app.persistence.run_repository import (
     ActiveRunExists,
     SqlAlchemyRunRepository,
 )
-from app.persistence.models import ArtifactRow
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
@@ -98,7 +97,7 @@ def run_environment_snapshot() -> RunEnvironmentSnapshot:
         act_prompt_version="act-v1",
         judge_prompt_version="judge-v1",
         app_version="0.1.0",
-        execution_protocol_version="6",
+        execution_protocol_version="7",
     )
 
 
@@ -137,7 +136,6 @@ def test_every_business_json_uses_the_central_adapter() -> None:
     result = TaskRunResult(
         reason_code=ReasonCode.COMPLETED,
         summary="done",
-        evidence_artifact_ids=[ARTIFACT_ID],
     )
     assert load_task_run_result(dump_task_run_result(result)) == result
     with pytest.raises(ValidationError):
@@ -235,14 +233,43 @@ def test_public_message_projection_never_serializes_image_base64() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("schema_source", ["orm", "alembic"])
 async def test_fresh_schema_has_only_canonical_tables_and_constraints(
+    schema_source: str,
 ) -> None:
+    import os
+    import subprocess
+    import sys
+    from app.artifacts import ArtifactStore
+
     with tempfile.TemporaryDirectory(
         dir=PROJECT_ROOT / "data", ignore_cleanup_errors=True
     ) as directory:
         database = Path(directory) / "schema.db"
         engine = build_engine(f"sqlite+aiosqlite:///{database.as_posix()}")
-        await init_database(engine)
+        if schema_source == "orm":
+            await init_database(engine)
+        else:
+            migrated = await asyncio.to_thread(subprocess.run,
+                [sys.executable, "-m", "alembic", "upgrade", "head"],
+                cwd=PROJECT_ROOT / "backend", capture_output=True, text=True, encoding="utf-8",
+                env={**os.environ, "TEST_AGENT_DATABASE_URL": f"sqlite+aiosqlite:///{database.as_posix()}"})
+            assert migrated.returncode == 0, migrated.stdout + migrated.stderr
+
+        sessions = build_session_factory(engine)
+        repository = SqlAlchemyRunRepository(sessions, RunEventWriter(sessions, EventBus()))
+        test_case = await api_repository.create_test_case(sessions, planning_context().test_case_content)
+        plan = await repository.create_plan(test_case_id=test_case.id, draft=plan_draft(),
+                                           planning_context=planning_context(), origin=PlanOrigin.PLANNING)
+        run = await repository.create_test_run(test_plan_id=plan.id, environment=run_environment_snapshot())
+        await repository.start_run(run.id)
+        task = await repository.start_task(run.id, plan.content.tasks[0])
+        artifacts = ArtifactStore(Path(directory) / "artifacts", sessions)
+        image = await artifacts.save_image(task_run_id=task.id, content=b"image bytes", mime_type="image/png")
+        assert image.type == ArtifactType.IMAGE and image.task_run_id == task.id
+        exported = await artifacts.save_export(test_run_id=run.id, artifact_type=ArtifactType.JSON_EXPORT,
+            content=b"{}", mime_type="application/json", extension="json")
+        assert exported.test_run_id == run.id
 
         async with engine.connect() as connection:
             tables, active_index_sql, artifact_checks = await connection.run_sync(
@@ -256,7 +283,7 @@ async def test_fresh_schema_has_only_canonical_tables_and_constraints(
                 )
             )
         await engine.dispose()
-    assert tables == {
+    assert tables - {"alembic_version"} == {
         "test_cases",
         "test_plans",
         "test_tasks",
@@ -357,84 +384,30 @@ async def test_latest_plan_and_single_active_run_are_serialized() -> None:
 
 
 @pytest.mark.asyncio
-async def test_task_result_evidence_must_belong_to_the_task_run() -> None:
-    with tempfile.TemporaryDirectory(
-        dir=PROJECT_ROOT / "data", ignore_cleanup_errors=True
-    ) as directory:
-        database = Path(directory) / "evidence.db"
-        engine = build_engine(f"sqlite+aiosqlite:///{database.as_posix()}")
-        await init_database(engine)
-        sessions = build_session_factory(engine)
-        repository = SqlAlchemyRunRepository(
-            sessions, RunEventWriter(sessions, EventBus())
-        )
-        test_case = await api_repository.create_test_case(repository.sessions, planning_context().test_case_content)
-        plan = await repository.create_plan(
-            test_case_id=test_case.id,
-            draft=plan_draft(task_count=2),
-            planning_context=planning_context(),
-            origin=PlanOrigin.PLANNING,
-        )
-        run = await repository.create_test_run(
-            test_plan_id=plan.id,
-            environment=run_environment_snapshot(),
-        )
-        await repository.start_run(run.id)
-        first = await repository.start_task(run.id, plan.content.tasks[0])
-        second = await repository.start_task(run.id, plan.content.tasks[1])
-        first_artifact_id = "44444444-4444-4444-8444-444444444444"
-        second_artifact_id = "55555555-5555-4555-8555-555555555555"
-        async with sessions() as session:
-            session.add_all(
-                [
-                    ArtifactRow(
-                        id=first_artifact_id,
-                        test_run_id=None,
-                        task_run_id=first.id,
-                        type=ArtifactType.SCREENSHOT,
-                        relative_path="first.png",
-                        mime_type="image/png",
-                        size_bytes=1,
-                        sha256="0" * 64,
-                    ),
-                    ArtifactRow(
-                        id=second_artifact_id,
-                        test_run_id=None,
-                        task_run_id=second.id,
-                        type=ArtifactType.SCREENSHOT,
-                        relative_path="second.png",
-                        mime_type="image/png",
-                        size_bytes=1,
-                        sha256="1" * 64,
-                    ),
-                ]
-            )
-            await session.commit()
-
-        with pytest.raises(ValueError, match="owned by the task run"):
-            await repository.finish_task(
-                first.id,
-                status=TaskRunStatus.PASSED,
-                result=TaskRunResult(
-                    reason_code=ReasonCode.COMPLETED,
-                    summary="wrong evidence",
-                    evidence_artifact_ids=[second_artifact_id],
-                ),
-                cycle_count=1,
-            )
-        await repository.finish_task(
-            first.id,
-            status=TaskRunStatus.PASSED,
-            result=TaskRunResult(
-                reason_code=ReasonCode.COMPLETED,
-                summary="correct evidence",
-                evidence_artifact_ids=[first_artifact_id],
-            ),
-            cycle_count=1,
-        )
-        assert (await repository.list_task_runs(run.id))[0].status == TaskRunStatus.PASSED
-        await engine.dispose()
-
+@pytest.mark.parametrize("status,reason", [
+    (TaskRunStatus.PASSED, ReasonCode.COMPLETED),
+    (TaskRunStatus.FAILED, ReasonCode.ASSERTION_FAILED),
+    (TaskRunStatus.BLOCKED, ReasonCode.AGENT_BLOCKED),
+])
+async def test_task_results_persist_observations_without_image_associations(
+    tmp_path: Path, status: TaskRunStatus, reason: ReasonCode,
+) -> None:
+    engine = build_engine(f"sqlite+aiosqlite:///{(tmp_path / 'results.db').as_posix()}")
+    await init_database(engine)
+    sessions = build_session_factory(engine)
+    repository = SqlAlchemyRunRepository(sessions, RunEventWriter(sessions, EventBus()))
+    test_case = await api_repository.create_test_case(sessions, planning_context().test_case_content)
+    plan = await repository.create_plan(test_case_id=test_case.id, draft=plan_draft(),
+                                       planning_context=planning_context(), origin=PlanOrigin.PLANNING)
+    run = await repository.create_test_run(test_plan_id=plan.id, environment=run_environment_snapshot())
+    await repository.start_run(run.id)
+    task = await repository.start_task(run.id, plan.content.tasks[0])
+    result = TaskRunResult(reason_code=reason, summary="Observed target state and compared it with the success criteria")
+    await repository.finish_task(task.id, status=status, result=result, cycle_count=1)
+    saved = (await repository.list_task_runs(run.id))[0]
+    assert saved.status == status and saved.result == result
+    assert (await api_repository.read_test_run_report(sessions, run.id)).artifacts == []
+    await engine.dispose()
 
 def test_domain_has_no_framework_or_integration_dependencies() -> None:
     domain_root = Path(__file__).resolve().parents[1] / "app" / "domain"

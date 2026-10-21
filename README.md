@@ -1,6 +1,6 @@
 # Subjective testing agent
 
-自然语言用例 → 人工确认的不可变计划 → MCP 工具驱动的自适应执行 → 截图证据 → 确定性结果和报告。
+自然语言用例 → 人工确认的不可变计划 → MCP 工具驱动的自适应执行与观察 → 确定性结果和报告。
 
 ## 用例编辑与归档
 
@@ -20,13 +20,13 @@
 
 - `backend/app/domain/`：用例、计划、运行、工具目录、模型快照和事件的领域事实。
 - `backend/app/planning/`：无工具的规划流程，读取原始用例、最新计划与本轮额外输入；`execution/`：Act/Judge 共用执行图。
-- `backend/app/tools.py`：标准 stdio MCP 配置、会话和 LangChain 工具导入；不理解设备或工具参数语义。
+- `backend/app/mcp.py`：标准 stdio MCP 配置、工作目录和框架客户端；`tools.py` 通过官方适配器导入业务工具，`skill.py` 统一管理 Skill 与静态资源。
 - `backend/app/event_stream/`：共享有界 EventBus；执行事件经 RunEventWriter 提交后通知，规划事件仅在连接中发送。慢订阅队列溢出会断开，执行流可从数据库补拉，规划流不保留历史。
 - `frontend/`：计划编辑、实时运行、历史和报告。
 - `backend/scripts/` 和 `frontend/scripts/`：开发用契约生成工具。
 - `user_scripts/`：安装、启动和独立能力检测工具，见[用户脚本文档](user_scripts/README.md)。
 - `mcp_servers/`：独立 MCP 服务，使用说明见下方[服务文档](#mcp-服务文档)。
-- `mcp_servers/mcp.json`：宿主连接配置；`data/`：忽略的运行数据库、checkpoint、证据和导出。
+- `mcp_servers/mcp.json`：宿主连接配置；`data/`：忽略的运行数据库、checkpoint、运行记录和导出。
 
 宿主及其测试不 import 外部包，不管理设备 ID、状态、探活或配置。第三方工具只需通过 MCP 提供 schema 和结果；不需要实现项目专属的 scopes、manifest 或设备接口。
 
@@ -54,8 +54,8 @@ MCP 服务独立管理运行环境、依赖和配置；应用仅负责协议接�
 | `TEST_AGENT_PLANNING_MODEL_ID` | 规划模型 ID，未设或留空时使用首个 profile |
 | `TEST_AGENT_EXECUTION_MODEL_ID` | Act/Judge 共用模型 ID，未设或留空时使用首个 profile |
 | `TEST_AGENT_MCP_CONFIG_PATH` | 默认 `mcp_servers/mcp.json`，相对路径从仓库根目录解析 |
-| `TEST_AGENT_TOOL_CALL_TIMEOUT_SECONDS` | 120 秒，整个工具发现过程及每次工具节点执行的超时；节点执行包含会话创建、调用与退出，截图保存不计入 |
-| `TEST_AGENT_SCREENSHOT_HISTORY_ROUNDS` | 3，State 保留原图 base64 的最近有截图决策轮数；过期图片替换为 artifact 引用 |
+| `TEST_AGENT_TOOL_CALL_TIMEOUT_SECONDS` | 120 秒，完整运行准备过程（加载 MCP、发现工具、发现资源）及每次工具节点执行的超时；节点执行包含会话创建、调用与退出，图片保存不计入 |
+| `TEST_AGENT_IMAGE_HISTORY_ROUNDS` | 3，State 保留原图 base64 的最近有图片决策轮数；过期图片替换为 artifact 引用 |
 | `TEST_AGENT_EXECUTION_MODEL_CALL_MAX_ATTEMPTS` | 3，执行阶段模型传输错误有限重试 |
 | `TEST_AGENT_EXECUTION_MODEL_RESPONSE_MAX_ATTEMPTS` | 3，执行阶段连续无效响应/工具错误上限 |
 | `TEST_AGENT_ACT_MAX_CYCLES` | 30，act 任务总决策轮次上限，范围 1～100 |
@@ -88,60 +88,61 @@ TEST_AGENT_EXECUTION_MODEL_ID=vision
 - [ATV MCP](mcp_servers/atv_mcp/README.md)
 - [Fake MCP](mcp_servers/fake_mcp/README.md)
 
-## 执行、证据和历史
+## 执行、运行记录和历史
 
-执行协议版本为 5。用户取消通过运行取消标志在节点安全边界生效：等待当前调用返回或达到框架超时，保存已收到的截图后结束为 CANCELLED，不再请求模型或执行下一次工具调用。调用机制、结果处理或证据保存的未处理故障仍为 BLOCKED，不被取消标志覆盖。应用关闭请求同样的安全边界停止，并等待当前运行结束。
+执行协议版本为 7。用户取消通过运行取消标志在节点安全边界生效：等待当前调用返回或达到框架超时，保存已收到的图片后结束为 CANCELLED，不再请求模型或执行下一次工具调用。调用机制、结果处理或图片保存的未处理故障仍为 BLOCKED，不被取消标志覆盖。应用关闭请求同样的安全边界停止，并等待当前运行结束。
 
-工具参数错误和 MCP 正常返回的业务错误通过框架错误消息交给模型；原生工具节点超时由公开错误处理器转换为关联原调用 ID 的错误消息，提示操作可能部分执行、结果未确认。随后沿用纠错预算，由模型决定重新观察、继续或结束；工具不自动重放。会话退出交由框架与 SDK 处理，宿主不额外等待独立清理流程；迟到结果不进入 State、事件或证据。模型传输错误仍有限重试，不另计决策轮。未处理异常向上传播到 executor，记录执行错误并结束为 BLOCKED。运行工作任务结束后释放占用，不设置永久入口锁定；已保存的终态不被后续取消改写。
+工具参数错误和 MCP 正常返回的业务错误通过框架错误消息交给模型；原生工具节点超时由公开错误处理器转换为关联原调用 ID 的错误消息，提示操作可能部分执行、结果未确认。随后沿用纠错预算，由模型决定重新观察、继续或结束；工具不自动重放。会话退出交由框架与 SDK 处理，宿主不额外等待独立清理流程；迟到结果不进入 State、事件或运行记录。模型传输错误仍有限重试，不另计决策轮。未处理异常向上传播到 executor，记录执行错误并结束为 BLOCKED。运行工作任务结束后释放占用，不设置永久入口锁定；已保存的终态不被后续取消改写。
 
 Act 达成目标，Judge 验证行为；Judge 可主动准备条件和触发交互，但不得绕过待验证行为或修改成功标准。两者共用模型、工具和执行图。
 
 图没有固定截图节点。逻辑决策轮开始即消耗一轮，包括能力查询、截图、纠错和结束请求；首次模型请求前在同一事务中保存任务轮数与 `cycle.started`。传输重试不另计，请求最终失败仍保留已开始的轮次。开始前取消或已到轮次上限不增加轮次；开始事件提交期间取消则保留已提交轮次，不再请求模型。开始事件写入失败立即阻塞，不调用模型。每轮只允许一个工具调用，终态使用宿主的 `finish_task(status, summary)`。
 
-工具内容顺序保留。图片先解码保存原图，原 base64 连同 Artifact ID 进入 ToolMessage，不重新编码。工具完成后，在 `after_tools` 阶段选取最近 3 个有截图的已完成决策轮，同轮多图全部保留，无图轮不占窗口。窗口外图片在 State 原内容位置替换为带证据引用的占位文本；仅复制变化的消息，通过公开 `add_messages` reducer 按相同 message ID 替换，不直接修改输入 State。该产品边界只实现截图轮数策略，消息合并及 checkpoint 序列化仍由框架负责。模型请求基于回收后的 State 执行 token 预算与必要上下文检查；token 裁剪不删除 State 历史，窗口限制轮数而非图片字节总量，也不保证所有图片都能装入预算。
+工具内容顺序保留。图片先解码保存原图，原 base64 连同 Artifact ID 进入 ToolMessage，不重新编码。工具完成后，在 `after_tools` 阶段选取最近 3 个有图片的已完成决策轮，同轮多图全部保留，无图轮不占窗口。窗口外图片在 State 原内容位置替换为带artifact 引用的占位文本；仅复制变化的消息，通过公开 `add_messages` reducer 按相同 message ID 替换，不直接修改输入 State。该产品边界只实现图片轮数策略，消息合并及 checkpoint 序列化仍由框架负责。模型请求基于回收后的 State 执行 token 预算与必要上下文检查；token 裁剪不删除 State 历史，窗口限制轮数而非图片字节总量，也不保证所有图片都能装入预算。
 
-State 与 checkpoint 保留消息身份、顺序、文字和工具调用关系，只保留视觉窗口内图片的 base64，终止时不额外清空窗口。执行沿用 `durability="exit"`，图退出时保存回收后的 State；进程突然崩溃时不保证中间 checkpoint 恢复。图片回收前后公开消息均投影为相同 Artifact ID，现有消息去重保证 SSE/历史事件不重复追加；持久事件、历史原图与 JSON/HTML 导出保持完整。内存与最终快照的图片载荷随窗口内截图体积变化，文字历史仍随任务累积。
+State 与 checkpoint 保留消息身份、顺序、文字和工具调用关系，只保留图片窗口内图片的 base64，终止时不额外清空窗口。执行沿用 `durability="exit"`，图退出时保存回收后的 State；进程突然崩溃时不保证中间 checkpoint 恢复。图片回收前后公开消息均投影为相同 Artifact ID，现有消息去重保证 SSE/历史事件不重复追加；持久事件、历史原图与 JSON/HTML 导出保持完整。内存与最终快照的图片载荷随窗口内图片体积变化，文字历史仍随任务累积。
 
-开发调试重建约定：过期图片使用 `type="text"`、固定文本 `[Screenshot was captured; image is outside the visual history window.]` 和 `extras.artifact_id`，占据原图片内容块位置。通过该 ID 调用 `ArtifactStore.load_content(artifact_id)` 获取 `(content, mime_type)`，以 `base64.b64encode(content).decode("ascii")` 重建 `{"type": "image", "id": artifact_id, "mime_type": mime_type, "base64": encoded}` 内容块。消息 ID、内容块顺序及持久事件提供历史定位；原图丢失时应报告缺失，不伪造内容。重建仅用于开发人员调试，不自动回填运行 State，也不提供独立调试命令。
+开发调试重建约定：过期图片使用 `type="text"`、固定文本 `[Image was saved; image is outside the image history window.]` 和 `extras.artifact_id`，占据原图片内容块位置。通过该 ID 调用 `ArtifactStore.load_content(artifact_id)` 获取 `(content, mime_type)`，以 `base64.b64encode(content).decode("ascii")` 重建 `{"type": "image", "id": artifact_id, "mime_type": mime_type, "base64": encoded}` 内容块。消息 ID、内容块顺序及持久事件提供历史定位；原图丢失时应报告缺失，不伪造内容。重建仅用于开发人员调试，不自动回填运行 State，也不提供独立调试命令。
 
 任务总轮次仅由 `.env` 中的 `TEST_AGENT_ACT_MAX_CYCLES` 和 `TEST_AGENT_JUDGE_MAX_CYCLES` 按类型统一提供；规划生成和人工编辑均不提供轮次设置。修改配置后重启后端，对新运行生效。创建运行时冻结上限到运行环境快照，执行、运行页和报告均使用该快照。
 
-通过/失败必须引用本任务实际保存的截图；是否需要操作后重新取证由模型判断。总轮次或连续纠错预算耗尽统一 BLOCKED。连续尝试默认 3 次（包含首次），参数错误、模型响应校验错误、工具业务错误和超时共用预算，成功调用后清零；同时耗尽采用 cycle_limit。全局 fail-fast、取消和最终 PASS/FAIL/BLOCKED/CANCELLED 聚合由程序决定。
+图片和文本均为普通运行数据，结束任务不要求截图或关联图片。模型主动调用 `finish_task(status, summary)` 时，无论 passed、failed 或 blocked，摘要都须说明支持该结论的观察内容、判断依据及其与成功标准的关系；提示词要求观察尽可能来自真实截图、日志和待测物状态，参考示例不能当作实际观察。程序验证状态及非空摘要，不根据图片数量决定结论。总轮次或连续纠错预算耗尽统一 BLOCKED。连续尝试默认 3 次（包含首次），参数错误、模型响应校验错误、工具业务错误和超时共用预算，成功调用后清零；同时耗尽采用 cycle_limit。全局 fail-fast、取消和最终 PASS/FAIL/BLOCKED/CANCELLED 聚合由程序决定。
 
-工具执行使用单层 LangGraph 和默认 `ToolNode`；节点 `timeout` 覆盖适配器连接、调用和会话退出，仅处理 `NodeTimeoutError` 的公开 `error_handler` 提供超时反馈。工具自身抛出的 `TimeoutError` 等未处理异常仍作为执行失败阻塞。截图保存与结果投影位于独立的 `after_tools` 节点，不计入调用超时；该节点统一保存证据、整理结构化内容、回收历史图片，然后才发布本轮工具消息。证据处理失败立即向 executor 传播，已保存原图不回滚，失败消息不作为可纠错 ToolMessage 发布。
+工具执行使用单层 LangGraph 和默认 `ToolNode`；节点 `timeout` 覆盖适配器连接、调用和会话退出，仅处理 `NodeTimeoutError` 的公开 `error_handler` 提供超时反馈。工具自身抛出的 `TimeoutError` 等未处理异常仍作为执行失败阻塞。图片保存与结果投影位于独立的 `after_tools` 节点，不计入调用超时；该节点统一保存运行记录、整理结构化内容、回收历史图片，然后才发布本轮工具消息。图片处理失败立即向 executor 传播，已保存原图不回滚，失败消息不作为可纠错 ToolMessage 发布。
 
-执行器仅消费图的 `updates` 流，投影并持久化公开 Message。当前 LangGraph 1.2.9 的 `custom` 流会重新抛出已处理异常（[上游问题 #8608](https://github.com/langchain-ai/langgraph/issues/8608)）；executor 每次构建 TaskAgent 时注入独立的 `TaskAgentEventRecorder`，由节点等待其记录轮次开始、模型校验失败与工具开始事件。记录对象统一绑定运行和任务归属，复用既有事件事务、去重及提交后广播，不修改框架内部实现。
+执行器仅消费图的 `updates` 流，投影并持久化公开 Message。executor 每次构建 TaskAgent 时注入独立的 `TaskAgentEventRecorder`，由节点等待其记录轮次开始、模型校验失败与工具开始事件。记录对象统一绑定运行和任务归属，复用既有事件事务、去重及提交后广播，不修改框架内部实现。
 
-RunExecutor 在执行结束时确定并持久化唯一运行终态，正常返回即表示 TestRun 已完成。最终提交位于执行异常处理之外，写入失败直接传播，不再次报告或重试提交。MCP 正常返回的业务错误及参数错误通过工具消息传给模型和前端；executor 生命周期内的调用机制和证据处理故障通过 ExecutionErrorEvent 传到前端，并进入历史、报告和导出；异常文本不包含调用栈或局部变量。应用日志还用于 HTTP 通用 500 的服务端诊断，以及后台事件/终态写入失败或外部取消的最终兜底。若持久化通道失败，不伪造完成事件，后续启动沿用既有孤立运行恢复机制。
+RunExecutor 在执行结束时确定并持久化唯一运行终态，正常返回即表示 TestRun 已完成。最终提交位于执行异常处理之外，写入失败直接传播，不再次报告或重试提交。MCP 正常返回的业务错误及参数错误通过工具消息传给模型和前端；executor 生命周期内的调用机制和图片处理故障通过 ExecutionErrorEvent 传到前端，并进入历史、报告和导出；异常文本不包含调用栈或局部变量。应用日志还用于 HTTP 通用 500 的服务端诊断，以及后台事件/终态写入失败或外部取消的最终兜底。若持久化通道失败，不伪造完成事件，后续启动沿用既有孤立运行恢复机制。
 
-调用超时计入连续纠错预算。总决策轮数耗尽统一 BLOCKED / CYCLE_LIMIT，并在两种预算同时耗尽时优先采用该原因；仅工具连续纠错预算耗尽为 BLOCKED / TOOL_FAILED。断连等未处理通信异常和证据处理失败直接阻塞；取消不能覆盖实际执行或证据故障。
+调用超时计入连续纠错预算。总决策轮数耗尽统一 BLOCKED / CYCLE_LIMIT，并在两种预算同时耗尽时优先采用该原因；仅工具连续纠错预算耗尽为 BLOCKED / TOOL_FAILED。断连等未处理通信异常和图片处理失败直接阻塞；取消不能覆盖实际执行或图片存储故障。
 
-RunService 用一个工作状态管理准备与执行阶段；准备阶段尚无运行 ID。取消核对当前运行 ID，关闭则禁止新启动并等待活动工作结束。工作任务结束后释放运行槽和用例占用。数据库创建已提交但启动调用方取消时，仍交给执行器生成取消终态。
+RunService 用一个工作状态管理准备与执行阶段；准备阶段尚无运行 ID。容器级 MCPClientProvider 每次运行重新加载配置和客户端，工具 Provider 与资源 Provider 平行依赖它；RunService 在一次整体超时内依次加载 MCP、发现工具和发现资源，按失败阶段统一报告错误，再合并执行工具。运行期间保持这批客户端不变，会话仍由 SDK 管理。取消核对当前运行 ID，关闭则禁止新启动并等待活动工作结束。工作任务结束后释放运行槽和用例占用。数据库创建已提交但启动调用方取消时，仍交给执行器生成取消终态。
 
 当前不支持运行中暂停、恢复或 drain。逃逸出根图的异常由 executor 报告并结束为 BLOCKED；根图中断后缺少任务完成结果也按同一路径处理。
 
 ## API 与数据升级
 
+- 执行协议为 `7`：结果移除 `evidence_artifact_ids`，普通图片类型为 `image`，统计和窗口字段为 `image_count` / `image_history_rounds`；配置使用 `TEST_AGENT_IMAGE_HISTORY_ROUNDS`，资源相对引用参数为 `base_uri`。开发期直接使用新的建库定义，不兼容旧运行数据。
 - `POST /api/test-cases/{id}/plans` 接受请求体 `{"planning_request_id":"客户端生成的 UUID","user_input":"本轮补充或修改要求"}`。关联 ID 必填且不持久化；首次规划的额外输入可不填写，已有计划时必须提供非空白输入，基于最新已保存计划（含人工修订）重新规划。缺少额外输入返回 `422 / planning_user_input_required`；生成期间参考版本变化返回 `409 / test_plan_not_latest`，不保存结果或自动重试。规划不读取设备信息。
 - `GET /api/test-cases/{id}/planning/stream` 订阅临时规划进度。后端注册后发送命名 `ready` 控制事件，前端收到后才 POST；后续 data 为 OpenAPI 的 PlanningEvent，按 case 路由、按 planning_request_id 筛选。Graph 使用公开 custom stream 提供模型尝试进度，服务补充请求归属、准备输入及保存阶段；校验通过不等于保存成功。
 - 规划进度在中栏粘滞弹窗中按日志追加，连接及请求期间禁止关闭、冲突操作和应用内导航；失败可查看并关闭，成功更新计划后自动清空。日志只在组件内存，关闭、离开或刷新后丢弃。初次订阅 10 秒未就绪不会提交规划；断线重连不补拉，POST 网络错误显示结果未确认，不自动重提。SSE 断线不取消规划。同 case 操作互斥，不同 case 独立。
 - `POST /api/runs` 接收 `test_plan_id` 和 `assumptions_confirmed: true`。
 - 设备查询 API 和 device 字段已删除；运行保存一个 `execution_model` 和实际工具目录。
 - 计划修订创建新版本，只允许 latest 启动；相同运行的事件只追加，重复导出创建新文件。
-- `GET /api/runs/{id}` 统一返回 `TestRunReport`（`detail`、`events`、`artifacts`），供执行页和历史详情使用。独立 `/report` 和 `/events` 查询已删除；`/stream` 从 `after` 或 `Last-Event-ID` 游标重放同源持久事件，`/api/artifacts/{id}` 读取证据与导出文件。
+- `GET /api/runs/{id}` 统一返回 `TestRunReport`（`detail`、`events`、`artifacts`），供执行页和历史详情使用。独立 `/report` 和 `/events` 查询已删除；`/stream` 从 `after` 或 `Last-Event-ID` 游标重放同源持久事件，`/api/artifacts/{id}` 读取运行记录与导出文件。
 - 运行详情支持非负整数 `events_after`（默认 `0`）：只返回序号大于该值的事件，按序号升序；无新增事件返回空数组，详情和附件仍完整且来自同一次读取快照。页面首次全量读取，后续使用已成功缓存的 HTTP 历史末尾序号补齐增量，不以 SSE 最大序号推进游标。JSON／HTML 导出始终包含完整事件历史。
 - `GET /api/test-cases` 支持 `search`、`limit`、`offset`；返回最新计划版本或 `null`。搜索按 ID、名称、正文作字面子串匹配。
-- `GET /api/runs` 支持 `search`、`test_case_id`、重复的 `status` 参数、`verdict`、`created_from`、`created_before`、`limit`、`offset`，返回关联用例、计划任务数、任务状态计数及去重截图数。`GET /api/runs/statistics` 使用同一筛选字段，返回分页前的运行数、结果分布、平均时长与每日趋势。
+- `GET /api/runs` 支持 `search`、`test_case_id`、重复的 `status` 参数、`verdict`、`created_from`、`created_before`、`limit`、`offset`，返回关联用例、计划任务数、任务状态计数及去重图片数。`GET /api/runs/statistics` 使用同一筛选字段，返回分页前的运行数、结果分布、平均时长与每日趋势。
 - 时间参数必须携带时区，区间左闭右开；每日统计采用 `Asia/Shanghai`，平均时长只计算有开始和结束时间的已结束运行。没有有效耗时样本返回 `null`。查询只读取现有事实，不连接 MCP、不写库；原领域模型、业务命令及 JSON／HTML 导出内容不变。
-- 执行协议为 `4`，标记框架管理会话和节点边界取消语义。HTTP 契约与前端生成类型同步更新；开发阶段不为旧运行快照或 checkpoint 增加兼容处理与数据迁移，也不主动删除本地数据。
+- 执行协议为 `7`，加入 Skill 渐进式读取、资源目录快照和任务内正文保留，延续框架管理会话和节点边界取消语义。HTTP 契约与前端生成类型同步更新；开发阶段不为旧运行快照或 checkpoint 增加兼容处理与数据迁移，也不主动删除本地数据。
 
 ## TestPilot 界面
 
 - **规划**：左侧用例库、中间原始用例与规划输入、右侧语义任务及最近五次运行。计划编辑保存新版本；历史版本只读。确认前置假设后才可启动最新计划，重新规划必须填写本轮输入。
-- **执行**：任务队列、最新截图、运行冻结的工具／模型／提示词版本，以及按保存顺序展示的消息时间线。循环计数是预算使用量，不代表完成百分比。取消提交后等待服务端终态。
+- **执行**：任务队列、最新图片、运行冻结的工具／模型／提示词版本，以及按保存顺序展示的消息时间线。循环计数是预算使用量，不代表完成百分比。取消提交后等待服务端终态。
 - **历史**：默认最近 30 个上海自然日；筛选及分页保存在 URL。结果标签计数使用基础筛选范围，选中标签仅筛选列表。每日时长曲线采用独立刻度，悬停查看实际时长。
-- **详情**：从列表打开弹窗，关闭后保留原筛选及页码；`/runs/{id}/report` 是可刷新、可直接打开的前端路由。详情展示原计划、结果原因、消息及全部截图，并区分判定引用的证据。重新执行回到该用例的最新计划确认页。
-- 仅展示已有生产者提供的信息：不提供设备／Skills／节点激活状态、预计耗时、虚构断言结果、重连统计、用例导入或设置入口。导出仅保留已有 JSON 和 HTML 报告。
+- **详情**：从列表打开弹窗，关闭后保留原筛选及页码；`/runs/{id}/report` 是可刷新、可直接打开的前端路由。详情展示原计划、结果原因、消息及全部图片，展示支持结束结论的观察与判断说明。重新执行回到该用例的最新计划确认页。
+- 仅展示已有生产者提供的信息：资源面板包含 Skill 与静态资源的冻结目录；不提供设备／节点激活状态、预计耗时、虚构断言结果、重连统计、用例导入或设置入口。导出保留 JSON 和 HTML 报告及资源元数据。
 
 ## 测试和静态检查
 
@@ -161,9 +162,13 @@ npm.cmd run check:api
 npm.cmd run build
 ```
 
-上述应用检查应在已安装应用开发依赖的 Python 环境中执行。自动化不使用网络、真实模型密钥或电视。核心验证包括通用工具闭环、取消/超时、图片窗口、事件顺序、证据归属、计划版本、并发限制和导出。
+上述应用检查应在已安装应用开发依赖的 Python 环境中执行。自动化不使用网络、真实模型密钥或电视。核心验证包括通用工具闭环、取消/超时、图片窗口、事件顺序、图片归属、计划版本、并发限制和导出。
 
-MCP 适配器和 SDK 分别固定为 0.3.2、1.30.0。应用使用[官方适配器](https://github.com/langchain-ai/langchain-mcp-adapters)的 `get_tools()`、`bind_tools()`、默认 `ToolNode`、公开节点 `timeout` / `error_handler`、消息 reducer 和 checkpointer API。产品代码只补充超时反馈、证据存储、轮数预算、必需任务上下文和视觉窗口；不读取私有 checkpoint 表、不复制消息协议。结构化返回值保留为消息文本，并清除嵌套的重复图片字节。
+应用固定使用 `langchain[mcp]==1.4.6`、FastMCP 4.1.1 和 MCP SDK 2.3.0，通过[官方 langchain.mcp 接口](https://docs.langchain.com/oss/python/migrate/langchain-mcp-adapters)适配业务工具，并使用 `bind_tools()`、默认 `ToolNode`、公开节点 `timeout` / `error_handler`、消息 reducer 和 checkpointer API。`langchain.mcp` 当前标记为 beta，因此固定依赖版本。产品代码补充超时反馈、运行记录存储、轮数预算、必需任务/Skill 上下文和图片窗口；不读取私有 checkpoint 表、不复制消息协议。结构化返回值保留为消息文本，并清除嵌套的重复图片字节。
+
+已有环境升级时，先在该 Python 环境执行 `python -m pip uninstall -y langchain-mcp-adapters`，再安装本版依赖，避免旧独立 adapter 的 MCP 1.x 约束残留。
+
+本地 Skill 放在 `skills/base/` 或 `skills/external/`，也可通过 `TEST_AGENT_SKILLS_DIR` 指定根目录；用法见 [Skill 说明](skills/README.md)。`app/mcp.py` 管理配置和客户端，`app/tools.py` 导入业务工具，`app/skill.py` 统一包边界、摘要、列表和读取。初始只披露顶层摘要，嵌套 Skill 按需访问。三个宿主工具是 `load_skill`、`read_resource` 和 `list_resources`；`read_resource` 可用 `base_uri` 解析正文中的相对引用。所有调用计入原有执行限制，所有图片统一存储、保留消息引用并遵循同一图片窗口。运行快照只保存目录元数据，实际读取内容记录在消息中；当前不兼容旧版本运行快照。
 
 会话和协议取消由适配器与 SDK 管理，宿主不维护请求 ID、会话重连或子进程清理状态。MCP [取消规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/cancellation)允许取消与返回结果竞态；没有收到的结果始终标为未确认。
 

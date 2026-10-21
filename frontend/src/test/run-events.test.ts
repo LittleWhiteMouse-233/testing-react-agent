@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  latestScreenshotArtifactId,
+  latestImageArtifactId,
   mergeStoredRunEvents,
   openRunEventStream,
   parseStoredRunEvent,
@@ -28,8 +28,8 @@ it("selects the last image in the latest image-bearing message after history res
       }
     }), sequence
   })));
-  expect(latestScreenshotArtifactId(restored)).toBe(TASK_RUN_ID);
-  expect(latestScreenshotArtifactId([])).toBeUndefined();
+  expect(latestImageArtifactId(restored)).toBe(TASK_RUN_ID);
+  expect(latestImageArtifactId([])).toBeUndefined();
 });
 
 function storedRunEvent(event: Record<string, unknown>) {

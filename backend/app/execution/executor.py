@@ -55,9 +55,7 @@ class RunExecutor:
         test_run_id: str,
         run_cancellation_event: asyncio.Event,
         tools: tuple[BaseTool, ...],
-        resource_tools: tuple[BaseTool, ...] = (),
     ) -> None:
-        tools = (*tools, *resource_tools)
         active_task: TaskRun | None = None
         remaining_after_active_task: list[TestTask] = []
         cancellation_completed = False
@@ -85,7 +83,7 @@ class RunExecutor:
                             max_cycles=(detail.environment.act_max_cycles
                                         if test_task.definition.type == TestTaskType.ACT
                                         else detail.environment.judge_max_cycles),
-                            screenshot_history_rounds=detail.environment.screenshot_history_rounds,
+                            image_history_rounds=detail.environment.image_history_rounds,
                             previous_task_runs=tuple(completed),
                             expected_model_profile=(
                                 detail.environment.execution_model
@@ -146,7 +144,6 @@ class RunExecutor:
                         result=TaskRunResult(
                             reason_code=reason,
                             summary=summary,
-                            evidence_artifact_ids=[],
                         ),
                         cycle_count=current.cycle_count,
                     )
@@ -213,7 +210,7 @@ class RunExecutor:
         for node_name, update in data.items():
             # Only application-owned publication boundaries expose messages.
             # ToolNode first writes raw results to State;
-            # after_tools saves evidence and returns the same-ID public version.
+            # after_tools saves images and returns the same-ID public version.
             if not isinstance(update, dict) or node_name not in {
                 "initialize", "cycle_guard", "model", "validate", "announce_tool", "after_tools",
             }:

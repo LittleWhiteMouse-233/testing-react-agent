@@ -147,7 +147,7 @@ def test_unsupported_graph_exit_is_blocked_and_releases_run_entry(
 
 
 @pytest.mark.parametrize("with_image,verdict,reason", [(True, "BLOCKED", "cycle_limit"), (False, "BLOCKED", "cycle_limit")])
-def test_round_limit_and_evidence(tmp_path: Path, with_image: bool, verdict: str, reason: str) -> None:
+def test_round_limit_with_or_without_images(tmp_path: Path, with_image: bool, verdict: str, reason: str) -> None:
     content = [image_block()] if with_image else [text_block()]
     with build_client(tmp_path, calls=[replay_call(content=content)], turns=[tool_turn(1)], act_max_cycles=1) as client:
         detail = wait_for_run(client, start_run(client, create_plan(client)))
@@ -156,13 +156,19 @@ def test_round_limit_and_evidence(tmp_path: Path, with_image: bool, verdict: str
         assert detail["task_runs"][0]["cycle_count"] == 1
 
 
-def test_finish_without_image_is_repaired_and_counted(tmp_path: Path) -> None:
-    with build_client(tmp_path, turns=[finish_turn(1), tool_turn(2), finish_turn(3)]) as client:
-        detail = wait_for_run(client, start_run(client, create_plan(client)))
-        assert detail["run"]["verdict"] == "PASS"
-        assert detail["task_runs"][0]["cycle_count"] == 3
-        events = client.get(f"/api/runs/{detail['run']['id']}").json()["events"]
-        assert sum(entry["event"]["type"] == "message.validation_failed" for entry in events) == 1
+@pytest.mark.parametrize("status,verdict", [("passed", "PASS"), ("failed", "FAIL"), ("blocked", "BLOCKED")])
+@pytest.mark.parametrize("task_count", [1, 2])
+def test_text_observation_can_finish_without_images(tmp_path: Path, status: str, verdict: str, task_count: int) -> None:
+    turns = [turn for index in range(task_count) for turn in
+             (tool_turn(index * 2 + 1), finish_turn(index * 2 + 2, status if index == task_count - 1 else "passed"))]
+    with build_client(tmp_path, calls=[replay_call(content=[text_block("Observed target state")])] * task_count,
+                      turns=turns) as client:
+        detail = wait_for_run(client, start_run(client, create_plan(client, task_count=task_count)))
+        assert detail["run"]["verdict"] == verdict
+        assert [task["cycle_count"] for task in detail["task_runs"]] == [2] * task_count
+        report = client.get(f"/api/runs/{detail['run']['id']}").json()
+        assert report["artifacts"] == []
+        assert not any(entry["event"]["type"] == "message.validation_failed" for entry in report["events"])
 
 
 def test_invalid_responses_end_blocked_without_implicit_capture(tmp_path: Path) -> None:
@@ -319,27 +325,27 @@ def test_planning_does_not_connect_to_mcp(tmp_path: Path) -> None:
         assert response.json()["code"] == "mcp_unavailable"
 
 
-def test_visual_history_preserves_order_text_events_and_artifacts(tmp_path: Path) -> None:
-    screenshot_contents = [
+def test_image_history_preserves_order_text_events_and_artifacts(tmp_path: Path) -> None:
+    image_contents = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><!--{index}:{"x" * 4096}--></svg>'.encode()
         for index in range(8)
     ]
-    screenshot_encodings = [base64.b64encode(content).decode("ascii") for content in screenshot_contents]
+    image_encodings = [base64.b64encode(content).decode("ascii") for content in image_contents]
     calls: list[dict[str, Any]] = []
-    screenshot_offset = 0
+    image_offset = 0
     for index in range(1, 6):
         if index == 3:
             calls.append(replay_call(content=[text_block("no image this round")]))
             continue
         calls.append(replay_call(content=[
             text_block(f"before-{index}"),
-            {"type": "image", "data": screenshot_encodings[screenshot_offset], "mimeType": "image/svg+xml"},
+            {"type": "image", "data": image_encodings[image_offset], "mimeType": "image/svg+xml"},
             text_block(f"after-{index}"),
-            {"type": "image", "data": screenshot_encodings[screenshot_offset + 1], "mimeType": "image/svg+xml"},
+            {"type": "image", "data": image_encodings[image_offset + 1], "mimeType": "image/svg+xml"},
         ]))
-        screenshot_offset += 2
+        image_offset += 2
     with build_client(tmp_path, calls=calls, turns=[*[tool_turn(i) for i in range(1, 6)], finish_turn(6)],
-                      screenshot_history_rounds=3) as client:
+                      image_history_rounds=3) as client:
         run_id = start_run(client, create_plan(client))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "PASS"
@@ -357,12 +363,12 @@ def test_visual_history_preserves_order_text_events_and_artifacts(tmp_path: Path
             if export_format == "json":
                 assert download.json() == report
             else:
-                assert all(f"data:image/svg+xml;base64,{encoded}" in download.text for encoded in screenshot_encodings)
+                assert all(f"data:image/svg+xml;base64,{encoded}" in download.text for encoded in image_encodings)
                 assert all(artifact["id"] in download.text for artifact in report["artifacts"])
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
         model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
         assert sum(block['type'] == 'image' for message in model.invocations[-1] for block in message.content_blocks) == 6
-        assert any('outside the visual history' in message.text for message in model.invocations[-1])
+        assert any('outside the image history' in message.text for message in model.invocations[-1])
         task_id = detail["task_runs"][0]["id"]
 
     async def checkpoint_messages() -> list[Any]:
@@ -383,8 +389,8 @@ def test_visual_history_preserves_order_text_events_and_artifacts(tmp_path: Path
                         block.clear()
                         block.update(type="image", id=artifact_id, mime_type=mime_type,
                                      base64=base64.b64encode(content).decode("ascii"))
-            assert restored_contents == screenshot_contents[:2]
-            assert [block["base64"] for message in restored for block in message.content_blocks if block["type"] == "image"] == screenshot_encodings
+            assert restored_contents == image_contents[:2]
+            assert [block["base64"] for message in restored for block in message.content_blocks if block["type"] == "image"] == image_encodings
             restored_checkpoint = {**checkpoint, "channel_values": {**checkpoint["channel_values"], "messages": restored}}
             assert len(saver.serde.dumps_typed(checkpoint)[1]) < len(saver.serde.dumps_typed(restored_checkpoint)[1]) - 8_000
             return messages
@@ -393,7 +399,7 @@ def test_visual_history_preserves_order_text_events_and_artifacts(tmp_path: Path
     tool_messages = [message for message in messages if isinstance(message, ToolMessage)]
     assert len(tool_messages) == 6
     assert sum(block["type"] == "image" for message in messages for block in message.content_blocks) == 6
-    assert "outside the visual history" in tool_messages[0].text
+    assert "outside the image history" in tool_messages[0].text
     assert "before-1" in tool_messages[0].text and "after-1" in tool_messages[0].text
     assert "base64" not in tool_messages[0].model_dump_json()
     assert [project_run_message(message).model_dump(mode="json") for message in messages] == event_messages
@@ -401,11 +407,11 @@ def test_visual_history_preserves_order_text_events_and_artifacts(tmp_path: Path
     assert {message.tool_call_id for message in tool_messages} == {
         call["id"] for message in messages if isinstance(message, AIMessage) for call in message.tool_calls
     }
-    assert [block["base64"] for message in messages for block in message.content_blocks if block["type"] == "image"] == screenshot_encodings[2:]
+    assert [block["base64"] for message in messages for block in message.content_blocks if block["type"] == "image"] == image_encodings[2:]
 
 
 @pytest.mark.parametrize("exit_kind", ["finish", "cancel", "tool_error", "cycle_limit"])
-def test_visual_retention_reaches_state_and_terminal_checkpoint(
+def test_image_retention_reaches_state_and_terminal_checkpoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_kind: str,
 ) -> None:
     original_after_tools = _TaskRuntime.after_tools
@@ -420,7 +426,7 @@ def test_visual_retention_reaches_state_and_terminal_checkpoint(
     monkeypatch.setattr(_TaskRuntime, "after_tools", observe_after_tools)
     with build_client(tmp_path, calls=[replay_call(), replay_call(error=exit_kind == "tool_error")],
                       turns=[tool_turn(1), tool_turn(2), finish_turn(3)],
-                      screenshot_history_rounds=1, execution_model_response_max_attempts=1, act_max_cycles=2 if exit_kind == "cycle_limit" else 3) as client:
+                      image_history_rounds=1, execution_model_response_max_attempts=1, act_max_cycles=2 if exit_kind == "cycle_limit" else 3) as client:
         run_id = start_run(client, create_plan(client))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == {
@@ -442,7 +448,7 @@ def test_visual_retention_reaches_state_and_terminal_checkpoint(
             assert sum(block["type"] == "image" for message in messages for block in message.content_blocks) == 1
             first_return = next(message for message in messages if isinstance(message, ToolMessage))
             assert "base64" not in first_return.model_dump_json()
-            assert "outside the visual history" in first_return.text
+            assert "outside the image history" in first_return.text
             assert [project_run_message(message).model_dump(mode="json") for message in messages] == [
                 entry["event"]["message"] for entry in report["events"] if entry["event"]["type"] == "message.appended"
             ]
@@ -572,14 +578,20 @@ def test_failed_cycle_transaction_rolls_back_count_and_event(tmp_path: Path, mon
 
 
 def test_run_tools_ignore_config_changes_and_hold_the_single_run_slot(tmp_path: Path) -> None:
+    from mcp_support import write_mcp_config
+
     with build_client(tmp_path, calls=[replay_call(delay=0.5), replay_call()],
-                      turns=[tool_turn(1), tool_turn(2), finish_turn(3)]) as client:
+                      turns=[tool_turn(1), tool_turn(2), finish_turn(3), tool_turn(4, "updated_inspect"), finish_turn(5)]) as client:
         plan = create_plan(client)
         run_id = start_run(client, plan)
         (tmp_path / "mcp.json").write_text("invalid", encoding="utf-8")
         conflict = client.post("/api/runs", json={"test_plan_id": plan["id"], "assumptions_confirmed": True})
         assert conflict.status_code == 409
         assert wait_for_run(client, run_id)["run"]["verdict"] == "PASS"
+        write_mcp_config(tmp_path, [replay_call(content=[text_block("New target state")])], servers=("updated",))
+        next_detail = wait_for_run(client, start_run(client, plan))
+        assert next_detail["run"]["verdict"] == "PASS"
+        assert [tool["source"] for tool in next_detail["environment"]["tool_catalog"]["tools"]] == ["updated"]
     records = read_records(tmp_path)
     # Tool and resource capability discovery each close their own session,
     # followed by the two independent business calls.
@@ -633,7 +645,7 @@ def test_custom_schema_structured_result_and_history_without_online_mcp(tmp_path
 
 
 @pytest.mark.parametrize("failure_kind", ["invalid_base64", "invalid_mime", "first_save", "second_save"])
-def test_evidence_failure_preserves_saved_facts_and_blocks(
+def test_image_failure_preserves_saved_facts_and_blocks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_kind: str,
 ) -> None:
     second_image = image_block()
@@ -644,18 +656,18 @@ def test_evidence_failure_preserves_saved_facts_and_blocks(
     content = [text_block("before"), image_block(), text_block("between"), second_image, text_block("after")]
     call = replay_call(content=content)
     call["result"]["structuredContent"] = {"preview": second_image["data"], "count": 2}
-    original_save = ArtifactStore.save_screenshot
+    original_save = ArtifactStore.save_image
     save_attempts = 0
 
-    async def save_screenshot(store: ArtifactStore, **kwargs):
+    async def save_image(store: ArtifactStore, **kwargs):
         nonlocal save_attempts
         save_attempts += 1
         if ((failure_kind == "first_save" and save_attempts == 1)
                 or (failure_kind == "second_save" and save_attempts == 2)):
-            raise OSError("screenshot storage unavailable")
+            raise OSError("image storage unavailable")
         return await original_save(store, **kwargs)
 
-    monkeypatch.setattr(ArtifactStore, "save_screenshot", save_screenshot)
+    monkeypatch.setattr(ArtifactStore, "save_image", save_image)
     with build_client(tmp_path, calls=[call], turns=[tool_turn(1), finish_turn(2)]) as client:
         run_id = start_run(client, create_plan(client, task_count=2))
         detail = wait_for_run(client, run_id)
@@ -677,10 +689,10 @@ def test_evidence_failure_preserves_saved_facts_and_blocks(
     assert sum(entry["phase"] == "started" for entry in read_records(tmp_path)) == 1
 
 
-def test_slow_evidence_save_is_outside_tool_timeout_and_precedes_publication(
+def test_slow_image_save_is_outside_tool_timeout_and_precedes_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original_save = ArtifactStore.save_screenshot
+    original_save = ArtifactStore.save_image
     observed_unsaved_events: list[dict[str, Any]] = []
 
     with build_client(tmp_path, calls=[replay_call()], turns=[tool_turn(1), finish_turn(2)],
@@ -697,7 +709,7 @@ def test_slow_evidence_save_is_outside_tool_timeout_and_precedes_publication(
                             assert content == base64.b64decode(PNG_BASE64)
             return await original_append(events)
 
-        async def save_screenshot(store: ArtifactStore, **kwargs):
+        async def save_image(store: ArtifactStore, **kwargs):
             # The raw ToolNode result must not be published while storage waits.
             runs = (await api_repository.list_test_runs(container.sessions, RunPageQuery(limit=1))).items
             events = await api_repository.list_events(container.sessions, runs[0].id)
@@ -706,7 +718,7 @@ def test_slow_evidence_save_is_outside_tool_timeout_and_precedes_publication(
             return await original_save(store, **kwargs)
 
         monkeypatch.setattr(container.repository, "append_events", append_events)
-        monkeypatch.setattr(ArtifactStore, "save_screenshot", save_screenshot)
+        monkeypatch.setattr(ArtifactStore, "save_image", save_image)
         run_id = start_run(client, create_plan(client))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "PASS"

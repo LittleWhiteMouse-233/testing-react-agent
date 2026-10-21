@@ -69,7 +69,7 @@ class TestRunListResponse(TestRun):
     """API join projection, not a second persisted run entity.
 
     Plan/case tables own case identity; task definitions own task_count;
-    TaskRun and screenshot rows own the counts. Never write this projection back.
+    TaskRun and image rows own the counts. Never write this projection back.
     """
 
     test_case_id: TestCaseId
@@ -77,7 +77,7 @@ class TestRunListResponse(TestRun):
     test_case_archived: bool
     task_count: int = Field(ge=0)
     task_status_counts: dict[TaskRunStatus, int]
-    screenshot_count: int = Field(ge=0)
+    image_count: int = Field(ge=0)
 
 
 class TestRunFilterQuery(BaseModel):

@@ -85,7 +85,7 @@ def _project_content(message: BaseMessage) -> list[RunContentBlock]:
             artifact_id = (block.get("extras") or {}).get("artifact_id")
             if artifact_id is not None:
                 if not isinstance(artifact_id, str) or not artifact_id:
-                    raise ValueError("public screenshot placeholders require an Artifact id")
+                    raise ValueError("public image placeholders require an Artifact id")
                 blocks.append(RunImageArtifactBlock(artifact_id=artifact_id))
             else:
                 blocks.append(RunTextBlock(text=str(block.get("text", ""))))

@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.domain.ids import ArtifactId, TaskRunId, TestPlanId, TestRunId, TestTaskId
+from app.domain.ids import TaskRunId, TestPlanId, TestRunId, TestTaskId
 from app.domain.planning import TestPlan
 from app.domain.resources.llm import LLMProfileSnapshot
 from app.domain.resources.tools import ToolCatalogSnapshot
@@ -50,7 +50,6 @@ class ReasonCode(StrEnum):
     ASSERTION_FAILED = "assertion_failed"
     GOAL_UNREACHABLE = "goal_unreachable"
     CYCLE_LIMIT = "cycle_limit"
-    EVIDENCE_MISSING = "evidence_missing"
     MODEL_UNAVAILABLE = "model_unavailable"
     INVALID_MODEL_RESPONSE = "invalid_model_response"
     AGENT_BLOCKED = "agent_blocked"
@@ -65,19 +64,12 @@ class ReasonCode(StrEnum):
 
 
 class TaskRunResult(BaseModel):
-    """TaskRun 的终态原因、摘要与证据引用；状态和 cycle 不在此重复。"""
+    """TaskRun 的终态原因与判断摘要；状态和 cycle 不在此重复。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     reason_code: ReasonCode
     summary: str = Field(min_length=1)
-    evidence_artifact_ids: list[ArtifactId]
-
-    @model_validator(mode="after")
-    def evidence_is_unique(self) -> "TaskRunResult":
-        if len(self.evidence_artifact_ids) != len(set(self.evidence_artifact_ids)):
-            raise ValueError("evidence_artifact_ids must be unique")
-        return self
 
 
 class TestRunEnvironmentSnapshot(BaseModel):
@@ -90,11 +82,11 @@ class TestRunEnvironmentSnapshot(BaseModel):
     execution_model: LLMProfileSnapshot
     act_max_cycles: int = Field(ge=1, le=100)
     judge_max_cycles: int = Field(ge=1, le=100)
-    screenshot_history_rounds: int = Field(default=3, ge=1)
+    image_history_rounds: int = Field(default=3, ge=1)
     act_prompt_version: str = Field(min_length=1)
     judge_prompt_version: str = Field(min_length=1)
     app_version: str = Field(min_length=1)
-    execution_protocol_version: Literal["6"]
+    execution_protocol_version: Literal["7"]
 
 
 class TestRun(BaseModel):
@@ -143,12 +135,6 @@ class TaskRun(BaseModel):
             raise ValueError("terminal task run requires finished_at")
         if not terminal and self.finished_at is not None:
             raise ValueError("non-terminal task run cannot have finished_at")
-        if (
-            self.status in {TaskRunStatus.PASSED, TaskRunStatus.FAILED}
-            and self.result is not None
-            and not self.result.evidence_artifact_ids
-        ):
-            raise ValueError("passed/failed task run requires screenshot evidence")
         if self.result is not None:
             is_user_cancelled = (
                 self.result.reason_code == ReasonCode.USER_CANCELLED

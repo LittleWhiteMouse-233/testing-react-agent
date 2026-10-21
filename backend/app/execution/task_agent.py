@@ -44,7 +44,7 @@ from app.domain.execution import (
 from app.domain.resources.llm import LLMProfileSnapshot
 from app.domain.resources.static_resources import ResourceCatalogSnapshot
 from app.skill import LOAD_SKILL_TOOL_NAME, top_level_skills
-from app.domain.ids import ArtifactId, TaskRunId
+from app.domain.ids import TaskRunId
 from app.domain.planning import TestTask, TestTaskType
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.artifacts import ArtifactStore
@@ -71,7 +71,11 @@ class FinishTaskRunToolInput(BaseModel):
 
 @tool(args_schema=FinishTaskRunToolInput)
 async def finish_task(status: str, summary: str) -> str:
-    """Finish this task; summary must explain observations and evidence against the success criteria."""
+    """Finish this task with passed, failed or blocked status.
+
+    For every status, summary must describe the observations and reasoning supporting
+    the selected conclusion, and how they relate to this task's success criteria.
+    """
 
     return f"{status}: {summary}"
 
@@ -88,7 +92,7 @@ class TaskAgentInput:
     task: TestTask
     previous_task_runs: tuple[TaskRun, ...]
     max_cycles: int
-    screenshot_history_rounds: int
+    image_history_rounds: int
     expected_model_profile: LLMProfileSnapshot
     expected_prompt_version: str
     resource_catalog: ResourceCatalogSnapshot
@@ -233,9 +237,7 @@ class _TaskRuntime:
                 reason = f"tool is not available: {call['name']}"
             elif call["name"] == finish_task.name:
                 try:
-                    terminal = FinishTaskRunToolInput.model_validate(call["args"])
-                    if terminal.status in {"passed", "failed"} and not _latest_artifact_ids(state["messages"]):
-                        reason = "passed/failed requires an actual saved screenshot from this task"
+                    FinishTaskRunToolInput.model_validate(call["args"])
                 except ValueError as exc:
                     reason = str(exc)
         if reason is None:
@@ -279,7 +281,7 @@ class _TaskRuntime:
         )]}, goto="after_tools")
 
     async def _prepare_tool_result(self, result: ToolMessage) -> ToolMessage:
-        """Save evidence and project content; application failures propagate."""
+        """Save images and project content; application failures propagate."""
         content: list[dict[str, Any]] = []
         image_references: dict[str, str] = {}
         try:
@@ -289,9 +291,9 @@ class _TaskRuntime:
                     encoded = block.get("base64")
                     mime_type = block.get("mime_type")
                     if not isinstance(encoded, str) or not isinstance(mime_type, str):
-                        raise ValueError("Screenshot evidence must contain inline base64 and MIME type")
+                        raise ValueError("Images must contain inline base64 and MIME type")
                     raw = await asyncio.to_thread(base64.b64decode, encoded, validate=True)
-                    artifact = await self.artifacts.save_screenshot(
+                    artifact = await self.artifacts.save_image(
                         task_run_id=self.task_input.task_run_id, content=raw, mime_type=mime_type,
                     )
                     saved_block["id"] = artifact.id
@@ -330,9 +332,9 @@ class _TaskRuntime:
         assert isinstance(tool_message, ToolMessage)
         tool_message = await self._prepare_tool_result(tool_message)
         messages = cast(list[BaseMessage], add_messages(cast(Messages, state["messages"]), [tool_message]))
-        # Product visual retention policy; add_messages replaces these messages
+        # Product image retention policy; add_messages replaces these messages
         # by ID without mutating earlier State snapshots or persisted events.
-        replacements = _collect_expired_screenshot_updates(messages, self.task_input.screenshot_history_rounds)
+        replacements = _collect_expired_image_updates(messages, self.task_input.image_history_rounds)
         update: dict[str, object] = {"route": "cycle_guard", "messages": [*replacements, tool_message]}
         if self.run_cancellation_event.is_set():
             update.update(self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"]))
@@ -341,8 +343,7 @@ class _TaskRuntime:
             status = TaskRunStatus(terminal.status)
             reason = {TaskRunStatus.PASSED: ReasonCode.COMPLETED, TaskRunStatus.BLOCKED: ReasonCode.AGENT_BLOCKED,
                       TaskRunStatus.FAILED: ReasonCode.GOAL_UNREACHABLE if self.task_input.task.definition.type == TestTaskType.ACT else ReasonCode.ASSERTION_FAILED}[status]
-            evidence = _latest_artifact_ids(messages) if status != TaskRunStatus.BLOCKED else []
-            update.update(self._completion(status, reason, terminal.summary, state["cycle_count"], evidence=evidence))
+            update.update(self._completion(status, reason, terminal.summary, state["cycle_count"]))
         elif tool_message.status == "error":
             if (state["cycle_count"] < self.task_input.max_cycles
                     and state["model_response_attempt"] >= self.model_response_max_attempts):
@@ -353,10 +354,9 @@ class _TaskRuntime:
 
     @staticmethod
     def _completion(status: TaskRunStatus, reason_code: ReasonCode, summary: str,
-                    cycle_count: int, *, evidence: list[ArtifactId] | None = None) -> dict[str, object]:
+                    cycle_count: int) -> dict[str, object]:
         return {"completion": TaskAgentCompletion(status=status,
-                    result=TaskRunResult(reason_code=reason_code, summary=summary or reason_code.value,
-                                         evidence_artifact_ids=evidence or []),
+                    result=TaskRunResult(reason_code=reason_code, summary=summary or reason_code.value),
                     cycle_count=cycle_count), "route": "end"}
 
 
@@ -382,7 +382,7 @@ def _select_model_message_window(
     tools: Sequence[BaseTool],
     model_profile: LLMProfileSnapshot,
 ) -> list[BaseMessage]:
-    """保留最新截图并在 profile 输入预算内裁剪原始 Message 对象。"""
+    """保留最新图片并在 profile 输入预算内裁剪原始 Message 对象。"""
 
     image_message_ids = [message.id for message in messages if _message_has_image(message)]
     selected = list(messages)
@@ -407,7 +407,7 @@ def _select_model_message_window(
     )
     # Loading a Skill makes its latest successful instructions mandatory for
     # this task. Preserve original call/return objects and order, including any
-    # image replacements already applied by the visual retention policy.
+    # image replacements already applied by the image retention policy.
     calls: dict[str, tuple[int, tuple[str, str]]] = {}
     active_skills: dict[tuple[str, str], tuple[int, int]] = {}
     for index, message in enumerate(selected):
@@ -434,7 +434,7 @@ def _select_model_message_window(
     window = [message for index, message in enumerate(selected) if index in required_indices or id(message) in suffix_objects]
     if token_counter(window) > input_budget:
         raise ModelContextBudgetExceeded(
-            "The required system prompt, task context, loaded Skills, latest screenshot and fixed tool schemas exceed the model input budget"
+            "The required system prompt, task context, loaded Skills, latest image and fixed tool schemas exceed the model input budget"
         )
     if any(isinstance(message, SystemMessage) for message in messages) and not any(
         isinstance(message, SystemMessage) for message in window
@@ -447,7 +447,7 @@ def _select_model_message_window(
         message.id != latest_image_id for message in window
     ):
         raise ModelContextBudgetExceeded(
-            "The latest screenshot and fixed tool schemas exceed the model input budget"
+            "The latest image and fixed tool schemas exceed the model input budget"
         )
     if messages and messages[-1] not in window:
         raise ModelContextBudgetExceeded("The latest tool result or task context exceeds the model input budget")
@@ -466,38 +466,38 @@ def _message_has_image(message: BaseMessage) -> bool:
     return any(block.get("type") == "image" for block in message.content_blocks)
 
 
-def _collect_expired_screenshot_updates(
+def _collect_expired_image_updates(
     messages: Sequence[BaseMessage], history_rounds: int,
 ) -> list[BaseMessage]:
-    """Replace expired images by evidence references via same-ID State updates.
+    """Replace expired images by artifact references via same-ID State updates.
 
     Called after tool completion. The public message reducer owns replacement;
-    this boundary only owns the product's screenshot-round retention policy.
+    this boundary only owns the product's image-round retention policy.
     """
     if history_rounds < 1:
-        raise ValueError("Screenshot history must retain at least one round")
-    screenshot_rounds: list[int] = []
+        raise ValueError("Image history must retain at least one round")
+    image_rounds: list[int] = []
     decision_round = 0
     message_rounds: list[int] = []
     for message in messages:
         if isinstance(message, AIMessage):
             decision_round += 1
         message_rounds.append(decision_round)
-        if _message_has_image(message) and decision_round not in screenshot_rounds:
-            screenshot_rounds.append(decision_round)
-    retained_rounds = set(screenshot_rounds[-history_rounds:])
+        if _message_has_image(message) and decision_round not in image_rounds:
+            image_rounds.append(decision_round)
+    retained_rounds = set(image_rounds[-history_rounds:])
     replacements: list[BaseMessage] = []
     for message, decision_round in zip(messages, message_rounds, strict=True):
         if decision_round in retained_rounds or not _message_has_image(message):
             continue
         if not message.id:
-            raise ValueError("Screenshot retention requires a message id")
+            raise ValueError("Image retention requires a message id")
         replacement = message.model_copy(deep=True)
         for block in replacement.content_blocks:
             if block.get("type") == "image" and (not isinstance(block.get("id"), str) or not block.get("id")):
-                raise ValueError("Screenshot retention requires an Artifact id")
+                raise ValueError("Image retention requires an Artifact id")
         replacement.content = [
-            {"type": "text", "text": "[Screenshot was captured; image is outside the visual history window.]",
+            {"type": "text", "text": "[Image was saved; image is outside the image history window.]",
              "extras": {"artifact_id": block.get("id")}}
             if block.get("type") == "image" else dict(block)
             for block in replacement.content_blocks
@@ -505,19 +505,6 @@ def _collect_expired_screenshot_updates(
         replacements.append(replacement)
     return replacements
 
-
-def _latest_artifact_ids(messages: Sequence[BaseMessage]) -> list[ArtifactId]:
-    for message in reversed(messages):
-        if not isinstance(message, ToolMessage):
-            continue
-        ids: list[ArtifactId] = []
-        for block in message.content_blocks:
-            value = block.get("id") if block.get("type") == "image" else (block.get("extras") or {}).get("artifact_id")
-            if isinstance(value, str):
-                ids.append(cast(ArtifactId, value))
-        if ids:
-            return ids
-    return []
 
 def _latest_ai_call(messages: Sequence[BaseMessage]) -> dict[str, Any]:
     for message in reversed(messages):

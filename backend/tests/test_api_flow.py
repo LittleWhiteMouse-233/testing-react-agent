@@ -93,7 +93,7 @@ def test_complete_message_first_run_and_exports() -> None:
                 "passed",
                 "passed",
             ]
-            assert detail["environment"]["execution_protocol_version"] == "6"
+            assert detail["environment"]["execution_protocol_version"] == "7"
             assert "planning_model" not in detail["environment"]
 
             events_response = client.get(
@@ -208,11 +208,11 @@ def test_complete_message_first_run_and_exports() -> None:
             assert len(report["artifacts"]) == 2
             assert "summary" not in report
 
-            screenshot_download = client.get(
+            image_download = client.get(
                 f"/api/artifacts/{report['artifacts'][0]['id']}"
             )
-            assert screenshot_download.status_code == 200
-            assert screenshot_download.headers["content-type"] == "image/png"
+            assert image_download.status_code == 200
+            assert image_download.headers["content-type"] == "image/png"
 
             increment = client.get(
                 f"/api/runs/{detail['run']['id']}",

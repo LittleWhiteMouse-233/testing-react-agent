@@ -18,7 +18,7 @@ class RunTextBlock(BaseModel):
 
 
 class RunImageArtifactBlock(BaseModel):
-    """公开消息中的截图证据引用；不会复制图片 base64。"""
+    """公开消息中的运行图片引用；不会复制图片 base64。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     type: Literal["image_artifact"] = "image_artifact"

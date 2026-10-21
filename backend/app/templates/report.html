@@ -44,11 +44,6 @@
         <p><strong>标准：</strong>{{ task.definition.success_criteria | join('；') }}</p>
         <p><strong>结论：</strong>{{ task_run.result.summary if task_run.result else '无' }}（{{ task_run.cycle_count }} cycles）</p>
         {% if task_run.result %}<p><strong>原因：</strong>{{ task_run.result.reason_code }}</p>{% endif %}
-        {% if task_run.result %}
-          {% for artifact_id in task_run.result.evidence_artifact_ids %}
-            {% if image_data_urls.get(artifact_id) %}<img src="{{ image_data_urls[artifact_id] }}" alt="证据截图 {{ artifact_id }}">{% endif %}
-          {% endfor %}
-        {% endif %}
       </article>
     {% endfor %}
   </section>
@@ -64,7 +59,7 @@
             {% if block.type == 'text' %}
               <pre>{{ block.text }}</pre>
             {% elif block.type == 'image_artifact' and image_data_urls.get(block.artifact_id) %}
-              <img src="{{ image_data_urls[block.artifact_id] }}" alt="历史截图 {{ block.artifact_id }}">
+              <img src="{{ image_data_urls[block.artifact_id] }}" alt="运行图片 {{ block.artifact_id }}">
             {% endif %}
           {% endfor %}
         {% endif %}

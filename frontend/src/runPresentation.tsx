@@ -40,7 +40,7 @@ export function ElapsedTime({ startedAt, finishedAt, active = false }: { started
 
 export function runSummary(run: TestRunListResponse) {
   const counts = Object.entries(run.task_status_counts).map(([status, count]) => `${statusLabels[status]} ${count}`);
-  return `${counts.join(" · ") || "尚未执行任务"} / ${run.task_count} 步 · ${run.screenshot_count} 张截图`;
+  return `${counts.join(" · ") || "尚未执行任务"} / ${run.task_count} 步 · ${run.image_count} 张图片`;
 }
 
 export function taskStatus(taskRun: TaskRun | undefined, finished: boolean) {
@@ -72,7 +72,7 @@ export function RunEventContent({ stored }: { stored: StoredRunEvent }) {
       </div>
       {message.content.map((block, index) => block.type === "text"
         ? <div key={index} className="message-text">{block.text}</div>
-        : <Image key={index} width={180} src={artifactUrl(block.artifact_id)} alt={`截图 ${block.artifact_id}`} />)}
+        : <Image key={index} width={180} src={artifactUrl(block.artifact_id)} alt={`图片 ${block.artifact_id}`} />)}
       {message.role === "ai" && message.tool_calls.map((call) => <details className="tool-call" key={call.id}>
         <summary>{call.name} <span className="mono">{call.id}</span></summary><pre>{JSON.stringify(call.arguments, null, 2)}</pre>
       </details>)}

@@ -303,7 +303,7 @@ export interface components {
          * @description Artifact 的业务用途，决定其直接所有者和内容消费方式。
          * @enum {string}
          */
-        ArtifactType: "screenshot" | "json_export" | "html_export";
+        ArtifactType: "image" | "json_export" | "html_export";
         /**
          * CycleStartedEvent
          * @description TaskAgent 在首次模型请求前开始逻辑决策轮；开始即计轮，传输重试不另计。
@@ -527,7 +527,7 @@ export interface components {
          * @description TaskRun/执行错误的稳定结果原因；它是持久化事实而非异常类型。
          * @enum {string}
          */
-        ReasonCode: "completed" | "assertion_failed" | "goal_unreachable" | "cycle_limit" | "evidence_missing" | "model_unavailable" | "invalid_model_response" | "agent_blocked" | "tool_failed" | "process_restarted" | "global_fail_fast" | "user_cancelled" | "prompt_version_mismatch" | "model_profile_mismatch" | "model_context_exceeded" | "unexpected_error";
+        ReasonCode: "completed" | "assertion_failed" | "goal_unreachable" | "cycle_limit" | "model_unavailable" | "invalid_model_response" | "agent_blocked" | "tool_failed" | "process_restarted" | "global_fail_fast" | "user_cancelled" | "prompt_version_mismatch" | "model_profile_mismatch" | "model_context_exceeded" | "unexpected_error";
         /** ReportExportRequest */
         ReportExportRequest: {
             /**
@@ -628,7 +628,7 @@ export interface components {
         };
         /**
          * RunImageArtifactBlock
-         * @description 公开消息中的截图证据引用；不会复制图片 base64。
+         * @description 公开消息中的运行图片引用；不会复制图片 base64。
          */
         RunImageArtifactBlock: {
             /** Artifact Id */
@@ -788,11 +788,9 @@ export interface components {
         };
         /**
          * TaskRunResult
-         * @description TaskRun 的终态原因、摘要与证据引用；状态和 cycle 不在此重复。
+         * @description TaskRun 的终态原因与判断摘要；状态和 cycle 不在此重复。
          */
         TaskRunResult: {
-            /** Evidence Artifact Ids */
-            evidence_artifact_ids: string[];
             reason_code: components["schemas"]["ReasonCode"];
             /** Summary */
             summary: string;
@@ -1021,17 +1019,17 @@ export interface components {
              * Execution Protocol Version
              * @constant
              */
-            execution_protocol_version: "6";
+            execution_protocol_version: "7";
+            /**
+             * Image History Rounds
+             * @default 3
+             */
+            image_history_rounds: number;
             /** Judge Max Cycles */
             judge_max_cycles: number;
             /** Judge Prompt Version */
             judge_prompt_version: string;
             resource_catalog: components["schemas"]["ResourceCatalogSnapshot"];
-            /**
-             * Screenshot History Rounds
-             * @default 3
-             */
-            screenshot_history_rounds: number;
             tool_catalog: components["schemas"]["ToolCatalogSnapshot"];
         };
         /**
@@ -1039,7 +1037,7 @@ export interface components {
          * @description API join projection, not a second persisted run entity.
          *
          *     Plan/case tables own case identity; task definitions own task_count;
-         *     TaskRun and screenshot rows own the counts. Never write this projection back.
+         *     TaskRun and image rows own the counts. Never write this projection back.
          */
         TestRunListResponse: {
             /**
@@ -1051,8 +1049,8 @@ export interface components {
             finished_at: string | null;
             /** Id */
             id: string;
-            /** Screenshot Count */
-            screenshot_count: number;
+            /** Image Count */
+            image_count: number;
             /** Started At */
             started_at: string | null;
             status: components["schemas"]["TestRunStatus"];

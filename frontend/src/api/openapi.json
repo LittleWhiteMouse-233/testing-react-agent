@@ -94,7 +94,7 @@
       "ArtifactType": {
         "description": "Artifact 的业务用途，决定其直接所有者和内容消费方式。",
         "enum": [
-          "screenshot",
+          "image",
           "json_export",
           "html_export"
         ],
@@ -685,7 +685,6 @@
           "assertion_failed",
           "goal_unreachable",
           "cycle_limit",
-          "evidence_missing",
           "model_unavailable",
           "invalid_model_response",
           "agent_blocked",
@@ -977,7 +976,7 @@
       },
       "RunImageArtifactBlock": {
         "additionalProperties": false,
-        "description": "公开消息中的截图证据引用；不会复制图片 base64。",
+        "description": "公开消息中的运行图片引用；不会复制图片 base64。",
         "properties": {
           "artifact_id": {
             "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
@@ -1453,16 +1452,8 @@
       },
       "TaskRunResult": {
         "additionalProperties": false,
-        "description": "TaskRun 的终态原因、摘要与证据引用；状态和 cycle 不在此重复。",
+        "description": "TaskRun 的终态原因与判断摘要；状态和 cycle 不在此重复。",
         "properties": {
-          "evidence_artifact_ids": {
-            "items": {
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
-              "type": "string"
-            },
-            "title": "Evidence Artifact Ids",
-            "type": "array"
-          },
           "reason_code": {
             "$ref": "#/components/schemas/ReasonCode"
           },
@@ -1474,8 +1465,7 @@
         },
         "required": [
           "reason_code",
-          "summary",
-          "evidence_artifact_ids"
+          "summary"
         ],
         "title": "TaskRunResult",
         "type": "object"
@@ -2051,9 +2041,15 @@
             "$ref": "#/components/schemas/LLMProfileSnapshot"
           },
           "execution_protocol_version": {
-            "const": "6",
+            "const": "7",
             "title": "Execution Protocol Version",
             "type": "string"
+          },
+          "image_history_rounds": {
+            "default": 3,
+            "minimum": 1.0,
+            "title": "Image History Rounds",
+            "type": "integer"
           },
           "judge_max_cycles": {
             "maximum": 100.0,
@@ -2068,12 +2064,6 @@
           },
           "resource_catalog": {
             "$ref": "#/components/schemas/ResourceCatalogSnapshot"
-          },
-          "screenshot_history_rounds": {
-            "default": 3,
-            "minimum": 1.0,
-            "title": "Screenshot History Rounds",
-            "type": "integer"
           },
           "tool_catalog": {
             "$ref": "#/components/schemas/ToolCatalogSnapshot"
@@ -2095,7 +2085,7 @@
       },
       "TestRunListResponse": {
         "additionalProperties": false,
-        "description": "API join projection, not a second persisted run entity.\n\nPlan/case tables own case identity; task definitions own task_count;\nTaskRun and screenshot rows own the counts. Never write this projection back.",
+        "description": "API join projection, not a second persisted run entity.\n\nPlan/case tables own case identity; task definitions own task_count;\nTaskRun and image rows own the counts. Never write this projection back.",
         "properties": {
           "created_at": {
             "format": "date-time",
@@ -2119,9 +2109,9 @@
             "title": "Id",
             "type": "string"
           },
-          "screenshot_count": {
+          "image_count": {
             "minimum": 0.0,
-            "title": "Screenshot Count",
+            "title": "Image Count",
             "type": "integer"
           },
           "started_at": {
@@ -2196,7 +2186,7 @@
           "test_case_archived",
           "task_count",
           "task_status_counts",
-          "screenshot_count"
+          "image_count"
         ],
         "title": "TestRunListResponse",
         "type": "object"

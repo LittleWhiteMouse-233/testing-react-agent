@@ -26,6 +26,7 @@ models.toml
 
 # External Resources
 /mcp_servers/external/
+/skills/external/*
 
 # dev
 .agents/

@@ -45,7 +45,7 @@ export default function CasesPage() {
       for (const path of ["/api/test-cases", "/api/runs", "/api/runs/test-cases", "/api/runs/{test_run_id}"]) {
         void queryClient.invalidateQueries({ queryKey: ["get", path] });
       }
-      message.success("用例已归档，历史运行与证据保留");
+      message.success("用例已归档，历史运行与记录保留");
     },
     onError: (error) => message.error(apiErrorMessage(error, "归档失败"))
   });
@@ -81,7 +81,7 @@ export default function CasesPage() {
     <Modal title="归档用例" open={!!archiveTarget} okText="归档用例" cancelText="取消" confirmLoading={archive.isPending}
       okButtonProps={{ className: "case-archive-confirm", disabled: !!archiveTarget && cannotArchive(archiveTarget.id) }} cancelButtonProps={{ disabled: archive.isPending }} closable={!archive.isPending} mask={{ closable: !archive.isPending }}
       onCancel={() => { if (!archive.isPending) setArchiveTarget(null); }} onOk={() => { if (archiveTarget) archive.mutate({ params: { path: { test_case_id: archiveTarget.id } } }); }}>
-      <p>归档“{archiveTarget?.content.name}”？</p><p>归档后从规划页移除，历史运行与证据保留。</p>
+      <p>归档“{archiveTarget?.content.name}”？</p><p>归档后从规划页移除，历史运行与记录保留。</p>
     </Modal>
     <Modal title="新建测试用例" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} confirmLoading={create.isPending} destroyOnHidden>
       <Form form={form} layout="vertical" onFinish={(value) => create.mutate({ body: value })}>

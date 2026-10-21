@@ -16,6 +16,7 @@ from app.config import Settings
 from app.container import Container
 from app.llm import ScriptedChatModelClient
 from app.main import create_app
+from app.mcp import MCPClientProvider
 
 
 PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -28,6 +29,12 @@ def image_block() -> dict[str, Any]:
 
 def text_block(text: str = "Observed expected result") -> dict[str, Any]:
     return {"type": "text", "text": text}
+
+
+async def load_mcp_client_provider(config_path: Path) -> MCPClientProvider:
+    provider = MCPClientProvider(config_path)
+    await provider.load_clients()
+    return provider
 
 
 def replay_call(*, name: str = "inspect", content: list[dict[str, Any]] | None = None,

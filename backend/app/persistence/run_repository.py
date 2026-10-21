@@ -7,7 +7,7 @@ from uuid import uuid4
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.domain.execution import ArtifactType, ReasonCode
+from app.domain.execution import ReasonCode
 from app.domain.errors import TestCaseHasActiveRun, TestPlanNotLatest
 from app.domain.execution import (
     CycleStartedEvent,
@@ -52,7 +52,6 @@ from app.persistence.mappers import (
     test_run_from_row,
 )
 from app.persistence.models import (
-    ArtifactRow,
     TaskRunRow,
     TestCaseRow,
     TestPlanRow,
@@ -330,27 +329,6 @@ class SqlAlchemyRunRepository:
                 raise ValueError(
                     "cancelled task run and USER_CANCELLED reason must occur together"
                 )
-            evidence_ids = set(result.evidence_artifact_ids)
-            if len(evidence_ids) != len(result.evidence_artifact_ids):
-                raise ValueError("task result evidence ids must be unique")
-            if status in {TaskRunStatus.PASSED, TaskRunStatus.FAILED} and not evidence_ids:
-                raise ValueError("passed/failed task run requires screenshot evidence")
-            if evidence_ids:
-                owned_ids = set(
-                    (
-                        await session.scalars(
-                            select(ArtifactRow.id).where(
-                                ArtifactRow.id.in_(evidence_ids),
-                                ArtifactRow.task_run_id == task_run_id,
-                                ArtifactRow.type == ArtifactType.SCREENSHOT,
-                            )
-                        )
-                    ).all()
-                )
-                if owned_ids != evidence_ids:
-                    raise ValueError(
-                        "task result evidence must be screenshots owned by the task run"
-                    )
             row.status = status
             row.result_json = dump_task_run_result(result)
             row.cycle_count = cycle_count
@@ -377,7 +355,6 @@ class SqlAlchemyRunRepository:
                     TaskRunResult(
                         reason_code=ReasonCode.GLOBAL_FAIL_FAST,
                         summary="Skipped by global fail-fast",
-                        evidence_artifact_ids=[],
                     )
                 ),
                 finished_at=timestamp,
@@ -458,7 +435,6 @@ class SqlAlchemyRunRepository:
                         result=TaskRunResult(
                             reason_code=ReasonCode.PROCESS_RESTARTED,
                             summary="Process restarted before the task completed",
-                            evidence_artifact_ids=[],
                         ),
                         cycle_count=task.cycle_count,
                     )

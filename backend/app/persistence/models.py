@@ -181,7 +181,7 @@ class ArtifactRow(Base):
             name="ck_artifact_owner_xor",
         ),
         CheckConstraint(
-            "(type = 'screenshot' AND task_run_id IS NOT NULL) OR "
+            "(type = 'image' AND task_run_id IS NOT NULL) OR "
             "(type IN ('json_export', 'html_export') AND test_run_id IS NOT NULL)",
             name="ck_artifact_type_owner",
         ),

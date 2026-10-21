@@ -44,7 +44,6 @@ def definition(task_type: TaskType = TaskType.JUDGE) -> TaskDefinition:
 
 
 def terminal_task(status: TaskRunStatus) -> TaskRun:
-    evidence = [ARTIFACT_ID] if status in {TaskRunStatus.PASSED, TaskRunStatus.FAILED} else []
     return TaskRun(
         id=TASK_RUN_ID,
         test_run_id=RUN_ID,
@@ -54,7 +53,6 @@ def terminal_task(status: TaskRunStatus) -> TaskRun:
         result=TaskRunResult(
             reason_code=ReasonCode.COMPLETED,
             summary="done",
-            evidence_artifact_ids=evidence,
         ),
         started_at=NOW,
         finished_at=NOW,
@@ -86,7 +84,7 @@ def test_generic_plan_content_has_one_task_shape_and_fresh_identity() -> None:
 
 def test_task_result_and_deterministic_verdict_do_not_copy_status_or_cycle() -> None:
     result_fields = set(TaskRunResult.model_fields)
-    assert result_fields == {"reason_code", "summary", "evidence_artifact_ids"}
+    assert result_fields == {"reason_code", "summary"}
     assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.PASSED)]) == RunVerdict.PASS
     assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.FAILED)]) == RunVerdict.FAIL
     assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.BLOCKED)]) == RunVerdict.BLOCKED
@@ -99,52 +97,31 @@ def test_task_result_and_deterministic_verdict_do_not_copy_status_or_cycle() -> 
                         "result": TaskRunResult(
                             reason_code=ReasonCode.USER_CANCELLED,
                             summary="cancelled",
-                            evidence_artifact_ids=[],
                         ),
                     }
                 )
             ]
         )
-    with pytest.raises(ValidationError, match="screenshot evidence"):
-        terminal_task(TaskRunStatus.PASSED).model_copy(
-            update={
-                "result": TaskRunResult(
-                    reason_code=ReasonCode.COMPLETED,
-                    summary="missing evidence",
-                    evidence_artifact_ids=[],
-                )
-            }
-        ).model_validate(
-            terminal_task(TaskRunStatus.PASSED).model_copy(
-                update={
-                    "result": TaskRunResult(
-                        reason_code=ReasonCode.COMPLETED,
-                        summary="missing evidence",
-                        evidence_artifact_ids=[],
-                    )
-                }
-            ).model_dump()
-        )
 
 
 def test_artifact_owner_is_direct_and_exclusive() -> None:
-    screenshot = Artifact(
+    image = Artifact(
         id=ARTIFACT_ID,
         test_run_id=None,
         task_run_id=TASK_RUN_ID,
-        type=ArtifactType.SCREENSHOT,
+        type=ArtifactType.IMAGE,
         mime_type="image/png",
         size_bytes=3,
         sha256="a" * 64,
         created_at=NOW,
     )
-    assert screenshot.task_run_id == TASK_RUN_ID
+    assert image.task_run_id == TASK_RUN_ID
     with pytest.raises(ValidationError, match="exactly one"):
         Artifact(
             id=ARTIFACT_ID,
             test_run_id=RUN_ID,
             task_run_id=TASK_RUN_ID,
-            type=ArtifactType.SCREENSHOT,
+            type=ArtifactType.IMAGE,
             mime_type="image/png",
             size_bytes=3,
             sha256="a" * 64,

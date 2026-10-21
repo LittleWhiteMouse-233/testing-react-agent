@@ -12,7 +12,78 @@ from langchain_core.tools import StructuredTool
 from app.container import Container
 from app.execution.run_service import RunConflict
 from app.domain.errors import describe_exception
+from app.domain.resources.static_resources import ResourceCatalogSnapshot
+from app.mcp import MCPConnectionError
 from mcp_support import build_client, create_plan, finish_turn, tool_turn
+
+
+@pytest.mark.parametrize("blocked_stage", ["configuration", "tools", "resources"])
+def test_one_preparation_timeout_covers_every_stage_and_releases_run_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocked_stage: str,
+) -> None:
+    with build_client(tmp_path, turns=[finish_turn(1)]) as client:
+        plan = create_plan(client)
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        stages: list[str] = []
+        should_block = True
+
+        async def stage(name: str) -> None:
+            stages.append(name)
+            if should_block and name == blocked_stage:
+                await asyncio.Event().wait()
+
+        async def load_clients() -> None:
+            await stage("configuration")
+
+        async def discover_tools():
+            await stage("tools")
+            return ()
+
+        async def discover_resources() -> ResourceCatalogSnapshot:
+            await stage("resources")
+            return ResourceCatalogSnapshot()
+
+        async def exercise():
+            nonlocal should_block
+            monkeypatch.setattr(container.mcp_clients, "load_clients", load_clients)
+            monkeypatch.setattr(container.tools, "discover_tools", discover_tools)
+            monkeypatch.setattr(container.skills, "discover_resources", discover_resources)
+            container.run_service.discovery_timeout_seconds = 0.05
+            with pytest.raises(MCPConnectionError, match="TimeoutError") as captured:
+                await container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True)
+            expected_phases = {"configuration": "MCP configuration loading", "tools": "MCP tool discovery",
+                               "resources": "Skill and resource discovery"}
+            assert str(captured.value).startswith(expected_phases[blocked_stage])
+            assert stages == ["configuration", "tools", "resources"][:["configuration", "tools", "resources"].index(blocked_stage) + 1]
+            await asyncio.sleep(0)
+            assert container.run_service._work is None
+            should_block = False
+            stages.clear()
+            run = await container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True)
+            assert stages == ["configuration", "tools", "resources"]
+            await container.run_service.shutdown()
+            assert (await container.repository.get_test_run(run.id)).status.value == "finished"
+
+        assert client.portal is not None
+        client.portal.call(exercise)
+
+
+@pytest.mark.parametrize("invalid_config", [True, False])
+def test_preparation_errors_are_converted_once_at_the_public_boundary(tmp_path: Path, invalid_config: bool) -> None:
+    import json
+
+    with build_client(tmp_path) as client:
+        plan = create_plan(client)
+        config = tmp_path / "mcp.json"
+        config.write_text("not json" if invalid_config else json.dumps({
+            "mcpServers": {"missing": {"command": "nonexistent-mcp-executable"}},
+        }), encoding="utf-8")
+        response = client.post("/api/runs", json={"test_plan_id": plan["id"], "assumptions_confirmed": True})
+        assert response.status_code == 502
+        assert response.json()["code"] == "mcp_unavailable"
+        diagnostic = response.json()["message"]
+        assert diagnostic.startswith("MCP configuration loading" if invalid_config else "MCP tool discovery")
+        assert "MCPConnectionError" not in diagnostic
 
 
 @pytest.mark.parametrize("cancelled", [False, True])

@@ -596,7 +596,7 @@ it("archives from a separate inbox button, retains history wording and clears pl
   expect(archive.querySelector("[aria-label='inbox']")).toBeInTheDocument();
   fireEvent.click(archive);
   await screen.findByRole("dialog");
-  expect(screen.getByText("归档后从规划页移除，历史运行与证据保留。")).toBeInTheDocument();
+  expect(screen.getByText("归档后从规划页移除，历史运行与记录保留。")).toBeInTheDocument();
   expect(startButton()).toBeDisabled();
   fireEvent.click(screen.getByRole("button", { name: /取\s*消/ }));
   expect(requests.some((request) => new URL(request.url).pathname.endsWith("/archive"))).toBe(false);
@@ -656,7 +656,7 @@ it("shows the saved planning input in the online report", async () => {
       created_at: plan.created_at, started_at: plan.created_at, finished_at: plan.created_at
     }, environment: { execution_model: plan.planning_context.planning_model, tool_catalog: { tools: [] },
       resource_catalog: { local_root: null, resources: [], templates: [] },
-      act_prompt_version: "act-v1", judge_prompt_version: "judge-v1", app_version: "0.1.0", execution_protocol_version: "6", act_max_cycles: 30, judge_max_cycles: 10, screenshot_history_rounds: 3
+      act_prompt_version: "act-v1", judge_prompt_version: "judge-v1", app_version: "0.1.0", execution_protocol_version: "7", act_max_cycles: 30, judge_max_cycles: 10, image_history_rounds: 3
     }, task_runs: [] },
     artifacts: [], events: []
   };

@@ -1,4 +1,4 @@
-"""执行证据与报告导出 Artifact 的公开领域结构。"""
+"""运行图片与报告导出 Artifact 的公开领域结构。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from app.domain.ids import ArtifactId, TaskRunId, TestRunId
 class ArtifactType(StrEnum):
     """Artifact 的业务用途，决定其直接所有者和内容消费方式。"""
 
-    SCREENSHOT = "screenshot"
+    IMAGE = "image"
     JSON_EXPORT = "json_export"
     HTML_EXPORT = "html_export"
 
@@ -36,8 +36,8 @@ class Artifact(BaseModel):
     def owner_is_exclusive(self) -> "Artifact":
         if (self.test_run_id is None) == (self.task_run_id is None):
             raise ValueError("artifact requires exactly one direct owner")
-        if self.type == ArtifactType.SCREENSHOT and self.task_run_id is None:
-            raise ValueError("screenshot artifacts must belong to a task run")
-        if self.type != ArtifactType.SCREENSHOT and self.test_run_id is None:
+        if self.type == ArtifactType.IMAGE and self.task_run_id is None:
+            raise ValueError("image artifacts must belong to a task run")
+        if self.type != ArtifactType.IMAGE and self.test_run_id is None:
             raise ValueError("export artifacts must belong to a test run")
         return self

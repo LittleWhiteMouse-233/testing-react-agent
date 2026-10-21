@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from app.domain.activity import AgentActivity
 from app.domain.errors import describe_exception
@@ -16,7 +15,7 @@ from app.persistence.run_repository import (
 )
 from app.prompts import PromptDefinition
 from app.tools import MCPToolProvider, snapshot_tools
-from app.mcp import MCPConnectionError
+from app.mcp import MCPClientProvider, MCPConnectionError
 from app.skill import SkillResourceProvider
 from app.test_case_lock import TestCaseLock
 
@@ -53,11 +52,13 @@ class RunService:
         app_version: str,
         act_prompt: PromptDefinition,
         judge_prompt: PromptDefinition,
+        mcp_clients: MCPClientProvider,
         tools: MCPToolProvider,
-        skills_dir: Path,
+        skills: SkillResourceProvider,
+        discovery_timeout_seconds: float,
         act_max_cycles: int,
         judge_max_cycles: int,
-        screenshot_history_rounds: int = 3,
+        image_history_rounds: int = 3,
     ) -> None:
         self.repository = repository
         self.test_case_lock = test_case_lock
@@ -68,9 +69,11 @@ class RunService:
         self.judge_prompt = judge_prompt
         self.act_max_cycles = act_max_cycles
         self.judge_max_cycles = judge_max_cycles
-        self.screenshot_history_rounds = screenshot_history_rounds
+        self.image_history_rounds = image_history_rounds
         self.tools = tools
-        self.skills_dir = skills_dir
+        self.skills = skills
+        self.mcp_clients = mcp_clients
+        self.discovery_timeout_seconds = discovery_timeout_seconds
         self._start_lock = asyncio.Lock()
         self._work: _RunWork | None = None
         self._closing = False
@@ -134,13 +137,16 @@ class RunService:
     ) -> None:
         run: TestRun | None = None
         try:
+            discovery_phase = "MCP configuration loading"
             try:
-                async with asyncio.timeout(self.tools.timeout_seconds):
+                async with asyncio.timeout(self.discovery_timeout_seconds):
+                    await self.mcp_clients.load_clients()
+                    discovery_phase = "MCP tool discovery"
                     tools = await self.tools.discover_tools()
-                    skills = SkillResourceProvider(self.skills_dir, self.tools.clients)
-                    resource_catalog = await skills.discover()
+                    discovery_phase = "Skill and resource discovery"
+                    resource_catalog = await self.skills.discover_resources()
             except Exception as exc:
-                raise MCPConnectionError(describe_exception(exc, phase="Run resource discovery failed")) from exc
+                raise MCPConnectionError(describe_exception(exc, phase=discovery_phase)) from exc
             environment = TestRunEnvironmentSnapshot(
                 tool_catalog=snapshot_tools(tools),
                 resource_catalog=resource_catalog,
@@ -149,11 +155,11 @@ class RunService:
                 ).profile_snapshot,
                 act_max_cycles=self.act_max_cycles,
                 judge_max_cycles=self.judge_max_cycles,
-                screenshot_history_rounds=self.screenshot_history_rounds,
+                image_history_rounds=self.image_history_rounds,
                 act_prompt_version=self.act_prompt.version,
                 judge_prompt_version=self.judge_prompt.version,
                 app_version=self.app_version,
-                execution_protocol_version="6",
+                execution_protocol_version="7",
             )
             try:
                 creation = asyncio.create_task(self.repository.create_test_run(
@@ -171,7 +177,7 @@ class RunService:
             assert run is not None
             work.test_run_id = run.id
             prepared_run.set_result(run)
-            await self.executor.run(run.id, work.cancellation, tools, skills.tools())
+            await self.executor.run(run.id, work.cancellation, tools + self.skills.build_resource_tools())
         except Exception as exc:
             if not prepared_run.done():
                 prepared_run.set_exception(exc)

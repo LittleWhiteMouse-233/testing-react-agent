@@ -30,7 +30,7 @@ export function RunReportContent({ runId }: { runId: string }) {
   const { detail, artifacts } = report.data;
   const { run, test_plan: plan, task_runs: taskRuns } = detail;
   const finished = run.status === "finished";
-  const screenshots = artifacts.filter((artifact) => artifact.type === "screenshot");
+  const images = artifacts.filter((artifact) => artifact.type === "image");
   const messageCount = report.events.filter((stored) => stored.event.type === "message.appended").length;
   const completed = taskRuns.filter((task) => task.status === "passed" || task.status === "failed" || task.status === "blocked" || task.status === "cancelled").length;
   return <div className="run-report">
@@ -52,21 +52,21 @@ export function RunReportContent({ runId }: { runId: string }) {
       <h4>版本来源</h4><p>{plan.origin} · {plan.derived_from_plan_id ?? "首次规划"}</p>
       <RunResources report={report.data} />
     </details>
-    <div className="section-heading"><h3>执行记录 · 时间线</h3><span>{plan.content.tasks.length} 步任务 · {messageCount} 条消息 · {screenshots.length} 张截图</span></div>
+    <div className="section-heading"><h3>执行记录 · 时间线</h3><span>{plan.content.tasks.length} 步任务 · {messageCount} 条消息 · {images.length} 张图片</span></div>
     {report.events.some((stored) => !stored.event.task_run_id) && <details className="timeline-block"><summary>运行生命周期与错误</summary><EventTimeline events={report.events.filter((stored) => !stored.event.task_run_id)} /></details>}
     {plan.content.tasks.map((task, index) => {
       const taskRun = taskRuns.find((entry) => entry.test_task_id === task.test_task_id);
       const events = taskRun ? report.events.filter((stored) => stored.event.task_run_id === taskRun.id) : [];
-      const taskScreenshots = screenshots.filter((artifact) => artifact.task_run_id === taskRun?.id);
+      const taskImages = images.filter((artifact) => artifact.task_run_id === taskRun?.id);
       return <details className="timeline-block" key={task.test_task_id} open={index === 0 ? true : undefined}>
-        <summary><span className={"task-number " + task.definition.type}>{index + 1}</span><div className="timeline-task-heading"><h3>{task.definition.title}</h3><small>{task.definition.type.toUpperCase()} · {events.filter((stored) => stored.event.type === "message.appended").length} 条消息 · {taskScreenshots.length} 张截图</small></div>
+        <summary><span className={"task-number " + task.definition.type}>{index + 1}</span><div className="timeline-task-heading"><h3>{task.definition.title}</h3><small>{task.definition.type.toUpperCase()} · {events.filter((stored) => stored.event.type === "message.appended").length} 条消息 · {taskImages.length} 张图片</small></div>
           <StatusBadge status={taskStatus(taskRun, finished)} />{taskRun && <ElapsedTime startedAt={taskRun.started_at} finishedAt={taskRun.finished_at} active={taskRun.status === "running"} />}
         </summary>
         <div className="timeline-task-body"><p><strong>目标：</strong>{task.definition.goal}</p><strong>成功标准</strong><ul>{task.definition.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul>
           {taskRun?.result && <div className="result-note"><p>{taskRun.result.summary}</p><small>{taskRun.result.reason_code} · {taskRun.cycle_count} / {taskMaxCycles(task.definition.type, detail.environment)} 轮</small></div>}
           {events.length ? <EventTimeline events={events} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有任务事件" />}
-          {taskScreenshots.length > 0 && <Image.PreviewGroup><div className="evidence-grid">{taskScreenshots.map((artifact) => <figure key={artifact.id}><Image src={artifactUrl(artifact.id)} alt={"截图 " + artifact.id} />
-            <figcaption>{formatTime(artifact.created_at)} {taskRun?.result?.evidence_artifact_ids.includes(artifact.id) && <span className="pill blue">判定证据</span>}</figcaption></figure>)}</div></Image.PreviewGroup>}
+          {taskImages.length > 0 && <Image.PreviewGroup><div className="image-grid">{taskImages.map((artifact) => <figure key={artifact.id}><Image src={artifactUrl(artifact.id)} alt={"图片 " + artifact.id} />
+            <figcaption>{formatTime(artifact.created_at)}</figcaption></figure>)}</div></Image.PreviewGroup>}
         </div>
       </details>;
     })}

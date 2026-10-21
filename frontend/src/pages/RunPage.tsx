@@ -3,7 +3,7 @@ import { Alert, Button, Empty, Image, Spin, message } from "antd";
 import { useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage, artifactUrl } from "../api/client";
-import { latestScreenshotArtifactId } from "../api/runEvents";
+import { latestImageArtifactId } from "../api/runEvents";
 import { useRunReport } from "../api/useRunReport";
 import { ElapsedTime, EventTimeline, RunResources, StatusBadge, taskCycleCount, taskMaxCycles, taskStatus } from "../runPresentation";
 
@@ -39,7 +39,7 @@ function RunExecution({ runId }: { runId: string }) {
   const activeTask = taskRuns.find((task) => task.status === "running");
   const activeIndex = plan.content.tasks.findIndex((task) => task.test_task_id === activeTask?.test_task_id);
   const passed = taskRuns.filter((task) => task.status === "passed").length;
-  const screenshotId = latestScreenshotArtifactId(report.events);
+  const imageId = latestImageArtifactId(report.events);
   return <>
     <header className="page-heading"><div><div className="eyebrow"><Link to={report.data.test_case_archived ? "/" : "/cases/" + plan.test_case_id + "/plan"}>用例库</Link> / <span className="mono">{plan.test_case_id.slice(0, 8)}</span> / 执行</div>
       <h1>{plan.planning_context.test_case_content.name}</h1><p><StatusBadge status={run.verdict ?? run.status} /> <span className="mono">{run.id}</span></p></div>
@@ -66,8 +66,8 @@ function RunExecution({ runId }: { runId: string }) {
           </article>;
         })}
       </aside>
-      <section className="execution-observation"><div className="section-heading"><div><small>观察与证据</small><h2>最新截图</h2></div><span>v{plan.version_number}</span></div>
-        <div className="latest-screenshot">{screenshotId ? <Image src={artifactUrl(screenshotId)} alt="最新电视截图" /> : <Empty description={finished ? "本次运行没有截图" : "等待首次截图…"} />}</div>
+      <section className="execution-observation"><div className="section-heading"><div><small>运行观察</small><h2>最新图片</h2></div><span>v{plan.version_number}</span></div>
+        <div className="latest-image">{imageId ? <Image src={artifactUrl(imageId)} alt="最新运行图片" /> : <Empty description={finished ? "本次运行没有图片" : "等待首次图片…"} />}</div>
         <div className="section-heading"><div><small>本次运行冻结的资源</small><h2>工具与模型</h2></div></div><RunResources report={report.data} />
       </section>
       <section className="execution-events"><div className="section-heading"><div><small>持久化运行事实</small><h2>事件流</h2></div><span className={"connection " + report.connection}>{report.contractError ? "已停止" : ({ connecting: "连接中", connected: "实时连接", reconnecting: "正在重连", awaiting_result: "等待最终结果", finished: "已结束" }[report.connection])}</span></div>

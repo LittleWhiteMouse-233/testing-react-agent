@@ -46,7 +46,7 @@ beforeEach(() => {
     if (request.method === "POST" && url.pathname.endsWith("/cancel")) return new Response(null, { status: 202 });
     if (url.pathname === "/api/test-cases" || url.pathname === "/api/runs/test-cases") return Response.json({ items: [], total: 0 });
     if (url.pathname === "/api/runs/statistics") return Response.json({ run_count: 24, verdict_counts: { PASS: 20, FAIL: 2, BLOCKED: 1, CANCELLED: 1 }, average_duration_seconds: 36, daily: [] });
-    if (url.pathname === "/api/runs") return Response.json({ items: [{ ...report.detail.run, test_case_id: caseId, test_case_name: "设置页面验证", test_case_archived: report.test_case_archived, task_count: 1, task_status_counts: { passed: 1 }, screenshot_count: 1 }], total: 24 });
+    if (url.pathname === "/api/runs") return Response.json({ items: [{ ...report.detail.run, test_case_id: caseId, test_case_name: "设置页面验证", test_case_archived: report.test_case_archived, task_count: 1, task_status_counts: { passed: 1 }, image_count: 1 }], total: 24 });
     return reportResponse(url, report);
   }));
 });
@@ -84,14 +84,14 @@ function renderPage(path: string, history = false) {
   </Routes></MemoryRouter></QueryClientProvider>);
 }
 
-it.each<TestRunVerdict>(["PASS", "FAIL", "BLOCKED", "CANCELLED"])("shows the authoritative %s result and real evidence", async (verdict) => {
+it.each<TestRunVerdict>(["PASS", "FAIL", "BLOCKED", "CANCELLED"])("shows the authoritative %s result and saved images", async (verdict) => {
   report = runReport(verdict);
   renderPage(`/runs/${runId}/report`);
   await screen.findByText("设置页面验证");
   expect(document.querySelector(`.report-summary .status-${verdict.toLowerCase()}`)).toBeInTheDocument();
   expect(screen.getByText("截图前观察")).toBeInTheDocument();
   expect(screen.getByText("截图后观察")).toBeInTheDocument();
-  expect(screen.getByText("判定证据")).toBeInTheDocument();
+  expect(screen.queryByText("判定证据")).not.toBeInTheDocument();
   expect(sources).toHaveLength(0);
 });
 
@@ -108,7 +108,7 @@ it("keeps archived reports readable and exportable but disables rerun", async ()
   report.test_case_archived = true;
   renderPage(`/runs/${runId}/report`);
   await screen.findByText("用例已归档");
-  expect(screen.getByText("判定证据")).toBeInTheDocument();
+  expect(screen.queryByText("判定证据")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: /无法重新执行/ })).toBeDisabled();
   expect(screen.queryByRole("link", { name: /重新执行/ })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: /JSON 报告/ })).toBeEnabled();

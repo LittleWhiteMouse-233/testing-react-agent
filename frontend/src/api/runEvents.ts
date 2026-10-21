@@ -43,7 +43,7 @@ export function mergeStoredRunEvents(
   return [...merged, ...current.slice(currentIndex), ...incoming.slice(incomingIndex)];
 }
 
-export function latestScreenshotArtifactId(events: StoredRunEvent[]): string | undefined {
+export function latestImageArtifactId(events: StoredRunEvent[]): string | undefined {
   for (const stored of [...events].reverse()) {
     if (stored.event.type !== "message.appended") continue;
     const image = [...stored.event.message.content].reverse().find(

@@ -1,4 +1,4 @@
-"""Agent 执行过程的运行、结果、消息、事件与证据领域合同。"""
+"""Agent 执行过程的运行、结果、消息、事件与图片领域合同。"""
 
 from app.domain.execution.artifacts import Artifact, ArtifactType
 from app.domain.execution.events import (

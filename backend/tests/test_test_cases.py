@@ -21,7 +21,7 @@ from app.persistence.db import Base
 from mcp_support import build_client, create_plan, finish_turn, read_records, start_run, tool_turn, wait_for_run
 
 
-def test_update_and_archive_preserve_all_plan_versions_runs_and_evidence(tmp_path: Path) -> None:
+def test_update_and_archive_preserve_all_plan_versions_runs_and_images(tmp_path: Path) -> None:
     with build_client(tmp_path, turns=[turn for index in range(3) for turn in (tool_turn(index * 2), finish_turn(index * 2 + 1))]) as client:
         container = cast(Container, cast(FastAPI, client.app).state.container)
         assert client.portal is not None

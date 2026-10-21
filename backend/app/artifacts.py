@@ -1,4 +1,4 @@
-"""执行证据与报告导出文件的本地存储边界。"""
+"""运行图片与报告导出文件的本地存储边界。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from app.persistence.models import ArtifactRow
 
 
 class ArtifactStore:
-    """拥有证据/导出 bytes 与 typed 数据库元数据之间的一致写入。"""
+    """拥有图片/导出 bytes 与 typed 数据库元数据之间的一致写入。"""
 
     def __init__(
         self,
@@ -29,7 +29,7 @@ class ArtifactStore:
         self.sessions = sessions
         self.root.mkdir(parents=True, exist_ok=True)
 
-    async def save_screenshot(
+    async def save_image(
         self,
         *,
         task_run_id: str,
@@ -37,11 +37,11 @@ class ArtifactStore:
         mime_type: str,
     ) -> Artifact:
         if not mime_type.startswith("image/") or not content:
-            raise ValueError("Screenshot evidence requires non-empty image content")
+            raise ValueError("Images require non-empty image content")
         return await self.save(
             test_run_id=None,
             task_run_id=task_run_id,
-            artifact_type=ArtifactType.SCREENSHOT,
+            artifact_type=ArtifactType.IMAGE,
             content=content,
             mime_type=mime_type,
             extension=mimetypes.guess_extension(mime_type) or ".image",
@@ -56,8 +56,8 @@ class ArtifactStore:
         mime_type: str,
         extension: str,
     ) -> Artifact:
-        if artifact_type == ArtifactType.SCREENSHOT:
-            raise ValueError("save_export does not accept screenshot artifacts")
+        if artifact_type == ArtifactType.IMAGE:
+            raise ValueError("save_export does not accept image artifacts")
         return await self.save(
             test_run_id=test_run_id,
             task_run_id=None,

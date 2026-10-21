@@ -130,9 +130,9 @@ async def list_test_runs(
             .where(TaskRunRow.test_run_id.in_(run_ids)).group_by(TaskRunRow.test_run_id, TaskRunRow.status)
         )).all():
             task_counts.setdefault(run_id, {})[status] = count
-        screenshot_counts = dict((await session.execute(
+        image_counts = dict((await session.execute(
             select(TaskRunRow.test_run_id, func.count(ArtifactRow.id)).join(ArtifactRow)
-            .where(TaskRunRow.test_run_id.in_(run_ids), ArtifactRow.type == ArtifactType.SCREENSHOT)
+            .where(TaskRunRow.test_run_id.in_(run_ids), ArtifactRow.type == ArtifactType.IMAGE)
             .group_by(TaskRunRow.test_run_id)
         )).tuples().all())
     return PageResponse[TestRunListResponse](items=[
@@ -142,7 +142,7 @@ async def list_test_runs(
             "test_case_archived": archived,
             "task_count": planned_counts.get(run.test_plan_id, 0),
             "task_status_counts": task_counts.get(run.id, {}),
-            "screenshot_count": screenshot_counts.get(run.id, 0),
+            "image_count": image_counts.get(run.id, 0),
         }) for run, case_id, case_name, archived in rows
     ], total=int(total or 0))
 

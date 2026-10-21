@@ -52,7 +52,7 @@ def test_history_queries_join_existing_facts_without_writes(tmp_path: Path) -> N
         assert run["test_case_name"] == plan["planning_context"]["test_case_content"]["name"]
         assert run["task_count"] == 2
         assert run["task_status_counts"] == {"passed": 2}
-        assert run["screenshot_count"] == len(report["artifacts"]) == 2
+        assert run["image_count"] == len(report["artifacts"]) == 2
         statistics = client.get("/api/runs/statistics").json()
         assert statistics["run_count"] == 1
         assert statistics["verdict_counts"] == {"PASS": 1, "FAIL": 0, "BLOCKED": 0, "CANCELLED": 0}
@@ -196,10 +196,10 @@ async def test_response_keeps_one_snapshot_during_committed_run_changes(
         if response_kind != "report_increment":
             await repository.start_run(run.id)
         task = await repository.start_task(run.id, plan.content.tasks[0])
-        await ArtifactStore(tmp_path / "artifacts", sessions).save_screenshot(
-            task_run_id=task.id, content=b"screenshot", mime_type="image/png")
+        await ArtifactStore(tmp_path / "artifacts", sessions).save_image(
+            task_run_id=task.id, content=b"image", mime_type="image/png")
         await repository.finish_task(task.id, status=TaskRunStatus.CANCELLED, cycle_count=0,
-            result=TaskRunResult(reason_code=ReasonCode.USER_CANCELLED, summary="Cancelled", evidence_artifact_ids=[]))
+            result=TaskRunResult(reason_code=ReasonCode.USER_CANCELLED, summary="Cancelled"))
         await repository.finish_run(run.id, RunVerdict.CANCELLED)
 
     original_task_rows = SqlAlchemyRunRepository._task_rows
@@ -232,7 +232,7 @@ async def test_response_keeps_one_snapshot_during_committed_run_changes(
             page = await api_repository.list_test_runs(sessions, RunPageQuery())
             assert page.total == 1
             assert page.items[0].status == RunStatus.PENDING
-            assert page.items[0].task_status_counts == {} and page.items[0].screenshot_count == 0
+            assert page.items[0].task_status_counts == {} and page.items[0].image_count == 0
         else:
             statistics = await api_repository.test_run_statistics(sessions, RunFilterQuery())
             assert statistics.run_count == 1

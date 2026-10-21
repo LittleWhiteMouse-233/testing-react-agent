@@ -59,20 +59,20 @@ class ReportService:
             artifact_type = ArtifactType.JSON_EXPORT
             mime_type, extension = "application/json", "json"
         elif export_format == "html":
-            screenshots = [
+            images = [
                 artifact
                 for artifact in report.artifacts
-                if artifact.type == ArtifactType.SCREENSHOT
+                if artifact.type == ArtifactType.IMAGE
             ]
             loaded = await asyncio.gather(
-                *(self.artifacts.load_content(artifact.id) for artifact in screenshots)
+                *(self.artifacts.load_content(artifact.id) for artifact in images)
             )
             image_data_urls = {
                 artifact.id: (
                     f"data:{mime_type};base64,"
                     + base64.b64encode(raw).decode("ascii")
                 )
-                for artifact, (raw, mime_type) in zip(screenshots, loaded, strict=True)
+                for artifact, (raw, mime_type) in zip(images, loaded, strict=True)
             }
             content = self.templates.get_template("report.html").render(
                 report=report_dump,

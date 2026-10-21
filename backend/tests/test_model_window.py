@@ -13,7 +13,7 @@ from app.domain.resources.llm import LLMProfileSnapshot
 from app.execution.task_agent import (
     _count_model_request_tokens,
     _select_model_message_window,
-    _collect_expired_screenshot_updates,
+    _collect_expired_image_updates,
 )
 from app.event_stream.projector import project_run_message
 
@@ -69,7 +69,7 @@ def structured_tool(
     )
 
 
-def screenshot_message(message_id: str, *, encoded_size: int) -> HumanMessage:
+def image_message(message_id: str, *, encoded_size: int) -> HumanMessage:
     return HumanMessage(
         id=message_id,
         content=[
@@ -96,15 +96,15 @@ def test_chinese_text_uses_profile_calibrated_conservative_ratio() -> None:
     assert tokens > len(chinese_text) / 4
 
 
-def test_1080p_screenshot_uses_configured_image_budget_not_base64_length() -> None:
+def test_1080p_image_uses_configured_image_budget_not_base64_length() -> None:
     profile = model_profile(tokens_per_image=1_500)
     small_encoding = _count_model_request_tokens(
-        [screenshot_message("small", encoded_size=20)],
+        [image_message("small", encoded_size=20)],
         tools=(),
         model_profile=profile,
     )
     large_encoding = _count_model_request_tokens(
-        [screenshot_message("large", encoded_size=2_000_000)],
+        [image_message("large", encoded_size=2_000_000)],
         tools=(),
         model_profile=profile,
     )
@@ -137,7 +137,7 @@ def test_long_tool_description_and_parameter_schema_are_counted() -> None:
     assert long_count > short_count + 4_000
 
 
-def test_window_trims_old_history_and_images_but_keeps_latest_screenshot() -> None:
+def test_window_trims_old_history_and_images_but_keeps_latest_image() -> None:
     profile = model_profile(
         context_window_tokens=4_096,
         max_output_tokens=512,
@@ -148,9 +148,9 @@ def test_window_trims_old_history_and_images_but_keeps_latest_screenshot() -> No
         SystemMessage(id="system", content="系统规则"),
         HumanMessage(id="task", content="当前任务及成功标准"),
         HumanMessage(id="old-text", content="旧的中文历史。" * 500),
-        screenshot_message("old-image", encoded_size=100_000),
+        image_message("old-image", encoded_size=100_000),
         HumanMessage(id="recent-text", content="最近的工具结果"),
-        screenshot_message("latest-image", encoded_size=2_000_000),
+        image_message("latest-image", encoded_size=2_000_000),
     ]
     tools = (structured_tool(),)
 
@@ -177,7 +177,7 @@ def test_window_trims_old_history_and_images_but_keeps_latest_screenshot() -> No
     )
 
 
-def test_fixed_tool_schema_and_latest_screenshot_over_budget_block_explicitly() -> None:
+def test_fixed_tool_schema_and_latest_image_over_budget_block_explicitly() -> None:
     profile = model_profile(
         context_window_tokens=2_048,
         max_output_tokens=256,
@@ -189,11 +189,11 @@ def test_fixed_tool_schema_and_latest_screenshot_over_budget_block_explicitly() 
         parameter_description_length=3_000,
     )
 
-    with pytest.raises(ModelContextBudgetExceeded, match="latest screenshot"):
+    with pytest.raises(ModelContextBudgetExceeded, match="latest image"):
         _select_model_message_window(
             [
                 SystemMessage(id="system", content="系统规则"),
-                screenshot_message("latest-image", encoded_size=2_000_000),
+                image_message("latest-image", encoded_size=2_000_000),
             ],
             tools=(long_tool,),
             model_profile=profile,
@@ -254,7 +254,7 @@ def test_loaded_skill_over_budget_blocks_instead_of_losing_instructions() -> Non
 
 
 @pytest.mark.parametrize("history_rounds", [1, 3])
-def test_visual_retention_replaces_expired_messages_without_mutating_history(history_rounds: int) -> None:
+def test_image_retention_replaces_expired_messages_without_mutating_history(history_rounds: int) -> None:
     messages: list[AnyMessage] = [SystemMessage(content='rules'), HumanMessage(content='task')]
     artifact_ids = {(decision_round, index): str(uuid4()) for decision_round in (1, 3, 5, 6) for index in range(2)}
     for index in range(1, 10):
@@ -265,7 +265,7 @@ def test_visual_retention_replaces_expired_messages_without_mutating_history(his
         messages.append(ToolMessage(content=content, tool_call_id=str(index)))
     messages = cast(list[AnyMessage], add_messages([], cast(Messages, messages)))
     originals = [message.model_dump() for message in messages]
-    replacements = _collect_expired_screenshot_updates(messages, history_rounds)
+    replacements = _collect_expired_image_updates(messages, history_rounds)
     projected = cast(list[AnyMessage], add_messages(cast(Messages, messages), cast(Messages, replacements)))
     retained_rounds = (1, 3, 5, 6)[-history_rounds:]
     assert [block.get('id') for message in projected for block in message.content_blocks if block['type'] == 'image'] == [
@@ -274,8 +274,8 @@ def test_visual_retention_replaces_expired_messages_without_mutating_history(his
     assert len(replacements) == 4 - history_rounds
     assert [message.id for message in projected] == [message.id for message in messages]
     assert [project_run_message(message) for message in projected] == [project_run_message(message) for message in messages]
-    assert _collect_expired_screenshot_updates(projected, history_rounds) == []
-    assert 'outside the visual history' in projected[3].text
+    assert _collect_expired_image_updates(projected, history_rounds) == []
+    assert 'outside the image history' in projected[3].text
     assert [block.get('extras', {}).get('artifact_id') for block in projected[3].content_blocks if 'artifact_id' in block.get('extras', {})] == [artifact_ids[1, n] for n in range(2)]
     assert 'base64' not in projected[3].model_dump_json()
     assert projected[-1] is messages[-1]  # unchanged messages need no deep copy
@@ -287,23 +287,23 @@ def test_visual_retention_replaces_expired_messages_without_mutating_history(his
 
 
 @pytest.mark.parametrize("history_rounds", [1, 3])
-def test_visual_retention_advances_only_with_new_screenshot_rounds(history_rounds: int) -> None:
+def test_image_retention_advances_only_with_new_image_rounds(history_rounds: int) -> None:
     messages = cast(list[AnyMessage], add_messages([], [SystemMessage(content="rules"), HumanMessage(content="task")]))
-    screenshot_rounds: list[int] = []
+    image_rounds: list[int] = []
     for decision_round in range(1, 13):
         content: list[str | dict[str, Any]] = [{"type": "text", "text": f"round {decision_round}"}]
         if decision_round in (1, 3, 5, 6, 9):
-            screenshot_rounds.append(decision_round)
+            image_rounds.append(decision_round)
             content.extend({"type": "image", "base64": "AA==", "mime_type": "image/png",
                             "id": f"{decision_round}-{index}"} for index in range(2))
         messages = cast(list[AnyMessage], add_messages(cast(Messages, messages), [
             AIMessage(content="", tool_calls=[{"name": "inspect", "args": {}, "id": str(decision_round)}]),
             ToolMessage(content=content, tool_call_id=str(decision_round)),
         ]))
-        replacements = _collect_expired_screenshot_updates(messages, history_rounds)
+        replacements = _collect_expired_image_updates(messages, history_rounds)
         messages = cast(list[AnyMessage], add_messages(cast(Messages, messages), cast(Messages, replacements)))
         assert [block.get("id") for message in messages for block in message.content_blocks if block["type"] == "image"] == [
-            f"{round_number}-{index}" for round_number in screenshot_rounds[-history_rounds:] for index in range(2)
+            f"{round_number}-{index}" for round_number in image_rounds[-history_rounds:] for index in range(2)
         ]
         assert len(messages) == 2 + 2 * decision_round
-        assert _collect_expired_screenshot_updates(messages, history_rounds) == []
+        assert _collect_expired_image_updates(messages, history_rounds) == []

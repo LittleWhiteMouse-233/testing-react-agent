@@ -9,8 +9,6 @@ from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.domain.errors import describe_exception
-
 
 class MCPServerSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -30,11 +28,17 @@ class MCPConnectionError(RuntimeError):
     """Configured services could not be opened or discovered."""
 
 
-async def load_mcp_clients(config_path: Path) -> dict[str, Client[Any]]:
-    """Read configuration once per run; clients connect only inside public contexts."""
-    try:
+class MCPClientProvider:
+    """Own one batch of configured clients, replaced before each run."""
+
+    def __init__(self, config_path: Path) -> None:
+        self.config_path = config_path
+        self.clients: dict[str, Client[Any]] = {}
+
+    async def load_clients(self) -> None:
+        """Reload configuration; clients connect only inside public contexts."""
         settings = MCPSettings.model_validate_json(
-            await asyncio.to_thread(config_path.read_text, encoding="utf-8")
+            await asyncio.to_thread(self.config_path.read_text, encoding="utf-8")
         )
         clients: dict[str, Client[Any]] = {}
         for server_name, server in settings.mcpServers.items():
@@ -42,11 +46,9 @@ async def load_mcp_clients(config_path: Path) -> dict[str, Client[Any]]:
                 raise ValueError("MCP server names must not be blank")
             cwd = Path(server.cwd or ".")
             if not cwd.is_absolute():
-                cwd = config_path.parent / cwd
+                cwd = self.config_path.parent / cwd
             clients[server_name] = Client(StdioTransport(
                 command=server.command, args=server.args, env=server.env,
                 cwd=str(cwd.resolve()), keep_alive=False,
             ))
-        return clients
-    except Exception as exc:
-        raise MCPConnectionError(describe_exception(exc, phase="Invalid MCP configuration")) from exc
+        self.clients = clients
