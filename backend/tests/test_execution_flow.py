@@ -42,6 +42,29 @@ def test_generic_tools_complete_deterministic_verdicts(tmp_path: Path, status: s
         assert "execution_model" in detail["environment"]
 
 
+def test_required_context_over_budget_blocks_without_calling_model(tmp_path: Path) -> None:
+    with build_client(tmp_path) as client:
+        plan = create_plan(client, task_count=2)
+        tasks = [dict(task["definition"]) for task in plan["content"]["tasks"]]
+        tasks[0]["goal"] = "超长任务说明" * 10_000
+        response = client.post(
+            f"/api/test-plans/{plan['id']}/revisions",
+            json={"content": {**plan["content"], "tasks": tasks}},
+        )
+        assert response.status_code == 201, response.text
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model_call_count = len(model.invocations)
+
+        detail = wait_for_run(client, start_run(client, response.json()))
+
+        assert detail["run"]["verdict"] == "BLOCKED"
+        assert [task["status"] for task in detail["task_runs"]] == ["blocked", "skipped"]
+        assert detail["task_runs"][0]["result"]["reason_code"] == "model_context_exceeded"
+        assert detail["task_runs"][0]["cycle_count"] == 1
+        assert len(model.invocations) == model_call_count
+
+
 @pytest.mark.parametrize("act_limit,judge_limit,counts", [(1, 3, [1, 0]), (3, 1, [2, 1])])
 def test_configured_cycle_limits_by_task_type(
     tmp_path: Path, act_limit: int, judge_limit: int, counts: list[int],

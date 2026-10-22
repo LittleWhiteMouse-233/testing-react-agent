@@ -16,7 +16,8 @@ from app.artifacts import ArtifactStore
 from app.domain.resources.static_resources import ResourceCatalogSnapshot
 from app.domain import planning
 from app.domain.errors import ToolCallError, describe_exception
-from app.execution.task_agent import TaskAgentFactory, TaskAgentGraphState, TaskAgentInput, _TaskRuntime
+from app.execution.model_context import ModelContextWindow
+from app.execution.task_agent import TaskAgentFactory, TaskAgentGraphState, TaskAgentInput, _TaskRuntime, finish_task
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.llm import ModelProvider, ScriptedChatModelClient
 from app.prompts import load_prompt
@@ -27,6 +28,7 @@ from mcp_support import finish_turn, tool_turn
 def task_runtime() -> _TaskRuntime:
     model_client = ScriptedChatModelClient()
     prompt = load_prompt("act")
+    model_tools = (finish_task,)
     return _TaskRuntime(
         artifacts=create_autospec(ArtifactStore, instance=True),
         run_cancellation_event=asyncio.Event(),
@@ -41,7 +43,8 @@ def task_runtime() -> _TaskRuntime:
             expected_prompt_version=prompt.version,
             resource_catalog=ResourceCatalogSnapshot(),
         ),
-        tools=(), model_client=model_client,
+        tools=model_tools, model_client=model_client,
+        model_context_window=ModelContextWindow(model_profile=model_client.profile_snapshot, tools=model_tools),
         prompt_definition=prompt, model_response_max_attempts=3,
         event_recorder=create_autospec(TaskAgentEventRecorder, instance=True),
     )

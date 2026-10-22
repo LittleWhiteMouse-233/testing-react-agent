@@ -61,4 +61,4 @@ class ModelProfileMismatch(RuntimeError):
 
 
 class ModelContextBudgetExceeded(RuntimeError):
-    """由 TaskAgent 在固定工具/最新观察无法装入模型窗口时产生。"""
+    """由 ModelContextWindow 在必要上下文或固定工具无法装入模型输入预算时产生。"""

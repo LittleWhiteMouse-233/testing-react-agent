@@ -13,9 +13,7 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
     ToolMessage,
-    trim_messages,
 )
-from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import NodeError, NodeTimeoutError
@@ -43,9 +41,10 @@ from app.domain.execution import (
 )
 from app.domain.resources.llm import LLMProfileSnapshot
 from app.domain.resources.static_resources import ResourceCatalogSnapshot
-from app.skill import LOAD_SKILL_TOOL_NAME, top_level_skills
+from app.skill import top_level_skills
 from app.domain.ids import TaskRunId
 from app.domain.planning import TestTask, TestTaskType
+from app.execution.model_context import ModelContextWindow
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.artifacts import ArtifactStore
 from app.llm import ChatModelClient, ModelProvider
@@ -126,10 +125,12 @@ class TaskAgentFactory:
         prompt = self.prompts_by_task_type[task_input.task.definition.type]
         if prompt.version != task_input.expected_prompt_version:
             raise PromptVersionMismatch(expected=task_input.expected_prompt_version, actual=prompt.version, prompt_name=prompt.name)
+        model_tools: tuple[BaseTool, ...] = (*tools, finish_task)
         runtime = _TaskRuntime(
             artifacts=self.artifacts, run_cancellation_event=run_cancellation_event,
             task_input=task_input,
-            tools=tools, model_client=model_client, prompt_definition=prompt,
+            tools=model_tools, model_client=model_client, prompt_definition=prompt,
+            model_context_window=ModelContextWindow(model_profile=task_input.expected_model_profile, tools=model_tools),
             model_response_max_attempts=self.model_response_max_attempts,
             event_recorder=event_recorder,
         )
@@ -143,7 +144,7 @@ class TaskAgentFactory:
         graph.add_node("validate", runtime.validate_message)
         graph.add_node("announce_tool", runtime.announce_tool)
         graph.add_node(
-            "tools", ToolNode([*tools, finish_task]), timeout=self.tool_call_timeout_seconds,
+            "tools", ToolNode(model_tools), timeout=self.tool_call_timeout_seconds,
             # LangGraph 1.2.9 supports NodeError injection but omits it from StateNode's type.
             error_handler=runtime.handle_tool_error,  # type: ignore[reportArgumentType]
         )
@@ -179,6 +180,7 @@ class _TaskRuntime:
     task_input: TaskAgentInput
     tools: tuple[BaseTool, ...]
     model_client: ChatModelClient
+    model_context_window: ModelContextWindow
     prompt_definition: PromptDefinition
     model_response_max_attempts: int
     event_recorder: TaskAgentEventRecorder
@@ -211,11 +213,10 @@ class _TaskRuntime:
 
     async def call_model(self, state: TaskAgentGraphState) -> dict[str, object]:
         if self.bound_model is None:
-            self.bound_model = self.model_client.create_model().bind_tools([*self.tools, finish_task], parallel_tool_calls=False)
+            self.bound_model = self.model_client.create_model().bind_tools(self.tools, parallel_tool_calls=False)
         try:
-            response = await asyncio.wait_for(self.bound_model.ainvoke(_select_model_message_window(
+            response = await asyncio.wait_for(self.bound_model.ainvoke(self.model_context_window.select_messages(
                 state["messages"],
-                tools=self.tools, model_profile=self.model_client.profile_snapshot,
             )), timeout=self.model_client.timeout_seconds)
         except TimeoutError as exc:
             raise ModelCallTimeout("Model call timed out") from exc
@@ -233,7 +234,7 @@ class _TaskRuntime:
             call = message.tool_calls[0]
             if not call.get("id"):
                 reason = "tool call requires a non-empty id"
-            elif call["name"] not in {tool.name for tool in self.tools} | {finish_task.name}:
+            elif call["name"] not in {tool.name for tool in self.tools}:
                 reason = f"tool is not available: {call['name']}"
             elif call["name"] == finish_task.name:
                 try:
@@ -358,108 +359,6 @@ class _TaskRuntime:
         return {"completion": TaskAgentCompletion(status=status,
                     result=TaskRunResult(reason_code=reason_code, summary=summary or reason_code.value),
                     cycle_count=cycle_count), "route": "end"}
-
-
-def _count_model_request_tokens(
-    messages: Sequence[BaseMessage],
-    *,
-    tools: Sequence[BaseTool],
-    model_profile: LLMProfileSnapshot,
-) -> int:
-    """用 LangChain 公共近似器计算消息 envelope、图片与完整工具 schema。"""
-
-    return count_tokens_approximately(
-        messages,
-        chars_per_token=model_profile.characters_per_token,
-        tokens_per_image=model_profile.tokens_per_image,
-        tools=[*tools, finish_task],
-    )
-
-
-def _select_model_message_window(
-    messages: Sequence[BaseMessage],
-    *,
-    tools: Sequence[BaseTool],
-    model_profile: LLMProfileSnapshot,
-) -> list[BaseMessage]:
-    """保留最新图片并在 profile 输入预算内裁剪原始 Message 对象。"""
-
-    image_message_ids = [message.id for message in messages if _message_has_image(message)]
-    selected = list(messages)
-    input_budget = (
-        model_profile.context_window_tokens
-        - model_profile.max_output_tokens
-        - model_profile.context_safety_margin_tokens
-    )
-
-    def token_counter(candidate_messages: list[BaseMessage]) -> int:
-        return _count_model_request_tokens(
-            candidate_messages,
-            tools=tools,
-            model_profile=model_profile,
-        )
-
-    # The initial system prompt and task/success criteria are mandatory. Let the
-    # framework trim complete conversational suffixes within their remaining budget.
-    prefix_end = next(
-        (index + 1 for index, message in enumerate(selected) if isinstance(message, HumanMessage)),
-        0,
-    )
-    # Loading a Skill makes its latest successful instructions mandatory for
-    # this task. Preserve original call/return objects and order, including any
-    # image replacements already applied by the image retention policy.
-    calls: dict[str, tuple[int, tuple[str, str]]] = {}
-    active_skills: dict[tuple[str, str], tuple[int, int]] = {}
-    for index, message in enumerate(selected):
-        if isinstance(message, AIMessage) and len(message.tool_calls) == 1:
-            call = message.tool_calls[0]
-            if call["name"] == LOAD_SKILL_TOOL_NAME and (call_id := call.get("id")):
-                calls[call_id] = (index, (call["args"].get("source_id", ""), call["args"].get("uri", "")))
-        elif isinstance(message, ToolMessage) and message.status != "error" and message.tool_call_id in calls:
-            call_index, skill_address = calls[message.tool_call_id]
-            active_skills[skill_address] = (call_index, index)
-    required_indices = set(range(prefix_end)) | {index for pair in active_skills.values() for index in pair}
-    required = [message for index, message in enumerate(selected) if index in required_indices]
-    suffix = trim_messages(
-        [message for index, message in enumerate(selected) if index >= prefix_end and index not in required_indices],
-        max_tokens=input_budget,
-        token_counter=lambda candidates: token_counter([*required, *cast(list[BaseMessage], candidates)]),
-        strategy="last",
-        allow_partial=False,
-        include_system=not required,
-        start_on=("human", "ai"),
-        end_on=("human", "tool"),
-    )
-    suffix_objects = {id(message) for message in suffix}
-    window = [message for index, message in enumerate(selected) if index in required_indices or id(message) in suffix_objects]
-    if token_counter(window) > input_budget:
-        raise ModelContextBudgetExceeded(
-            "The required system prompt, task context, loaded Skills, latest image and fixed tool schemas exceed the model input budget"
-        )
-    if any(isinstance(message, SystemMessage) for message in messages) and not any(
-        isinstance(message, SystemMessage) for message in window
-    ):
-        raise ModelContextBudgetExceeded(
-            "The system prompt and fixed tool schemas exceed the model input budget"
-        )
-    latest_image_id = image_message_ids[-1] if image_message_ids else None
-    if latest_image_id is not None and all(
-        message.id != latest_image_id for message in window
-    ):
-        raise ModelContextBudgetExceeded(
-            "The latest image and fixed tool schemas exceed the model input budget"
-        )
-    if messages and messages[-1] not in window:
-        raise ModelContextBudgetExceeded("The latest tool result or task context exceeds the model input budget")
-    # A trimmed suffix must keep every retained return paired with its call.
-    retained_calls = {
-        call["id"] for message in window if isinstance(message, AIMessage)
-        for call in message.tool_calls
-    }
-    retained_returns = {message.tool_call_id for message in window if isinstance(message, ToolMessage)}
-    if retained_calls != retained_returns:
-        raise ModelContextBudgetExceeded("The tool call and return pair cannot fit the model input budget")
-    return window
 
 
 def _message_has_image(message: BaseMessage) -> bool:
