@@ -100,7 +100,7 @@ Act 达成目标，Judge 验证行为；Judge 可主动准备条件和触发交�
 
 工具内容顺序保留。图片先解码保存原图，原 base64 连同 Artifact ID 进入 ToolMessage，不重新编码。工具完成后，在 `after_tools` 阶段选取最近 3 个有图片的已完成决策轮，同轮多图全部保留，无图轮不占窗口。窗口外图片在 State 原内容位置替换为带artifact 引用的占位文本；仅复制变化的消息，通过公开 `add_messages` reducer 按相同 message ID 替换，不直接修改输入 State。该产品边界只实现图片轮数策略，消息合并及 checkpoint 序列化仍由框架负责。模型请求基于回收后的 State 执行 token 预算与必要上下文检查；token 裁剪不删除 State 历史，窗口限制轮数而非图片字节总量，也不保证所有图片都能装入预算。
 
-`backend/app/execution/model_context.py` 的 `ModelContextWindow` 负责请求 token 估算、输入预算判断与消息选择。`TaskAgentFactory` 校验运行冻结的模型快照后，为每个任务构造该对象，并绑定与模型和 ToolNode 共用的完整工具集合（含 `finish_task`）。输入预算为模型窗口减去输出预留与安全余量；模块不保存消息历史，必要任务、Skill、最后一条消息或工具调用配对无法保留时抛出预算异常，由执行器按既有规则结束为 BLOCKED。普通历史图片可随 token 预算从模型请求中裁掉，不额外强制保留最后一条含图消息；请求裁剪不修改 State、已保存原图和历史记录。
+`backend/app/execution/model_context.py` 并列提供 `ModelContextWindow` 和 `ModelImageWindow`。`TaskAgentFactory` 校验运行冻结的模型快照后，为每个任务分别构造并注入运行时；两个对象仅绑定任务配置，每次接收当前消息计算结果，不保存消息历史。`ModelImageWindow` 绑定任务输入中的冻结图片窗口轮数，在 `after_tools` 中生成过期图片的同 ID 替换消息，State 合并仍由 reducer 负责。`ModelContextWindow` 绑定模型快照及与模型和 ToolNode 共用的完整工具集合（含 `finish_task`），在请求模型前负责 token 估算、输入预算判断与消息选择。输入预算为模型窗口减去输出预留与安全余量；必要任务、Skill、最后一条消息或工具调用配对无法保留时抛出预算异常，由执行器按既有规则结束为 BLOCKED。普通历史图片可随 token 预算从模型请求中裁掉，不额外强制保留最后一条含图消息；请求裁剪不修改 State、已保存原图和历史记录。
 
 State 与 checkpoint 保留消息身份、顺序、文字和工具调用关系，只保留图片窗口内图片的 base64，终止时不额外清空窗口。执行沿用 `durability="exit"`，图退出时保存回收后的 State；进程突然崩溃时不保证中间 checkpoint 恢复。图片回收前后公开消息均投影为相同 Artifact ID，现有消息去重保证 SSE/历史事件不重复追加；持久事件、历史原图与 JSON/HTML 导出保持完整。内存与最终快照的图片载荷随窗口内图片体积变化，文字历史仍随任务累积。
 

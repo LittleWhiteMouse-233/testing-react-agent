@@ -12,6 +12,7 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
     SystemMessage,
+    ToolCall,
     ToolMessage,
 )
 from langchain_core.tools import BaseTool, tool
@@ -44,7 +45,7 @@ from app.domain.resources.static_resources import ResourceCatalogSnapshot
 from app.skill import top_level_skills
 from app.domain.ids import TaskRunId
 from app.domain.planning import TestTask, TestTaskType
-from app.execution.model_context import ModelContextWindow
+from app.execution.model_context import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.artifacts import ArtifactStore
 from app.llm import ChatModelClient, ModelProvider
@@ -131,6 +132,7 @@ class TaskAgentFactory:
             task_input=task_input,
             tools=model_tools, model_client=model_client, prompt_definition=prompt,
             model_context_window=ModelContextWindow(model_profile=task_input.expected_model_profile, tools=model_tools),
+            model_image_window=ModelImageWindow(history_rounds=task_input.image_history_rounds),
             model_response_max_attempts=self.model_response_max_attempts,
             event_recorder=event_recorder,
         )
@@ -181,6 +183,7 @@ class _TaskRuntime:
     tools: tuple[BaseTool, ...]
     model_client: ChatModelClient
     model_context_window: ModelContextWindow
+    model_image_window: ModelImageWindow
     prompt_definition: PromptDefinition
     model_response_max_attempts: int
     event_recorder: TaskAgentEventRecorder
@@ -261,7 +264,7 @@ class _TaskRuntime:
     async def announce_tool(self, state: TaskAgentGraphState) -> dict[str, object]:
         call = _latest_ai_call(state["messages"])
         if not self.run_cancellation_event.is_set():
-            await self.event_recorder.record_tool_started(call["id"])
+            await self.event_recorder.record_tool_started(cast(str, call["id"]))
         if self.run_cancellation_event.is_set():
             return {"messages": [ToolMessage(content="Cancelled before execution", tool_call_id=call["id"], name=call["name"], status="error")],
                     **self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled before tool execution", state["cycle_count"])}
@@ -335,7 +338,7 @@ class _TaskRuntime:
         messages = cast(list[BaseMessage], add_messages(cast(Messages, state["messages"]), [tool_message]))
         # Product image retention policy; add_messages replaces these messages
         # by ID without mutating earlier State snapshots or persisted events.
-        replacements = _collect_expired_image_updates(messages, self.task_input.image_history_rounds)
+        replacements = self.model_image_window.collect_expired_updates(messages)
         update: dict[str, object] = {"route": "cycle_guard", "messages": [*replacements, tool_message]}
         if self.run_cancellation_event.is_set():
             update.update(self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"]))
@@ -361,54 +364,12 @@ class _TaskRuntime:
                     cycle_count=cycle_count), "route": "end"}
 
 
-def _message_has_image(message: BaseMessage) -> bool:
-    return any(block.get("type") == "image" for block in message.content_blocks)
-
-
-def _collect_expired_image_updates(
-    messages: Sequence[BaseMessage], history_rounds: int,
-) -> list[BaseMessage]:
-    """Replace expired images by artifact references via same-ID State updates.
-
-    Called after tool completion. The public message reducer owns replacement;
-    this boundary only owns the product's image-round retention policy.
-    """
-    if history_rounds < 1:
-        raise ValueError("Image history must retain at least one round")
-    image_rounds: list[int] = []
-    decision_round = 0
-    message_rounds: list[int] = []
-    for message in messages:
-        if isinstance(message, AIMessage):
-            decision_round += 1
-        message_rounds.append(decision_round)
-        if _message_has_image(message) and decision_round not in image_rounds:
-            image_rounds.append(decision_round)
-    retained_rounds = set(image_rounds[-history_rounds:])
-    replacements: list[BaseMessage] = []
-    for message, decision_round in zip(messages, message_rounds, strict=True):
-        if decision_round in retained_rounds or not _message_has_image(message):
-            continue
-        if not message.id:
-            raise ValueError("Image retention requires a message id")
-        replacement = message.model_copy(deep=True)
-        for block in replacement.content_blocks:
-            if block.get("type") == "image" and (not isinstance(block.get("id"), str) or not block.get("id")):
-                raise ValueError("Image retention requires an Artifact id")
-        replacement.content = [
-            {"type": "text", "text": "[Image was saved; image is outside the image history window.]",
-             "extras": {"artifact_id": block.get("id")}}
-            if block.get("type") == "image" else dict(block)
-            for block in replacement.content_blocks
-        ]
-        replacements.append(replacement)
-    return replacements
-
-
-def _latest_ai_call(messages: Sequence[BaseMessage]) -> dict[str, Any]:
+def _latest_ai_call(messages: Sequence[BaseMessage]) -> ToolCall:
     for message in reversed(messages):
-        if isinstance(message, AIMessage) and len(message.tool_calls) == 1:
-            return dict(message.tool_calls[0])
+        if isinstance(message, AIMessage):
+            if len(message.tool_calls) == 1:
+                return message.tool_calls[0]
+            break
     raise ValueError("No single AI tool call is available")
 
 def _project_structured_tool_content(

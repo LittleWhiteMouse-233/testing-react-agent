@@ -1,4 +1,4 @@
-"""Task-local model input budgeting and required request context selection."""
+"""Task-local model request budgeting and State image retention policies."""
 
 from __future__ import annotations
 
@@ -96,3 +96,51 @@ class ModelContextWindow:
         if retained_calls != retained_returns:
             raise ModelContextBudgetExceeded("The tool call and return pair cannot fit the model input budget")
         return window
+
+
+class ModelImageWindow:
+    """Bind a task's frozen image-round limit without retaining messages."""
+
+    def __init__(self, *, history_rounds: int) -> None:
+        if history_rounds < 1:
+            raise ValueError("Image history must retain at least one round")
+        self._history_rounds = history_rounds
+
+    def collect_expired_updates(self, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+        """Replace expired images by artifact references via same-ID State updates.
+
+        Called after tool completion. The public message reducer owns replacement;
+        this boundary only owns the product's image-round retention policy.
+        """
+        image_rounds: list[int] = []
+        decision_round = 0
+        message_rounds: list[int] = []
+        for message in messages:
+            if isinstance(message, AIMessage):
+                decision_round += 1
+            message_rounds.append(decision_round)
+            if _message_has_image(message) and decision_round not in image_rounds:
+                image_rounds.append(decision_round)
+        retained_rounds = set(image_rounds[-self._history_rounds:])
+        replacements: list[BaseMessage] = []
+        for message, decision_round in zip(messages, message_rounds, strict=True):
+            if decision_round in retained_rounds or not _message_has_image(message):
+                continue
+            if not message.id:
+                raise ValueError("Image retention requires a message id")
+            replacement = message.model_copy(deep=True)
+            for block in replacement.content_blocks:
+                if block.get("type") == "image" and (not isinstance(block.get("id"), str) or not block.get("id")):
+                    raise ValueError("Image retention requires an Artifact id")
+            replacement.content = [
+                {"type": "text", "text": "[Image was saved; image is outside the image history window.]",
+                 "extras": {"artifact_id": block.get("id")}}
+                if block.get("type") == "image" else dict(block)
+                for block in replacement.content_blocks
+            ]
+            replacements.append(replacement)
+        return replacements
+
+
+def _message_has_image(message: BaseMessage) -> bool:
+    return any(block.get("type") == "image" for block in message.content_blocks)

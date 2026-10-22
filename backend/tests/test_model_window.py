@@ -10,8 +10,8 @@ from pydantic import Field, create_model
 
 from app.domain.errors import ModelContextBudgetExceeded
 from app.domain.resources.llm import LLMProfileSnapshot
-from app.execution.model_context import ModelContextWindow
-from app.execution.task_agent import _collect_expired_image_updates, finish_task
+from app.execution.model_context import ModelContextWindow, ModelImageWindow
+from app.execution.task_agent import finish_task
 from app.event_stream.projector import project_run_message
 
 
@@ -337,6 +337,7 @@ def test_loaded_skill_over_budget_blocks_instead_of_losing_instructions() -> Non
 
 @pytest.mark.parametrize("history_rounds", [1, 3])
 def test_image_retention_replaces_expired_messages_without_mutating_history(history_rounds: int) -> None:
+    image_window = ModelImageWindow(history_rounds=history_rounds)
     messages: list[AnyMessage] = [SystemMessage(content='rules'), HumanMessage(content='task')]
     artifact_ids = {(decision_round, index): str(uuid4()) for decision_round in (1, 3, 5, 6) for index in range(2)}
     for index in range(1, 10):
@@ -347,7 +348,7 @@ def test_image_retention_replaces_expired_messages_without_mutating_history(hist
         messages.append(ToolMessage(content=content, tool_call_id=str(index)))
     messages = cast(list[AnyMessage], add_messages([], cast(Messages, messages)))
     originals = [message.model_dump() for message in messages]
-    replacements = _collect_expired_image_updates(messages, history_rounds)
+    replacements = image_window.collect_expired_updates(messages)
     projected = cast(list[AnyMessage], add_messages(cast(Messages, messages), cast(Messages, replacements)))
     retained_rounds = (1, 3, 5, 6)[-history_rounds:]
     assert [block.get('id') for message in projected for block in message.content_blocks if block['type'] == 'image'] == [
@@ -356,7 +357,7 @@ def test_image_retention_replaces_expired_messages_without_mutating_history(hist
     assert len(replacements) == 4 - history_rounds
     assert [message.id for message in projected] == [message.id for message in messages]
     assert [project_run_message(message) for message in projected] == [project_run_message(message) for message in messages]
-    assert _collect_expired_image_updates(projected, history_rounds) == []
+    assert image_window.collect_expired_updates(projected) == []
     assert 'outside the image history' in projected[3].text
     assert [block.get('extras', {}).get('artifact_id') for block in projected[3].content_blocks if 'artifact_id' in block.get('extras', {})] == [artifact_ids[1, n] for n in range(2)]
     assert 'base64' not in projected[3].model_dump_json()
@@ -370,6 +371,7 @@ def test_image_retention_replaces_expired_messages_without_mutating_history(hist
 
 @pytest.mark.parametrize("history_rounds", [1, 3])
 def test_image_retention_advances_only_with_new_image_rounds(history_rounds: int) -> None:
+    image_window = ModelImageWindow(history_rounds=history_rounds)
     messages = cast(list[AnyMessage], add_messages([], [SystemMessage(content="rules"), HumanMessage(content="task")]))
     image_rounds: list[int] = []
     for decision_round in range(1, 13):
@@ -382,10 +384,38 @@ def test_image_retention_advances_only_with_new_image_rounds(history_rounds: int
             AIMessage(content="", tool_calls=[{"name": "inspect", "args": {}, "id": str(decision_round)}]),
             ToolMessage(content=content, tool_call_id=str(decision_round)),
         ]))
-        replacements = _collect_expired_image_updates(messages, history_rounds)
+        replacements = image_window.collect_expired_updates(messages)
         messages = cast(list[AnyMessage], add_messages(cast(Messages, messages), cast(Messages, replacements)))
         assert [block.get("id") for message in messages for block in message.content_blocks if block["type"] == "image"] == [
             f"{round_number}-{index}" for round_number in image_rounds[-history_rounds:] for index in range(2)
         ]
         assert len(messages) == 2 + 2 * decision_round
-        assert _collect_expired_image_updates(messages, history_rounds) == []
+        assert image_window.collect_expired_updates(messages) == []
+
+
+def test_image_window_does_not_retain_previous_history() -> None:
+    image_window = ModelImageWindow(history_rounds=1)
+    for history_name in ("first", "second"):
+        messages = [
+            SystemMessage(id="system", content="rules"),
+            HumanMessage(id="task", content=history_name),
+            *observation_messages("old", image_message(f"{history_name}-old", encoded_size=20).content),
+            *observation_messages("latest", image_message(f"{history_name}-latest", encoded_size=20).content),
+        ]
+
+        replacements = image_window.collect_expired_updates(messages)
+
+        assert [message.id for message in replacements] == ["tool-old"]
+        assert replacements[0].content_blocks[-1].get("extras") == {
+            "artifact_id": f"artifact-{history_name}-old",
+        }
+        projected = cast(list[AnyMessage], add_messages(cast(Messages, messages), cast(Messages, replacements)))
+        assert [block.get("id") for message in projected for block in message.content_blocks if block["type"] == "image"] == [
+            f"artifact-{history_name}-latest",
+        ]
+
+
+@pytest.mark.parametrize("history_rounds", [0, -1])
+def test_image_window_requires_at_least_one_history_round(history_rounds: int) -> None:
+    with pytest.raises(ValueError, match="Image history must retain at least one round"):
+        ModelImageWindow(history_rounds=history_rounds)

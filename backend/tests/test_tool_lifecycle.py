@@ -16,7 +16,7 @@ from app.artifacts import ArtifactStore
 from app.domain.resources.static_resources import ResourceCatalogSnapshot
 from app.domain import planning
 from app.domain.errors import ToolCallError, describe_exception
-from app.execution.model_context import ModelContextWindow
+from app.execution.model_context import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent import TaskAgentFactory, TaskAgentGraphState, TaskAgentInput, _TaskRuntime, finish_task
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.llm import ModelProvider, ScriptedChatModelClient
@@ -29,22 +29,24 @@ def task_runtime() -> _TaskRuntime:
     model_client = ScriptedChatModelClient()
     prompt = load_prompt("act")
     model_tools = (finish_task,)
+    task_input = TaskAgentInput(
+        task_run_id=str(uuid4()),
+        task=planning.TestTask(test_task_id=str(uuid4()), definition=planning.TestTaskDefinition(
+            type=planning.TestTaskType.ACT, title="Observe", goal="Observe the target",
+            success_criteria=["Expected content is visible"],
+        )),
+        previous_task_runs=(), max_cycles=3, image_history_rounds=1,
+        expected_model_profile=model_client.profile_snapshot,
+        expected_prompt_version=prompt.version,
+        resource_catalog=ResourceCatalogSnapshot(),
+    )
     return _TaskRuntime(
         artifacts=create_autospec(ArtifactStore, instance=True),
         run_cancellation_event=asyncio.Event(),
-        task_input=TaskAgentInput(
-            task_run_id=str(uuid4()),
-            task=planning.TestTask(test_task_id=str(uuid4()), definition=planning.TestTaskDefinition(
-                type=planning.TestTaskType.ACT, title="Observe", goal="Observe the target",
-                success_criteria=["Expected content is visible"],
-            )),
-            previous_task_runs=(), max_cycles=3, image_history_rounds=1,
-            expected_model_profile=model_client.profile_snapshot,
-            expected_prompt_version=prompt.version,
-            resource_catalog=ResourceCatalogSnapshot(),
-        ),
+        task_input=task_input,
         tools=model_tools, model_client=model_client,
-        model_context_window=ModelContextWindow(model_profile=model_client.profile_snapshot, tools=model_tools),
+        model_context_window=ModelContextWindow(model_profile=task_input.expected_model_profile, tools=model_tools),
+        model_image_window=ModelImageWindow(history_rounds=task_input.image_history_rounds),
         prompt_definition=prompt, model_response_max_attempts=3,
         event_recorder=create_autospec(TaskAgentEventRecorder, instance=True),
     )
