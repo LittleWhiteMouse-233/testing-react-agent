@@ -84,6 +84,14 @@ function renderPage(path: string, history = false) {
   </Routes></MemoryRouter></QueryClientProvider>);
 }
 
+it("shows undefined prompt fingerprints without replacing defined fingerprints", () => {
+  report.detail.environment.prompt_fingerprints_by_task_type.act = null;
+  report.detail.test_plan.planning_context.planning_prompt_fingerprint = null;
+  render(<RunResources report={report} />);
+  expect(screen.getAllByText("未定义")).toHaveLength(2);
+  expect(screen.getByText("judge-v1")).toBeInTheDocument();
+});
+
 it.each<TestRunVerdict>(["PASS", "FAIL", "BLOCKED", "CANCELLED"])("shows the authoritative %s result and saved images", async (verdict) => {
   report = runReport(verdict);
   renderPage(`/runs/${runId}/report`);
@@ -91,14 +99,16 @@ it.each<TestRunVerdict>(["PASS", "FAIL", "BLOCKED", "CANCELLED"])("shows the aut
   expect(document.querySelector(`.report-summary .status-${verdict.toLowerCase()}`)).toBeInTheDocument();
   expect(screen.getByText("截图前观察")).toBeInTheDocument();
   expect(screen.getByText("截图后观察")).toBeInTheDocument();
+  expect(screen.getByText("act-v1")).toBeInTheDocument();
+  expect(screen.getByText("judge-v1")).toBeInTheDocument();
   expect(screen.queryByText("判定证据")).not.toBeInTheDocument();
   expect(sources).toHaveLength(0);
 });
 
 it.each(["act", "judge"] as const)("shows the configured %s budget in the report", async (type) => {
   report.detail.test_plan.content.tasks[0]!.definition.type = type;
-  report.detail.environment.act_max_cycles = 37;
-  report.detail.environment.judge_max_cycles = 14;
+  report.detail.environment.max_cycles_by_task_type.act = 37;
+  report.detail.environment.max_cycles_by_task_type.judge = 14;
   renderPage(`/runs/${runId}/report`);
   await screen.findByText("设置页面验证");
   expect(screen.getByText(`completed · 2 / ${type === "act" ? 37 : 14} 轮`)).toBeInTheDocument();
@@ -147,8 +157,8 @@ it("keeps cancelled unstarted tasks distinct from fail-fast skipped tasks", asyn
 it.each(["act", "judge"] as const)("restores history and merges live cycles with the configured %s budget", async (type) => {
   report = runReport(null);
   report.detail.test_plan.content.tasks[0]!.definition.type = type;
-  report.detail.environment.act_max_cycles = 37;
-  report.detail.environment.judge_max_cycles = 14;
+  report.detail.environment.max_cycles_by_task_type.act = 37;
+  report.detail.environment.max_cycles_by_task_type.judge = 14;
   const limit = type === "act" ? 37 : 14;
   report.detail.test_plan.content.tasks.push({ test_task_id: caseId, definition: { ...report.detail.test_plan.content.tasks[0]!.definition, title: "后续任务" } });
   renderPage(`/runs/${runId}`);
@@ -358,7 +368,7 @@ it.each(["1.5", "Infinity"])("uses a whole first page for invalid URL page %s on
 
 it("refreshes only on lifecycle changes and reconnection for a multi-task event history", async () => {
   report = runReport(null);
-  report.detail.environment.judge_max_cycles = 30;
+  report.detail.environment.max_cycles_by_task_type.judge = 30;
   report.detail.test_plan.content.tasks.push({ test_task_id: caseId, definition: { ...report.detail.test_plan.content.tasks[0]!.definition, title: "第二任务" } });
   const transmittedEventCounts: number[] = [];
   const originalFetch = vi.mocked(fetch).getMockImplementation()!;

@@ -23,7 +23,7 @@ const plan: TestPlan = {
       tokens_per_image: 1024,
       context_safety_margin_tokens: 1024
     },
-    planning_prompt_version: "v1"
+    planning_prompt_fingerprint: "planning-fingerprint"
   },
   content: {
     title: "计划",

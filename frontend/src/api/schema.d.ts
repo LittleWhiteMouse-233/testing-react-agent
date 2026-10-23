@@ -527,7 +527,7 @@ export interface components {
          * @description TaskRun/执行错误的稳定结果原因；它是持久化事实而非异常类型。
          * @enum {string}
          */
-        ReasonCode: "completed" | "assertion_failed" | "goal_unreachable" | "cycle_limit" | "model_unavailable" | "invalid_model_response" | "agent_blocked" | "tool_failed" | "process_restarted" | "global_fail_fast" | "user_cancelled" | "prompt_version_mismatch" | "model_profile_mismatch" | "model_context_exceeded" | "unexpected_error";
+        ReasonCode: "completed" | "assertion_failed" | "goal_unreachable" | "cycle_limit" | "model_unavailable" | "invalid_model_response" | "agent_blocked" | "tool_failed" | "process_restarted" | "global_fail_fast" | "user_cancelled" | "model_context_exceeded" | "unexpected_error";
         /** ReportExportRequest */
         ReportExportRequest: {
             /**
@@ -938,8 +938,8 @@ export interface components {
          */
         TestPlanPlanningContext: {
             planning_model: components["schemas"]["LLMProfileSnapshot"];
-            /** Planning Prompt Version */
-            planning_prompt_version: string;
+            /** Planning Prompt Fingerprint */
+            planning_prompt_fingerprint: string | null;
             test_case_content: components["schemas"]["TestCaseContent"];
             /** User Input */
             user_input?: string | null;
@@ -1008,10 +1008,6 @@ export interface components {
          * @description RunService 在 TestRun 创建时冻结且执行器必须遵守的环境事实。
          */
         TestRunEnvironmentSnapshot: {
-            /** Act Max Cycles */
-            act_max_cycles: number;
-            /** Act Prompt Version */
-            act_prompt_version: string;
             /** App Version */
             app_version: string;
             execution_model: components["schemas"]["LLMProfileSnapshot"];
@@ -1020,15 +1016,14 @@ export interface components {
              * @constant
              */
             execution_protocol_version: "7";
-            /**
-             * Image History Rounds
-             * @default 3
-             */
-            image_history_rounds: number;
-            /** Judge Max Cycles */
-            judge_max_cycles: number;
-            /** Judge Prompt Version */
-            judge_prompt_version: string;
+            /** Max Cycles By Task Type */
+            max_cycles_by_task_type: {
+                [key: string]: number;
+            };
+            /** Prompt Fingerprints By Task Type */
+            prompt_fingerprints_by_task_type: {
+                [key: string]: string | null;
+            };
             resource_catalog: components["schemas"]["ResourceCatalogSnapshot"];
             tool_catalog: components["schemas"]["ToolCatalogSnapshot"];
         };
@@ -1138,7 +1133,7 @@ export interface components {
         };
         /**
          * TestTaskType
-         * @description 计划任务的业务类型；执行过程据此选择 Agent activity。
+         * @description 计划任务的业务类型；执行过程据此选择提示词与轮次上限。
          * @enum {string}
          */
         TestTaskType: "act" | "judge";

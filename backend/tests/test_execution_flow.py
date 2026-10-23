@@ -20,10 +20,12 @@ from langgraph.types import interrupt
 from app.container import Container
 from app.artifacts import ArtifactStore
 from app.domain.activity import AgentActivity
+from app.domain.planning import TestTaskType as TaskType
 from app.event_stream.projector import project_run_message
 from app.execution.task_agent import TaskAgentGraphState, _TaskRuntime
 from app.llm import ScriptedChatModelClient
 from app.llm.test_fake import ScriptedChatModel
+from app.prompts import PromptCatalog
 from mcp_support import (
     PNG_BASE64, build_client, create_plan, finish_turn, image_block, read_records,
     replay_call, start_run, text_block, tool_turn, wait_for_run,
@@ -82,8 +84,7 @@ def test_configured_cycle_limits_by_task_type(
         assert [task["cycle_count"] for task in detail["task_runs"]] == counts
         blocked = next(task for task in detail["task_runs"] if task["status"] == "blocked")
         assert blocked["result"]["reason_code"] == "cycle_limit"
-        assert detail["environment"]["act_max_cycles"] == act_limit
-        assert detail["environment"]["judge_max_cycles"] == judge_limit
+        assert detail["environment"]["max_cycles_by_task_type"] == {"act": act_limit, "judge": judge_limit}
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
         model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
         contexts = [json.loads(invocation[1].text) for invocation in model.invocations[1:]]
@@ -91,8 +92,7 @@ def test_configured_cycle_limits_by_task_type(
             expected = act_limit if context["task"]["definition"]["type"] == "act" else judge_limit
             assert context["max_cycles"] == expected
             assert "max_cycles" not in context["task"]["definition"]
-        container.run_service.act_max_cycles = 50
-        container.run_service.judge_max_cycles = 50
+        container.run_service.max_cycles_by_task_type.update({TaskType.ACT: 50, TaskType.JUDGE: 50})
         stored = client.get(f"/api/runs/{run_id}").json()["detail"]
         assert stored["environment"] == detail["environment"]
         events = client.get(f"/api/runs/{run_id}").json()["events"]
@@ -104,6 +104,10 @@ def test_configured_cycle_limits_by_task_type(
 
 
 def test_act_and_judge_share_tools_and_model(tmp_path: Path) -> None:
+    prompt_catalog = PromptCatalog()
+    act_prompt = prompt_catalog.prompt_for_task_type(TaskType.ACT)
+    judge_prompt = prompt_catalog.prompt_for_task_type(TaskType.JUDGE)
+    assert act_prompt is not None and judge_prompt is not None
     with build_client(tmp_path, calls=[replay_call() for _ in range(4)],
                       turns=[tool_turn(1), finish_turn(2), tool_turn(3), finish_turn(4)] * 2) as client:
         plan = create_plan(client, task_count=2)
@@ -112,6 +116,9 @@ def test_act_and_judge_share_tools_and_model(tmp_path: Path) -> None:
             detail = wait_for_run(client, run_id)
             assert detail["run"]["verdict"] == "PASS"
             assert [task["cycle_count"] for task in detail["task_runs"]] == [2, 2]
+            assert detail["environment"]["prompt_fingerprints_by_task_type"] == {
+                "act": act_prompt.fingerprint, "judge": judge_prompt.fingerprint,
+            }
             events = [entry["event"] for entry in client.get(f"/api/runs/{run_id}").json()["events"]]
             for task_run in detail["task_runs"]:
                 task_events = [event for event in events if event["task_run_id"] == task_run["id"]]
@@ -123,6 +130,42 @@ def test_act_and_judge_share_tools_and_model(tmp_path: Path) -> None:
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
         model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
         assert len(model.invocations) == 9  # one planning call, eight execution replies across two runs
+        assert [invocation[0].content for invocation in model.invocations[1:]] == [
+            act_prompt.text, act_prompt.text, judge_prompt.text, judge_prompt.text,
+        ] * 2
+
+
+@pytest.mark.parametrize("prompt_text,fingerprint", [
+    (None, None), ("", "e3b0c44298fc"), ("abc", "ba7816bf8f01"),
+])
+def test_optional_prompts_preserve_selected_text_and_snapshot_fingerprints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    prompt_text: str | None, fingerprint: str | None,
+) -> None:
+    prompt_directory = tmp_path / "prompts"
+    prompt_directory.mkdir()
+    if prompt_text is not None:
+        for activity in AgentActivity:
+            (prompt_directory / f"{activity.value}.txt").write_text(prompt_text, encoding="utf-8")
+    monkeypatch.setattr(
+        "app.container.PromptCatalog",
+        lambda: PromptCatalog(prompt_directory=prompt_directory),
+    )
+
+    with build_client(tmp_path, turns=[finish_turn(1), finish_turn(2)]) as client:
+        plan = create_plan(client, task_count=2)
+        assert plan["planning_context"]["planning_prompt_fingerprint"] == fingerprint
+        run_id = start_run(client, plan)
+        detail = wait_for_run(client, run_id)
+        assert detail["run"]["verdict"] == "PASS"
+        assert detail["environment"]["prompt_fingerprints_by_task_type"] == {
+            "act": fingerprint, "judge": fingerprint,
+        }
+        stored = client.get(f"/api/runs/{run_id}").json()["detail"]
+        assert stored["environment"] == detail["environment"]
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        assert [invocation[0].content for invocation in model.invocations[1:]] == [prompt_text or ""] * 2
 
 
 @pytest.mark.parametrize("control_kind", ["bubble", "group", "interrupt"])

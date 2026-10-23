@@ -45,9 +45,9 @@ class PlanningGraphState(MessagesState):
 
 
 class PlanningGraph:
-    """用固定 PromptDefinition 与显式模型客户端生成 typed 计划草稿。"""
+    """用固定可选提示词与显式模型客户端生成 typed 计划草稿。"""
 
-    def __init__(self, prompt_definition: PromptDefinition) -> None:
+    def __init__(self, prompt_definition: PromptDefinition | None) -> None:
         self.prompt_definition = prompt_definition
 
     def _build(self, model_client: ChatModelClient) -> StateGraph:
@@ -120,7 +120,7 @@ class PlanningGraph:
 
         initial_messages: list[BaseMessage] = [
             SystemMessage(
-                content=self.prompt_definition.text
+                content=(self.prompt_definition.text if self.prompt_definition is not None else "")
                 + "\n"
                 + PydanticOutputParser(pydantic_object=PlanDraft).get_format_instructions()
             ),

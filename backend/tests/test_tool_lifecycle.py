@@ -17,36 +17,34 @@ from app.domain.resources.static_resources import ResourceCatalogSnapshot
 from app.domain import planning
 from app.domain.errors import ToolCallError, describe_exception
 from app.execution.model_context import ModelContextWindow, ModelImageWindow
-from app.execution.task_agent import TaskAgentFactory, TaskAgentGraphState, TaskAgentInput, _TaskRuntime, finish_task
+from app.execution.task_agent import TaskAgentContext, TaskAgentFactory, TaskAgentGraphState, TaskAgentInput, _TaskRuntime, finish_task
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.llm import ModelProvider, ScriptedChatModelClient
-from app.prompts import load_prompt
+from app.prompts import PromptCatalog
 from mcp_support import finish_turn, tool_turn
 
 
 @pytest.fixture
 def task_runtime() -> _TaskRuntime:
     model_client = ScriptedChatModelClient()
-    prompt = load_prompt("act")
+    prompt = PromptCatalog().prompt_for_task_type(planning.TestTaskType.ACT)
     model_tools = (finish_task,)
-    task_input = TaskAgentInput(
+    task_context = TaskAgentContext(
         task_run_id=str(uuid4()),
         task=planning.TestTask(test_task_id=str(uuid4()), definition=planning.TestTaskDefinition(
             type=planning.TestTaskType.ACT, title="Observe", goal="Observe the target",
             success_criteria=["Expected content is visible"],
         )),
-        previous_task_runs=(), max_cycles=3, image_history_rounds=1,
-        expected_model_profile=model_client.profile_snapshot,
-        expected_prompt_version=prompt.version,
-        resource_catalog=ResourceCatalogSnapshot(),
+        previous_task_runs=(), max_cycles=3,
     )
     return _TaskRuntime(
         artifacts=create_autospec(ArtifactStore, instance=True),
         run_cancellation_event=asyncio.Event(),
-        task_input=task_input,
+        task_context=task_context,
         tools=model_tools, model_client=model_client,
-        model_context_window=ModelContextWindow(model_profile=task_input.expected_model_profile, tools=model_tools),
-        model_image_window=ModelImageWindow(history_rounds=task_input.image_history_rounds),
+        available_skills=[],
+        model_context_window=ModelContextWindow(model_profile=model_client.profile_snapshot, tools=model_tools),
+        model_image_window=ModelImageWindow(history_rounds=1),
         prompt_definition=prompt, model_response_max_attempts=3,
         event_recorder=create_autospec(TaskAgentEventRecorder, instance=True),
     )
@@ -102,12 +100,16 @@ async def test_cancellation_at_model_or_event_boundary_prevents_further_calls(
     ])
     factory = TaskAgentFactory(
         artifacts=task_runtime.artifacts, model_provider=ModelProvider({model.model_id: model}),
-        act_prompt=task_runtime.prompt_definition, judge_prompt=load_prompt("judge"),
-        model_response_max_attempts=1,
+        prompt_catalog=PromptCatalog(),
+        model_response_max_attempts=1, image_history_rounds=1,
     )
     graph, initial = await factory.build(
-        task_input=task_runtime.task_input,
-        tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"),),
+        task_input=TaskAgentInput(
+            task_context=task_runtime.task_context,
+            tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"),),
+            resource_catalog=ResourceCatalogSnapshot(),
+            model_profile_id=model.profile_snapshot.profile_id,
+        ),
         run_cancellation_event=task_runtime.run_cancellation_event, checkpointer=None,
         event_recorder=event_recorder,
     )
@@ -142,12 +144,16 @@ async def test_native_timeout_returns_to_model_without_waiting_for_late_result(t
     model = ScriptedChatModelClient(turns=[tool_turn(1, "observe"), finish_turn(2, "blocked")])
     factory = TaskAgentFactory(
         artifacts=task_runtime.artifacts, model_provider=ModelProvider({model.model_id: model}),
-        act_prompt=task_runtime.prompt_definition, judge_prompt=load_prompt("judge"),
-        tool_call_timeout_seconds=0.05,
+        prompt_catalog=PromptCatalog(),
+        tool_call_timeout_seconds=0.05, image_history_rounds=1,
     )
     graph, initial = await factory.build(
-        task_input=task_runtime.task_input,
-        tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"),),
+        task_input=TaskAgentInput(
+            task_context=task_runtime.task_context,
+            tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"),),
+            resource_catalog=ResourceCatalogSnapshot(),
+            model_profile_id=model.profile_snapshot.profile_id,
+        ),
         run_cancellation_event=task_runtime.run_cancellation_event, checkpointer=None,
         event_recorder=task_runtime.event_recorder,
     )

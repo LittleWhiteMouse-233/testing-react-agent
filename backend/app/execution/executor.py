@@ -15,9 +15,7 @@ from app.domain.errors import (
     describe_exception,
     ToolCallError,
     ModelContextBudgetExceeded,
-    ModelProfileMismatch,
     ModelCallTimeout,
-    PromptVersionMismatch,
 )
 from app.domain.execution import (
     ExecutionErrorEvent,
@@ -31,8 +29,8 @@ from app.domain.execution import (
     TestRunVerdict,
     aggregate_test_run_verdict,
 )
-from app.domain.planning import TestTask, TestTaskType
-from app.execution.task_agent import TaskAgentFactory, TaskAgentInput
+from app.domain.planning import TestTask
+from app.execution.task_agent import TaskAgentContext, TaskAgentFactory, TaskAgentInput
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.event_stream.projector import project_run_message
@@ -78,27 +76,19 @@ class RunExecutor:
                             detail.test_plan.content.tasks[index + 1 :]
                         )
                         task_input = TaskAgentInput(
-                            task_run_id=active_task.id,
-                            task=test_task,
-                            max_cycles=(detail.environment.act_max_cycles
-                                        if test_task.definition.type == TestTaskType.ACT
-                                        else detail.environment.judge_max_cycles),
-                            image_history_rounds=detail.environment.image_history_rounds,
-                            previous_task_runs=tuple(completed),
-                            expected_model_profile=(
-                                detail.environment.execution_model
+                            task_context=TaskAgentContext(
+                                task_run_id=active_task.id,
+                                task=test_task,
+                                previous_task_runs=tuple(completed),
+                                max_cycles=detail.environment.max_cycles_by_task_type[test_task.definition.type],
                             ),
-                            expected_prompt_version=(
-                                detail.environment.act_prompt_version
-                                if test_task.definition.type == TestTaskType.ACT
-                                else detail.environment.judge_prompt_version
-                            ),
+                            tools=tools,
                             resource_catalog=detail.environment.resource_catalog,
+                            model_profile_id=detail.environment.execution_model.profile_id,
                         )
                         completion = await self._execute_task(
                             test_run_id=test_run_id,
                             task_input=task_input,
-                            tools=tools,
                             run_cancellation_event=run_cancellation_event,
                             checkpointer=checkpointer,
                         )
@@ -167,24 +157,23 @@ class RunExecutor:
         *,
         test_run_id: str,
         task_input: TaskAgentInput,
-        tools: tuple[BaseTool, ...],
         run_cancellation_event: asyncio.Event,
         checkpointer: BaseCheckpointSaver[Any],
     ) -> TaskAgentCompletion:
+        task_context = task_input.task_context
         graph, initial = await self.agent_factory.build(
             task_input=task_input,
-            tools=tools,
             run_cancellation_event=run_cancellation_event,
             checkpointer=checkpointer,
             event_recorder=TaskAgentEventRecorder(
-                repository=self.repository, test_run_id=test_run_id, task_run_id=task_input.task_run_id,
+                repository=self.repository, test_run_id=test_run_id, task_run_id=task_context.task_run_id,
             ),
         )
         completion: TaskAgentCompletion | None = None
         async for part in graph.astream(
             initial,
-            config={"configurable": {"thread_id": f"task-run:{task_input.task_run_id}"},
-                    "recursion_limit": task_input.max_cycles * 8 + 20},
+            config={"configurable": {"thread_id": f"task-run:{task_context.task_run_id}"},
+                    "recursion_limit": task_context.max_cycles * 8 + 20},
             # LangGraph 1.2.9 re-raises handled errors with custom streams (#8608).
             # Product events are awaited directly; framework State uses updates only.
             stream_mode="updates",
@@ -192,7 +181,7 @@ class RunExecutor:
             durability="exit",
         ):
             completion = await self._consume_updates(
-                test_run_id, task_input.task_run_id, part["data"], completion
+                test_run_id, task_context.task_run_id, part["data"], completion
             )
         if completion is None:
             raise RuntimeError("TaskAgent ended without TaskAgentCompletion")
@@ -262,10 +251,6 @@ class RunExecutor:
     def _reason_for_exception(exc: Exception) -> ReasonCode:
         if isinstance(exc, ModelCallTimeout):
             return ReasonCode.MODEL_UNAVAILABLE
-        if isinstance(exc, PromptVersionMismatch):
-            return ReasonCode.PROMPT_VERSION_MISMATCH
-        if isinstance(exc, ModelProfileMismatch):
-            return ReasonCode.MODEL_PROFILE_MISMATCH
         if isinstance(exc, ModelContextBudgetExceeded):
             return ReasonCode.MODEL_CONTEXT_EXCEEDED
         if isinstance(exc, (ToolCallError, MCPError, TimeoutError)):

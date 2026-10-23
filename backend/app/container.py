@@ -11,15 +11,17 @@ from app.llm import (
     ScriptedChatModelClient,
 )
 from app.config import Settings
+from app.domain.activity import AgentActivity
 from app.event_stream import EventBus, RunEventWriter
 from app.domain.planning.events import PlanningEvent
+from app.domain.planning import TestTaskType
 from app.execution.executor import RunExecutor
 from app.execution.run_service import RunService
 from app.execution.task_agent import TaskAgentFactory
 from app.persistence.db import build_engine, build_session_factory
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.planning import PlanningGraph, PlanningService
-from app.prompts import load_prompt_catalog
+from app.prompts import PromptCatalog
 from app.reporting import ReportService
 from app.mcp import MCPClientProvider
 from app.skill import SkillResourceProvider
@@ -42,7 +44,7 @@ class Container:
         self.mcp_clients = MCPClientProvider(settings.mcp_config_path)
         self.tools = MCPToolProvider(self.mcp_clients)
         self.skills = SkillResourceProvider(settings.skills_dir, self.mcp_clients)
-        prompt_catalog = load_prompt_catalog()
+        prompt_catalog = PromptCatalog()
         model_clients_by_id: dict[str, ChatModelClient] = {}
         for profile in settings.llm_profiles:
             if profile.mode == "real":
@@ -59,7 +61,7 @@ class Container:
             planning_model_id=settings.planning_model_id,
             execution_model_id=settings.execution_model_id,
         )
-        self.planning_graph = PlanningGraph(prompt_catalog.planner)
+        self.planning_graph = PlanningGraph(prompt_catalog.prompt_for_activity(AgentActivity.PLANNING))
         self.repository = SqlAlchemyRunRepository(self.sessions, self.run_event_writer)
         self.test_case_lock = TestCaseLock()
         self.planning = PlanningService(
@@ -72,11 +74,11 @@ class Container:
         self.agent_factory = TaskAgentFactory(
             artifacts=self.artifacts,
             model_provider=self.model_provider,
-            act_prompt=prompt_catalog.act,
-            judge_prompt=prompt_catalog.judge,
+            prompt_catalog=prompt_catalog,
             tool_call_timeout_seconds=settings.tool_call_timeout_seconds,
             model_call_max_attempts=settings.execution_model_call_max_attempts,
             model_response_max_attempts=settings.execution_model_response_max_attempts,
+            image_history_rounds=settings.image_history_rounds,
         )
         self.executor = RunExecutor(
             repository=self.repository,
@@ -89,14 +91,14 @@ class Container:
             executor=self.executor,
             model_provider=self.model_provider,
             app_version=settings.app_version,
-            act_prompt=prompt_catalog.act,
-            judge_prompt=prompt_catalog.judge,
+            prompt_catalog=prompt_catalog,
             mcp_clients=self.mcp_clients,
             tools=self.tools,
             skills=self.skills,
             discovery_timeout_seconds=settings.tool_call_timeout_seconds,
-            act_max_cycles=settings.act_max_cycles,
-            judge_max_cycles=settings.judge_max_cycles,
-            image_history_rounds=settings.image_history_rounds,
+            max_cycles_by_task_type={
+                TestTaskType.ACT: settings.act_max_cycles,
+                TestTaskType.JUDGE: settings.judge_max_cycles,
+            },
         )
         self.reports = ReportService(partial(read_test_run_report, self.sessions), self.artifacts)

@@ -75,10 +75,13 @@ class PlanningService:
                     user_input=user_input,
                     on_progress=attempt_progress,
                 )
+                prompt_definition = self.planning_graph.prompt_definition
                 context = TestPlanPlanningContext(
                     test_case_content=test_case.content,
                     planning_model=model_client.profile_snapshot,
-                    planning_prompt_version=self.planning_graph.prompt_definition.version,
+                    planning_prompt_fingerprint=(
+                        prompt_definition.fingerprint if prompt_definition is not None else None
+                    ),
                     user_input=user_input,
                 )
                 await stage("planning.saving")

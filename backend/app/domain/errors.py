@@ -47,18 +47,5 @@ class TestCaseHasActiveRun(RuntimeError):
     """用例关联待执行或运行中的记录，暂不允许归档。"""
 
 
-class PromptVersionMismatch(RuntimeError):
-    """由执行 factory 在可用 prompt 与 TestRun environment snapshot 不一致时产生。"""
-
-    def __init__(self, *, prompt_name: str, expected: str, actual: str) -> None:
-        super().__init__(
-            f"Prompt {prompt_name} version mismatch: expected {expected}, got {actual}"
-        )
-
-
-class ModelProfileMismatch(RuntimeError):
-    """由执行 factory 在 profile ID 对应配置与 TestRun environment snapshot 漂移时产生。"""
-
-
 class ModelContextBudgetExceeded(RuntimeError):
     """由 ModelContextWindow 在必要上下文或固定工具无法装入模型输入预算时产生。"""

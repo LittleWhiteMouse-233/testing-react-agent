@@ -92,10 +92,8 @@ def run_environment_snapshot() -> RunEnvironmentSnapshot:
         tool_catalog=ToolCatalogSnapshot(tools=[]),
         resource_catalog=ResourceCatalogSnapshot(),
         execution_model=model_snapshot(),
-        act_max_cycles=30,
-        judge_max_cycles=10,
-        act_prompt_version="act-v1",
-        judge_prompt_version="judge-v1",
+        max_cycles_by_task_type={TaskType.ACT: 30, TaskType.JUDGE: 10},
+        prompt_fingerprints_by_task_type={TaskType.ACT: "act-v1", TaskType.JUDGE: "judge-v1"},
         app_version="0.1.0",
         execution_protocol_version="7",
     )
@@ -122,7 +120,7 @@ def planning_context() -> PlanningContext:
     return PlanningContext(
         test_case_content=CaseContent(name="Case", source_text="Check TV"),
         planning_model=model_snapshot(),
-        planning_prompt_version="planner-v1",
+        planning_prompt_fingerprint="planning-fingerprint",
     )
 
 
@@ -175,6 +173,26 @@ def test_every_business_json_uses_the_central_adapter() -> None:
     invalid_snapshot["execution_protocol_version"] = "1"
     with pytest.raises(ValidationError):
         load_test_run_environment_snapshot(invalid_snapshot)
+
+
+@pytest.mark.parametrize("field_name,configuration", [
+    ("max_cycles_by_task_type", {}),
+    ("max_cycles_by_task_type", {"act": 30}),
+    ("max_cycles_by_task_type", {"act": 30, "unknown": 10}),
+    ("max_cycles_by_task_type", {"act": 0, "judge": 10}),
+    ("max_cycles_by_task_type", {"act": 30, "judge": 101}),
+    ("prompt_fingerprints_by_task_type", {}),
+    ("prompt_fingerprints_by_task_type", {"judge": "judge-v1"}),
+    ("prompt_fingerprints_by_task_type", {"unknown": "act-v1", "judge": "judge-v1"}),
+    ("prompt_fingerprints_by_task_type", {"act": "", "judge": "judge-v1"}),
+])
+def test_run_environment_rejects_incomplete_or_invalid_task_type_configuration(
+    field_name: str, configuration: dict[str, int | str],
+) -> None:
+    snapshot = dump_test_run_environment_snapshot(run_environment_snapshot())
+    snapshot[field_name] = configuration
+    with pytest.raises(ValidationError):
+        load_test_run_environment_snapshot(snapshot)
 
 
 def test_public_message_projection_never_serializes_image_base64() -> None:

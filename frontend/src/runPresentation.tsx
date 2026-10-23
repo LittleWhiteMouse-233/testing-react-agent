@@ -1,5 +1,5 @@
 import { Button, Empty, Image, Select, Switch } from "antd";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { StoredRunEvent, TaskRun, TestRunListResponse, TestRunReport, TestTaskDefinition } from "./api/contracts";
 import { artifactUrl } from "./api/client";
 
@@ -48,7 +48,8 @@ export function taskStatus(taskRun: TaskRun | undefined, finished: boolean) {
 }
 
 export function taskMaxCycles(type: TestTaskDefinition["type"], environment: TestRunReport["detail"]["environment"]) {
-  return type === "act" ? environment.act_max_cycles : environment.judge_max_cycles;
+  // Snapshot validation requires a budget for every registered task type.
+  return environment.max_cycles_by_task_type[type]!;
 }
 
 export function taskCycleCount(taskRun: TaskRun, events: StoredRunEvent[]) {
@@ -143,8 +144,10 @@ export function RunResources({ report }: { report: TestRunReport }) {
     <section className="resource-card"><h3>模型与提示词</h3><dl>
       <dt>执行模型</dt><dd>{environment.execution_model.model}</dd>
       <dt>配置</dt><dd>{environment.execution_model.profile_id}</dd>
-      <dt>Act</dt><dd>{environment.act_prompt_version}</dd><dt>Judge</dt><dd>{environment.judge_prompt_version}</dd>
-      <dt>规划</dt><dd>{plan.planning_context.planning_prompt_version}</dd>
+      {Object.entries(environment.prompt_fingerprints_by_task_type).map(([taskType, fingerprint]) => <Fragment key={taskType}>
+        <dt>{taskType.charAt(0).toUpperCase() + taskType.slice(1)}</dt><dd>{fingerprint ?? "未定义"}</dd>
+      </Fragment>)}
+      <dt>规划</dt><dd>{plan.planning_context.planning_prompt_fingerprint ?? "未定义"}</dd>
     </dl></section>
   </div>;
 }

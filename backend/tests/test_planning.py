@@ -19,11 +19,12 @@ from langchain_openai import ChatOpenAI
 
 from app.config import LLMProfileSettings
 from app.container import Container
+from app.domain.activity import AgentActivity
 from app.domain.errors import PlanningFailure
 from app.domain.planning import TestCaseContent as CaseContent
 from app.llm import ChatModelClient, RealChatModelClient, ScriptedChatModelClient
 from app.planning.graph import PlanDraft, PlanningGraph
-from app.prompts import load_prompt
+from app.prompts import PromptCatalog
 from mcp_support import build_client
 
 
@@ -187,7 +188,7 @@ async def test_real_planning_json_mode_validates_responses(
     monkeypatch: pytest.MonkeyPatch, invalid_attempts: int,
 ) -> None:
     case = CaseContent(name="设置", source_text="进入设置并检查标题")
-    expected_plan = await PlanningGraph(load_prompt("planner")).generate(
+    expected_plan = await PlanningGraph(PromptCatalog().prompt_for_activity(AgentActivity.PLANNING)).generate(
         case, model_client=ScriptedChatModelClient(),
     )
     requests: list[httpx.Request] = []
@@ -224,7 +225,7 @@ async def test_real_planning_json_mode_validates_responses(
             id="planner", mode="real", model="deepseek-chat",
             base_url="https://model.invalid/v1", api_key="test-key",
         ))
-        graph = PlanningGraph(load_prompt("planner"))
+        graph = PlanningGraph(PromptCatalog().prompt_for_activity(AgentActivity.PLANNING))
         if invalid_attempts == 3:
             with pytest.raises(PlanningFailure, match="3 次尝试后失败"):
                 await graph.generate(case, model_client=model)
@@ -254,7 +255,7 @@ async def test_planning_progress_distinguishes_model_boundary_failures(monkeypat
             api_key="test-key", timeout_seconds=0.1,
         ))
         with pytest.raises(PlanningFailure):
-            await PlanningGraph(load_prompt("planner")).generate(
+            await PlanningGraph(PromptCatalog().prompt_for_activity(AgentActivity.PLANNING)).generate(
                 CaseContent(name="调用失败", source_text="检查画面"), model_client=model, on_progress=observe,
             )
     failures = [event for event in progress if event["type"] == "planning.attempt_failed"]

@@ -58,7 +58,7 @@ function savedPlan(version = 1, userInput: string | null = null): TestPlan {
     planning_context: {
       test_case_content: testCase.content,
       user_input: userInput,
-      planning_prompt_version: "planner-v2",
+      planning_prompt_fingerprint: "planning-fingerprint-2",
       planning_model: {
         profile_id: "default", provider: "scripted", model: "deterministic",
         base_url: null, temperature: 0, timeout_seconds: 60,
@@ -656,7 +656,7 @@ it("shows the saved planning input in the online report", async () => {
       created_at: plan.created_at, started_at: plan.created_at, finished_at: plan.created_at
     }, environment: { execution_model: plan.planning_context.planning_model, tool_catalog: { tools: [] },
       resource_catalog: { local_root: null, resources: [], templates: [] },
-      act_prompt_version: "act-v1", judge_prompt_version: "judge-v1", app_version: "0.1.0", execution_protocol_version: "7", act_max_cycles: 30, judge_max_cycles: 10, image_history_rounds: 3
+      prompt_fingerprints_by_task_type: { act: "act-v1", judge: "judge-v1" }, app_version: "0.1.0", execution_protocol_version: "7", max_cycles_by_task_type: { act: 30, judge: 10 }
     }, task_runs: [] },
     artifacts: [], events: []
   };

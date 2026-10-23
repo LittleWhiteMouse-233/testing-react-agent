@@ -401,7 +401,8 @@ def test_run_freezes_metadata_and_preserves_skill_images_as_run_data(tmp_path: P
         messages = [entry["event"]["message"] for entry in report["events"] if entry["event"]["type"] == "message.appended"]
         initial = next(entry for entry in messages if entry["role"] == "human")
         initial_text = "\n".join(block["text"] for block in initial["content"] if block["type"] == "text")
-        assert '"name": "Parent"' in initial_text and "Child instructions" not in initial_text
+        assert {skill["name"] for skill in json.loads(initial_text)["available_skills"]} == {"Parent", "Other"}
+        assert "Child instructions" not in initial_text
         assert any(entry["role"] == "tool" and entry["name"] == "load_skill" for entry in messages)
         second_task_messages = [entry["event"]["message"] for entry in report["events"]
                                 if entry["event"]["type"] == "message.appended"

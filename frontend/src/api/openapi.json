@@ -692,8 +692,6 @@
           "process_restarted",
           "global_fail_fast",
           "user_cancelled",
-          "prompt_version_mismatch",
-          "model_profile_mismatch",
           "model_context_exceeded",
           "unexpected_error"
         ],
@@ -1832,10 +1830,17 @@
           "planning_model": {
             "$ref": "#/components/schemas/LLMProfileSnapshot"
           },
-          "planning_prompt_version": {
-            "minLength": 1,
-            "title": "Planning Prompt Version",
-            "type": "string"
+          "planning_prompt_fingerprint": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planning Prompt Fingerprint"
           },
           "test_case_content": {
             "$ref": "#/components/schemas/TestCaseContent"
@@ -1855,7 +1860,7 @@
         "required": [
           "test_case_content",
           "planning_model",
-          "planning_prompt_version"
+          "planning_prompt_fingerprint"
         ],
         "title": "TestPlanPlanningContext",
         "type": "object"
@@ -2021,17 +2026,6 @@
         "additionalProperties": false,
         "description": "RunService 在 TestRun 创建时冻结且执行器必须遵守的环境事实。",
         "properties": {
-          "act_max_cycles": {
-            "maximum": 100.0,
-            "minimum": 1.0,
-            "title": "Act Max Cycles",
-            "type": "integer"
-          },
-          "act_prompt_version": {
-            "minLength": 1,
-            "title": "Act Prompt Version",
-            "type": "string"
-          },
           "app_version": {
             "minLength": 1,
             "title": "App Version",
@@ -2045,22 +2039,35 @@
             "title": "Execution Protocol Version",
             "type": "string"
           },
-          "image_history_rounds": {
-            "default": 3,
-            "minimum": 1.0,
-            "title": "Image History Rounds",
-            "type": "integer"
+          "max_cycles_by_task_type": {
+            "additionalProperties": {
+              "maximum": 100.0,
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/TestTaskType"
+            },
+            "title": "Max Cycles By Task Type",
+            "type": "object"
           },
-          "judge_max_cycles": {
-            "maximum": 100.0,
-            "minimum": 1.0,
-            "title": "Judge Max Cycles",
-            "type": "integer"
-          },
-          "judge_prompt_version": {
-            "minLength": 1,
-            "title": "Judge Prompt Version",
-            "type": "string"
+          "prompt_fingerprints_by_task_type": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/TestTaskType"
+            },
+            "title": "Prompt Fingerprints By Task Type",
+            "type": "object"
           },
           "resource_catalog": {
             "$ref": "#/components/schemas/ResourceCatalogSnapshot"
@@ -2073,10 +2080,8 @@
           "tool_catalog",
           "resource_catalog",
           "execution_model",
-          "act_max_cycles",
-          "judge_max_cycles",
-          "act_prompt_version",
-          "judge_prompt_version",
+          "max_cycles_by_task_type",
+          "prompt_fingerprints_by_task_type",
           "app_version",
           "execution_protocol_version"
         ],
@@ -2349,7 +2354,7 @@
         "type": "object"
       },
       "TestTaskType": {
-        "description": "计划任务的业务类型；执行过程据此选择 Agent activity。",
+        "description": "计划任务的业务类型；执行过程据此选择提示词与轮次上限。",
         "enum": [
           "act",
           "judge"

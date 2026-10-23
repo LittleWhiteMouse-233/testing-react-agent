@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.ids import TaskRunId, TestPlanId, TestRunId, TestTaskId
-from app.domain.planning import TestPlan
+from app.domain.planning import TestPlan, TestTaskType
 from app.domain.resources.llm import LLMProfileSnapshot
 from app.domain.resources.tools import ToolCatalogSnapshot
 from app.domain.resources.static_resources import ResourceCatalogSnapshot
@@ -57,8 +57,6 @@ class ReasonCode(StrEnum):
     PROCESS_RESTARTED = "process_restarted"
     GLOBAL_FAIL_FAST = "global_fail_fast"
     USER_CANCELLED = "user_cancelled"
-    PROMPT_VERSION_MISMATCH = "prompt_version_mismatch"
-    MODEL_PROFILE_MISMATCH = "model_profile_mismatch"
     MODEL_CONTEXT_EXCEEDED = "model_context_exceeded"
     UNEXPECTED_ERROR = "unexpected_error"
 
@@ -80,13 +78,21 @@ class TestRunEnvironmentSnapshot(BaseModel):
     tool_catalog: ToolCatalogSnapshot
     resource_catalog: ResourceCatalogSnapshot
     execution_model: LLMProfileSnapshot
-    act_max_cycles: int = Field(ge=1, le=100)
-    judge_max_cycles: int = Field(ge=1, le=100)
-    image_history_rounds: int = Field(default=3, ge=1)
-    act_prompt_version: str = Field(min_length=1)
-    judge_prompt_version: str = Field(min_length=1)
+    max_cycles_by_task_type: dict[TestTaskType, Annotated[int, Field(ge=1, le=100)]]
+    prompt_fingerprints_by_task_type: dict[TestTaskType, Annotated[str, Field(min_length=1)] | None]
     app_version: str = Field(min_length=1)
     execution_protocol_version: Literal["7"]
+
+    @model_validator(mode="after")
+    def task_types_are_complete(self) -> "TestRunEnvironmentSnapshot":
+        required_task_types = set(TestTaskType)
+        for field_name, configured_task_types in (
+            ("max_cycles_by_task_type", self.max_cycles_by_task_type.keys()),
+            ("prompt_fingerprints_by_task_type", self.prompt_fingerprints_by_task_type.keys()),
+        ):
+            if set(configured_task_types) != required_task_types:
+                raise ValueError(f"{field_name} must contain exactly the registered task types")
+        return self
 
 
 class TestRun(BaseModel):

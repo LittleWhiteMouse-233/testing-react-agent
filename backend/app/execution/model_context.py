@@ -15,7 +15,7 @@ from app.skill import LOAD_SKILL_TOOL_NAME
 
 
 class ModelContextWindow:
-    """Bind a task's frozen model profile and complete tools without retaining messages."""
+    """Bind the selected client's model profile and complete tools without retaining messages."""
 
     def __init__(
         self, *, model_profile: LLMProfileSnapshot, tools: tuple[BaseTool, ...],
@@ -99,7 +99,7 @@ class ModelContextWindow:
 
 
 class ModelImageWindow:
-    """Bind a task's frozen image-round limit without retaining messages."""
+    """Apply the application's image-round retention policy without retaining messages."""
 
     def __init__(self, *, history_rounds: int) -> None:
         if history_rounds < 1:

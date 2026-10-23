@@ -18,7 +18,7 @@ from app.domain.resources.llm import LLMProfileSnapshot
 
 
 class TestTaskType(StrEnum):
-    """计划任务的业务类型；执行过程据此选择 Agent activity。"""
+    """计划任务的业务类型；执行过程据此选择提示词与轮次上限。"""
 
     ACT = "act"
     JUDGE = "judge"
@@ -121,7 +121,7 @@ class TestPlanPlanningContext(BaseModel):
 
     test_case_content: TestCaseContent
     planning_model: LLMProfileSnapshot
-    planning_prompt_version: str = Field(min_length=1)
+    planning_prompt_fingerprint: str | None = Field(min_length=1)
     user_input: str | None = None
 
 

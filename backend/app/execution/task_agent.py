@@ -29,9 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 from app.domain.errors import (
     ToolCallError,
     ModelContextBudgetExceeded,
-    ModelProfileMismatch,
     ModelCallTimeout,
-    PromptVersionMismatch,
 )
 from app.domain.execution import (
     TaskAgentCompletion,
@@ -40,16 +38,15 @@ from app.domain.execution import (
     TaskRunResult,
     TaskRunStatus,
 )
-from app.domain.resources.llm import LLMProfileSnapshot
-from app.domain.resources.static_resources import ResourceCatalogSnapshot
+from app.domain.resources.static_resources import ResourceCatalogSnapshot, ResourceDefinitionSnapshot
 from app.skill import top_level_skills
-from app.domain.ids import TaskRunId
+from app.domain.ids import ModelProfileId, TaskRunId
 from app.domain.planning import TestTask, TestTaskType
 from app.execution.model_context import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.artifacts import ArtifactStore
 from app.llm import ChatModelClient, ModelProvider
-from app.prompts import PromptDefinition
+from app.prompts import PromptCatalog, PromptDefinition
 
 
 _JSON_VALUE = TypeAdapter(JsonValue)
@@ -81,8 +78,8 @@ async def finish_task(status: str, summary: str) -> str:
 
 
 @dataclass(frozen=True)
-class TaskAgentInput:
-    """Agent input projected by the executor from persisted task/environment facts.
+class TaskAgentContext:
+    """Runtime context projected by the executor from persisted task/environment facts.
 
     This task-local input is not persisted; the plan, run environment, and
     completed TaskRuns remain authoritative. Live dependencies stay separate.
@@ -92,47 +89,49 @@ class TaskAgentInput:
     task: TestTask
     previous_task_runs: tuple[TaskRun, ...]
     max_cycles: int
-    image_history_rounds: int
-    expected_model_profile: LLMProfileSnapshot
-    expected_prompt_version: str
+
+
+@dataclass(frozen=True)
+class TaskAgentInput:
+    """Factory input with task facts, external capabilities and the run's model selection."""
+
+    task_context: TaskAgentContext
+    tools: tuple[BaseTool, ...]
     resource_catalog: ResourceCatalogSnapshot
+    model_profile_id: ModelProfileId
 
 
 class TaskAgentFactory:
     def __init__(
         self, *, artifacts: ArtifactStore, model_provider: ModelProvider,
-        act_prompt: PromptDefinition, judge_prompt: PromptDefinition,
+        prompt_catalog: PromptCatalog,
         tool_call_timeout_seconds: float = 120,
         model_call_max_attempts: int = 3, model_response_max_attempts: int = 3,
+        image_history_rounds: int = 3,
     ) -> None:
         self.artifacts = artifacts
         self.model_provider = model_provider
-        self.prompts_by_task_type = {TestTaskType.ACT: act_prompt, TestTaskType.JUDGE: judge_prompt}
+        self.prompt_catalog = prompt_catalog
         self.tool_call_timeout_seconds = tool_call_timeout_seconds
         self.model_call_max_attempts = model_call_max_attempts
         self.model_response_max_attempts = model_response_max_attempts
+        self.image_history_rounds = image_history_rounds
 
     async def build(
-        self, *, task_input: TaskAgentInput, tools: tuple[BaseTool, ...],
+        self, *, task_input: TaskAgentInput,
         run_cancellation_event: asyncio.Event, checkpointer: BaseCheckpointSaver[Any] | None,
         event_recorder: TaskAgentEventRecorder,
     ) -> tuple[Any, TaskAgentGraphState]:
-        try:
-            model_client = self.model_provider.client_by_id(task_input.expected_model_profile.profile_id)
-        except LookupError as exc:
-            raise ModelProfileMismatch(str(exc)) from exc
-        if model_client.profile_snapshot != task_input.expected_model_profile:
-            raise ModelProfileMismatch("Resolved model does not match the TestRun environment snapshot")
-        prompt = self.prompts_by_task_type[task_input.task.definition.type]
-        if prompt.version != task_input.expected_prompt_version:
-            raise PromptVersionMismatch(expected=task_input.expected_prompt_version, actual=prompt.version, prompt_name=prompt.name)
-        model_tools: tuple[BaseTool, ...] = (*tools, finish_task)
+        model_client = self.model_provider.client_by_id(task_input.model_profile_id)
+        prompt = self.prompt_catalog.prompt_for_task_type(task_input.task_context.task.definition.type)
+        model_tools: tuple[BaseTool, ...] = (*task_input.tools, finish_task)
         runtime = _TaskRuntime(
             artifacts=self.artifacts, run_cancellation_event=run_cancellation_event,
-            task_input=task_input,
-            tools=model_tools, model_client=model_client, prompt_definition=prompt,
-            model_context_window=ModelContextWindow(model_profile=task_input.expected_model_profile, tools=model_tools),
-            model_image_window=ModelImageWindow(history_rounds=task_input.image_history_rounds),
+            task_context=task_input.task_context,
+            model_client=model_client, prompt_definition=prompt, tools=model_tools,
+            available_skills=top_level_skills(task_input.resource_catalog),
+            model_context_window=ModelContextWindow(model_profile=model_client.profile_snapshot, tools=model_tools),
+            model_image_window=ModelImageWindow(history_rounds=self.image_history_rounds),
             model_response_max_attempts=self.model_response_max_attempts,
             event_recorder=event_recorder,
         )
@@ -179,32 +178,33 @@ def _retry_model_error(exc: Exception) -> bool:
 class _TaskRuntime:
     artifacts: ArtifactStore
     run_cancellation_event: asyncio.Event
-    task_input: TaskAgentInput
-    tools: tuple[BaseTool, ...]
+    task_context: TaskAgentContext
     model_client: ChatModelClient
+    prompt_definition: PromptDefinition | None
+    tools: tuple[BaseTool, ...]
+    available_skills: list[ResourceDefinitionSnapshot]
     model_context_window: ModelContextWindow
     model_image_window: ModelImageWindow
-    prompt_definition: PromptDefinition
     model_response_max_attempts: int
     event_recorder: TaskAgentEventRecorder
     bound_model: Any = field(default=None, init=False)
 
     async def initialize(self, state: TaskAgentGraphState) -> dict[str, object]:
         return {"messages": [
-            SystemMessage(content=self.prompt_definition.text),
+            SystemMessage(content=self.prompt_definition.text if self.prompt_definition is not None else ""),
             HumanMessage(content=json.dumps({
-                "task": self.task_input.task.model_dump(mode="json"),
-                "max_cycles": self.task_input.max_cycles,
-                "previous_task_runs": [run.model_dump(mode="json") for run in self.task_input.previous_task_runs],
+                "task": self.task_context.task.model_dump(mode="json"),
+                "max_cycles": self.task_context.max_cycles,
+                "previous_task_runs": [run.model_dump(mode="json") for run in self.task_context.previous_task_runs],
                 "available_skills": [entry.model_dump(include={"source_id", "uri", "name", "description"})
-                                     for entry in top_level_skills(self.task_input.resource_catalog)],
+                                     for entry in self.available_skills],
             }, ensure_ascii=False)),
         ], "route": "cycle_guard"}
 
     async def cycle_guard(self, state: TaskAgentGraphState) -> dict[str, object]:
         if self.run_cancellation_event.is_set():
             return self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"])
-        if state["cycle_count"] >= self.task_input.max_cycles:
+        if state["cycle_count"] >= self.task_context.max_cycles:
             return self._completion(TaskRunStatus.BLOCKED, ReasonCode.CYCLE_LIMIT,
                                     "Decision round limit reached", state["cycle_count"])
         cycle_count = state["cycle_count"] + 1
@@ -253,7 +253,7 @@ class _TaskRuntime:
         if self.run_cancellation_event.is_set():
             return {"messages": repairs,
                     **self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"])}
-        if state["cycle_count"] >= self.task_input.max_cycles:
+        if state["cycle_count"] >= self.task_context.max_cycles:
             return {"messages": repairs, "route": "cycle_guard"}
         if state["model_response_attempt"] >= self.model_response_max_attempts:
             return {"messages": repairs,
@@ -298,7 +298,7 @@ class _TaskRuntime:
                         raise ValueError("Images must contain inline base64 and MIME type")
                     raw = await asyncio.to_thread(base64.b64decode, encoded, validate=True)
                     artifact = await self.artifacts.save_image(
-                        task_run_id=self.task_input.task_run_id, content=raw, mime_type=mime_type,
+                        task_run_id=self.task_context.task_run_id, content=raw, mime_type=mime_type,
                     )
                     saved_block["id"] = artifact.id
                     image_references[encoded] = f"[Image artifact {artifact.id}]"
@@ -346,10 +346,10 @@ class _TaskRuntime:
             terminal = FinishTaskRunToolInput.model_validate(call["args"])
             status = TaskRunStatus(terminal.status)
             reason = {TaskRunStatus.PASSED: ReasonCode.COMPLETED, TaskRunStatus.BLOCKED: ReasonCode.AGENT_BLOCKED,
-                      TaskRunStatus.FAILED: ReasonCode.GOAL_UNREACHABLE if self.task_input.task.definition.type == TestTaskType.ACT else ReasonCode.ASSERTION_FAILED}[status]
+                      TaskRunStatus.FAILED: ReasonCode.GOAL_UNREACHABLE if self.task_context.task.definition.type == TestTaskType.ACT else ReasonCode.ASSERTION_FAILED}[status]
             update.update(self._completion(status, reason, terminal.summary, state["cycle_count"]))
         elif tool_message.status == "error":
-            if (state["cycle_count"] < self.task_input.max_cycles
+            if (state["cycle_count"] < self.task_context.max_cycles
                     and state["model_response_attempt"] >= self.model_response_max_attempts):
                 update.update(self._completion(TaskRunStatus.BLOCKED, ReasonCode.TOOL_FAILED, tool_message.text, state["cycle_count"]))
         else:
