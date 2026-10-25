@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import create_autospec
 from uuid import uuid4
@@ -15,13 +17,15 @@ from langsmith import tracing_context
 from app.artifacts import ArtifactStore
 from app.domain.resources.static_resources import ResourceCatalogSnapshot
 from app.domain import planning
+from app.domain.execution import Artifact, ArtifactType
 from app.domain.errors import ToolCallError, describe_exception
 from app.execution.model_context import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent import TaskAgentContext, TaskAgentFactory, TaskAgentGraphState, TaskAgentInput, _TaskRuntime, finish_task
 from app.execution.task_agent_events import TaskAgentEventRecorder
+from app.event_stream.projector import project_run_message
 from app.llm import ModelProvider, ScriptedChatModelClient
 from app.prompts import PromptCatalog
-from mcp_support import finish_turn, tool_turn
+from mcp_support import PNG_BASE64, finish_turn, tool_turn
 
 
 @pytest.fixture
@@ -35,7 +39,7 @@ def task_runtime() -> _TaskRuntime:
             type=planning.TestTaskType.ACT, title="Observe", goal="Observe the target",
             success_criteria=["Expected content is visible"],
         )),
-        previous_task_runs=(), max_cycles=3,
+        memory_task_runs=(), max_cycles=3,
     )
     return _TaskRuntime(
         artifacts=create_autospec(ArtifactStore, instance=True),
@@ -188,6 +192,43 @@ def test_exception_description_preserves_causes_groups_and_suppression() -> None
     failure.__cause__ = None
     failure.__suppress_context__ = True
     assert "hidden context" not in describe_exception(failure, phase="Execution failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["success", "error"])
+async def test_each_image_discloses_its_id_and_keeps_its_public_reference(
+    task_runtime: _TaskRuntime, status: str,
+) -> None:
+    artifacts = [Artifact(
+        id=str(uuid4()), test_run_id=None, task_run_id=task_runtime.task_context.task_run_id,
+        type=ArtifactType.IMAGE, mime_type="image/png", size_bytes=len(base64.b64decode(PNG_BASE64)),
+        sha256="a" * 64, created_at=datetime.now(timezone.utc),
+    ) for _ in range(2)]
+    task_runtime.artifacts.save_image.side_effect = artifacts  # type: ignore[attr-defined]
+    message = ToolMessage(id="images", tool_call_id="call", status=status, content=[
+        {"type": "text", "text": "before"},
+        {"type": "image", "base64": PNG_BASE64, "mime_type": "image/png", "id": "external-id"},
+        {"type": "text", "text": "between"},
+        {"type": "image", "base64": PNG_BASE64, "mime_type": "image/png"},
+        {"type": "text", "text": "after"},
+    ])
+    prepared = await task_runtime._prepare_tool_result(message)
+    blocks = prepared.content_blocks
+    assert [block["type"] for block in blocks] == ["text", "text", "image", "text", "text", "image", "text"]
+    assert [blocks[index].get("text") for index in (0, 1, 3, 4, 6)] == [
+        "before", f"[Image artifact {artifacts[0].id}]", "between", f"[Image artifact {artifacts[1].id}]", "after",
+    ]
+    assert [blocks[index].get("id") for index in (2, 5)] == [artifact.id for artifact in artifacts]
+    assert all("extras" not in blocks[index] for index in (1, 4))
+    assert message.content_blocks[1].get("id") == "external-id"
+    newest = ToolMessage(id="newest", tool_call_id="latest", content=[
+        {"type": "image", "base64": PNG_BASE64, "mime_type": "image/png", "id": str(uuid4())},
+    ])
+    expired = task_runtime.model_image_window.collect_expired_updates([
+        AIMessage(content="first"), prepared, AIMessage(content="latest"), newest,
+    ])[0]
+    assert artifacts[0].id in expired.text and artifacts[1].id in expired.text
+    assert project_run_message(expired) == project_run_message(prepared)
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@ from app.llm.client import profile_snapshot_from_settings
 
 
 PlanDraft = TestPlanContent[TestTaskDefinition]
+ScriptedTurn = AIMessage | dict[str, Any] | Exception | Callable[[list[BaseMessage]], AIMessage]
 
 
 def _default_plan(request: TestCaseContent) -> PlanDraft:
@@ -48,14 +49,14 @@ def _default_plan(request: TestCaseContent) -> PlanDraft:
 
 class ScriptedChatModel(BaseChatModel):
     _plans: deque[Any] = PrivateAttr()
-    _turns: deque[Any] = PrivateAttr()
+    _turns: deque[ScriptedTurn] = PrivateAttr()
     _invocations: list[list[BaseMessage]] = PrivateAttr()
 
     def __init__(
         self,
         *,
         plans: list[PlanDraft | dict[str, Any] | Exception] | None = None,
-        turns: list[AIMessage | dict[str, Any] | Exception] | None = None,
+        turns: list[ScriptedTurn] | None = None,
     ) -> None:
         super().__init__()
         self._plans = deque(plans or [])
@@ -77,9 +78,9 @@ class ScriptedChatModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        return ChatResult(generations=[ChatGeneration(message=self._next_turn())])
+        return ChatResult(generations=[ChatGeneration(message=self._next_turn(messages))])
 
-    def _next_turn(self) -> AIMessage:
+    def _next_turn(self, messages: list[BaseMessage]) -> AIMessage:
         value: Any = (
             self._turns.popleft()
             if self._turns
@@ -90,6 +91,8 @@ class ScriptedChatModel(BaseChatModel):
         )
         if isinstance(value, Exception):
             raise value
+        if callable(value):
+            value = value(messages)
         if isinstance(value, AIMessage):
             return value.model_copy(deep=True)
         if isinstance(value, dict) and "tool_calls" in value:
@@ -107,7 +110,7 @@ class ScriptedChatModel(BaseChatModel):
             tool_calls=[
                 {
                     "name": "finish_task",
-                    "args": {"status": status, "summary": summary},
+                    "args": {"status": status, "summary": summary, "memory": value.get("memory")},
                     "id": f"finish-{status}",
                     "type": "tool_call",
                 }
@@ -123,7 +126,7 @@ class ScriptedChatModel(BaseChatModel):
     ) -> Runnable[Any, AIMessage]:
         async def invoke(messages: list[BaseMessage]) -> AIMessage:
             self._invocations.append(list(messages))
-            return self._next_turn()
+            return self._next_turn(messages)
 
         return RunnableLambda(invoke)
 
@@ -167,7 +170,7 @@ class ScriptedChatModelClient:
         model_id: str = "default",
         timeout_seconds: float = 60,
         plans: list[PlanDraft | dict[str, Any] | Exception] | None = None,
-        turns: list[AIMessage | dict[str, Any] | Exception] | None = None,
+        turns: list[ScriptedTurn] | None = None,
     ) -> None:
         profile = settings or LLMProfileSettings(
             id=model_id,

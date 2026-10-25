@@ -15,7 +15,8 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
 )
-from langchain_core.tools import BaseTool, tool
+from langchain_core.messages.content import ImageContentBlock, create_image_block
+from langchain_core.tools import BaseTool, StructuredTool, ToolException, tool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import NodeError, NodeTimeoutError
 from langgraph.graph import END, START, MessagesState, StateGraph, add_messages
@@ -40,7 +41,7 @@ from app.domain.execution import (
 )
 from app.domain.resources.static_resources import ResourceCatalogSnapshot, ResourceDefinitionSnapshot
 from app.skill import top_level_skills
-from app.domain.ids import ModelProfileId, TaskRunId
+from app.domain.ids import ArtifactId, ModelProfileId, TaskRunId
 from app.domain.planning import TestTask, TestTaskType
 from app.execution.model_context import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent_events import TaskAgentEventRecorder
@@ -50,6 +51,7 @@ from app.prompts import PromptCatalog, PromptDefinition
 
 
 _JSON_VALUE = TypeAdapter(JsonValue)
+READ_IMAGE_ARTIFACT_TOOL_NAME = "read_image_artifact"
 
 
 class TaskAgentGraphState(MessagesState):
@@ -64,14 +66,17 @@ class FinishTaskRunToolInput(BaseModel):
 
     status: Literal["passed", "failed", "blocked"]
     summary: str = Field(min_length=1)
+    memory: str | None = None
 
 
 @tool(args_schema=FinishTaskRunToolInput)
-async def finish_task(status: str, summary: str) -> str:
+async def finish_task(status: str, summary: str, memory: str | None = None) -> str:
     """Finish this task with passed, failed or blocked status.
 
     For every status, summary must describe the observations and reasoning supporting
     the selected conclusion, and how they relate to this task's success criteria.
+    Optionally retain observations needed by later tasks in memory, including actual
+    values, their source and relevant image artifact IDs. Do not copy the full history.
     """
 
     return f"{status}: {summary}"
@@ -87,7 +92,7 @@ class TaskAgentContext:
 
     task_run_id: TaskRunId
     task: TestTask
-    previous_task_runs: tuple[TaskRun, ...]
+    memory_task_runs: tuple[TaskRun, ...]
     max_cycles: int
 
 
@@ -124,7 +129,24 @@ class TaskAgentFactory:
     ) -> tuple[Any, TaskAgentGraphState]:
         model_client = self.model_provider.client_by_id(task_input.model_profile_id)
         prompt = self.prompt_catalog.prompt_for_task_type(task_input.task_context.task.definition.type)
-        model_tools: tuple[BaseTool, ...] = (*task_input.tools, finish_task)
+
+        async def read_image_artifact(artifact_id: ArtifactId) -> list[ImageContentBlock]:
+            """Read an original saved image by its artifact_id within this run.
+
+            Copy the artifact ID disclosed before an image or retained in task memory.
+            This returns a previously saved image, not a fresh observation. A reference
+            image remains a reference; rereading it does not make it an observed target.
+            """
+            try:
+                content, mime_type = await self.artifacts.load_image_for_task(
+                    artifact_id, task_run_id=task_input.task_context.task_run_id,
+                )
+            except LookupError as exc:
+                raise ToolException(str(exc)) from exc
+            return [create_image_block(id=artifact_id, base64=base64.b64encode(content).decode("ascii"), mime_type=mime_type)]
+
+        image_read_tool = StructuredTool.from_function(coroutine=read_image_artifact, handle_tool_error=True)
+        model_tools: tuple[BaseTool, ...] = (*task_input.tools, image_read_tool, finish_task)
         runtime = _TaskRuntime(
             artifacts=self.artifacts, run_cancellation_event=run_cancellation_event,
             task_context=task_input.task_context,
@@ -195,7 +217,9 @@ class _TaskRuntime:
             HumanMessage(content=json.dumps({
                 "task": self.task_context.task.model_dump(mode="json"),
                 "max_cycles": self.task_context.max_cycles,
-                "previous_task_runs": [run.model_dump(mode="json") for run in self.task_context.previous_task_runs],
+                "memory_task_runs": [run.model_dump(mode="json", include={
+                    "id": True, "test_task_id": True, "result": {"memory"},
+                }) for run in self.task_context.memory_task_runs],
                 "available_skills": [entry.model_dump(include={"source_id", "uri", "name", "description"})
                                      for entry in self.available_skills],
             }, ensure_ascii=False)),
@@ -284,8 +308,10 @@ class _TaskRuntime:
             tool_call_id=call["id"], name=call["name"], status="error",
         )]}, goto="after_tools")
 
-    async def _prepare_tool_result(self, result: ToolMessage) -> ToolMessage:
-        """Save images and project content; application failures propagate."""
+    async def _prepare_tool_result(
+        self, result: ToolMessage, *, existing_artifact_id: ArtifactId | None = None,
+    ) -> ToolMessage:
+        """Save new images, disclose image identities and project content."""
         content: list[dict[str, Any]] = []
         image_references: dict[str, str] = {}
         try:
@@ -297,12 +323,16 @@ class _TaskRuntime:
                     if not isinstance(encoded, str) or not isinstance(mime_type, str):
                         raise ValueError("Images must contain inline base64 and MIME type")
                     raw = await asyncio.to_thread(base64.b64decode, encoded, validate=True)
-                    artifact = await self.artifacts.save_image(
-                        task_run_id=self.task_context.task_run_id, content=raw, mime_type=mime_type,
-                    )
-                    saved_block["id"] = artifact.id
-                    image_references[encoded] = f"[Image artifact {artifact.id}]"
+                    artifact_id = existing_artifact_id
+                    if artifact_id is None:
+                        artifact = await self.artifacts.save_image(
+                            task_run_id=self.task_context.task_run_id, content=raw, mime_type=mime_type,
+                        )
+                        artifact_id = artifact.id
+                    saved_block["id"] = artifact_id
+                    image_references[encoded] = f"[Image artifact {artifact_id}]"
                     image_references[f"data:{mime_type};base64,{encoded}"] = image_references[encoded]
+                    content.append({"type": "text", "text": f"[Image artifact {artifact_id}]"})
                 elif block.get("type") != "text":
                     raise ValueError(f"Unsupported tool content block: {block.get('type')!r}")
                 content.append(saved_block)
@@ -334,7 +364,10 @@ class _TaskRuntime:
     async def after_tools(self, state: TaskAgentGraphState) -> dict[str, object]:
         tool_message = state["messages"][-1]
         assert isinstance(tool_message, ToolMessage)
-        tool_message = await self._prepare_tool_result(tool_message)
+        call = _latest_ai_call(state["messages"])
+        existing_artifact_id = (call["args"]["artifact_id"]
+                                if call["name"] == READ_IMAGE_ARTIFACT_TOOL_NAME and tool_message.status == "success" else None)
+        tool_message = await self._prepare_tool_result(tool_message, existing_artifact_id=existing_artifact_id)
         messages = cast(list[BaseMessage], add_messages(cast(Messages, state["messages"]), [tool_message]))
         # Product image retention policy; add_messages replaces these messages
         # by ID without mutating earlier State snapshots or persisted events.
@@ -342,12 +375,12 @@ class _TaskRuntime:
         update: dict[str, object] = {"route": "cycle_guard", "messages": [*replacements, tool_message]}
         if self.run_cancellation_event.is_set():
             update.update(self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"]))
-        elif (call := _latest_ai_call(state["messages"]))["name"] == finish_task.name and tool_message.status != "error":
+        elif call["name"] == finish_task.name and tool_message.status != "error":
             terminal = FinishTaskRunToolInput.model_validate(call["args"])
             status = TaskRunStatus(terminal.status)
             reason = {TaskRunStatus.PASSED: ReasonCode.COMPLETED, TaskRunStatus.BLOCKED: ReasonCode.AGENT_BLOCKED,
                       TaskRunStatus.FAILED: ReasonCode.GOAL_UNREACHABLE if self.task_context.task.definition.type == TestTaskType.ACT else ReasonCode.ASSERTION_FAILED}[status]
-            update.update(self._completion(status, reason, terminal.summary, state["cycle_count"]))
+            update.update(self._completion(status, reason, terminal.summary, state["cycle_count"], memory=terminal.memory))
         elif tool_message.status == "error":
             if (state["cycle_count"] < self.task_context.max_cycles
                     and state["model_response_attempt"] >= self.model_response_max_attempts):
@@ -358,9 +391,9 @@ class _TaskRuntime:
 
     @staticmethod
     def _completion(status: TaskRunStatus, reason_code: ReasonCode, summary: str,
-                    cycle_count: int) -> dict[str, object]:
+                    cycle_count: int, *, memory: str | None = None) -> dict[str, object]:
         return {"completion": TaskAgentCompletion(status=status,
-                    result=TaskRunResult(reason_code=reason_code, summary=summary or reason_code.value),
+                    result=TaskRunResult(reason_code=reason_code, summary=summary or reason_code.value, memory=memory),
                     cycle_count=cycle_count), "route": "end"}
 
 

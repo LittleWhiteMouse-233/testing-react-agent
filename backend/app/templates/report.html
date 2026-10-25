@@ -44,6 +44,7 @@
         <p><strong>标准：</strong>{{ task.definition.success_criteria | join('；') }}</p>
         <p><strong>结论：</strong>{{ task_run.result.summary if task_run.result else '无' }}（{{ task_run.cycle_count }} cycles）</p>
         {% if task_run.result %}<p><strong>原因：</strong>{{ task_run.result.reason_code }}</p>{% endif %}
+        {% if task_run.result and task_run.result.memory %}<p><strong>跨任务记忆：</strong></p><pre>{{ task_run.result.memory }}</pre>{% endif %}
       </article>
     {% endfor %}
   </section>

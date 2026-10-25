@@ -1450,8 +1450,19 @@
       },
       "TaskRunResult": {
         "additionalProperties": false,
-        "description": "TaskRun 的终态原因与判断摘要；状态和 cycle 不在此重复。",
+        "description": "TaskRun 的终态原因、判断摘要及供后续任务复用的观察记忆。",
         "properties": {
+          "memory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory"
+          },
           "reason_code": {
             "$ref": "#/components/schemas/ReasonCode"
           },
@@ -2035,7 +2046,7 @@
             "$ref": "#/components/schemas/LLMProfileSnapshot"
           },
           "execution_protocol_version": {
-            "const": "7",
+            "const": "8",
             "title": "Execution Protocol Version",
             "type": "string"
           },

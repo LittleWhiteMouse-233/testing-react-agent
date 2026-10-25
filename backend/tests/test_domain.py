@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import ValidationError
 
 from app.config import LLMProfileSettings
@@ -84,7 +85,7 @@ def test_generic_plan_content_has_one_task_shape_and_fresh_identity() -> None:
 
 def test_task_result_and_deterministic_verdict_do_not_copy_status_or_cycle() -> None:
     result_fields = set(TaskRunResult.model_fields)
-    assert result_fields == {"reason_code", "summary"}
+    assert result_fields == {"reason_code", "summary", "memory"}
     assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.PASSED)]) == RunVerdict.PASS
     assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.FAILED)]) == RunVerdict.FAIL
     assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.BLOCKED)]) == RunVerdict.BLOCKED
@@ -102,6 +103,35 @@ def test_task_result_and_deterministic_verdict_do_not_copy_status_or_cycle() -> 
                 )
             ]
         )
+
+
+@pytest.mark.parametrize("memory,expected", [
+    (None, None), ("", None), (" \t\r\n", None),
+    (" A: model TV-X1\nfirmware V2.3.7 ", " A: model TV-X1\nfirmware V2.3.7 "),
+])
+def test_task_memory_normalizes_only_blank_content(memory: str | None, expected: str | None) -> None:
+    result = TaskRunResult(reason_code=ReasonCode.COMPLETED, summary="Observed A", memory=memory)
+    assert result.memory == expected
+    assert TaskRunResult(reason_code=ReasonCode.COMPLETED, summary="No memory").memory is None
+
+
+@pytest.mark.asyncio
+async def test_scripted_terminal_turn_preserves_memory() -> None:
+    client = ScriptedChatModelClient(turns=[{"status": "passed", "summary": "Observed A", "memory": "A: V2.3.7"}])
+    reply = await client.create_model().bind_tools([]).ainvoke([HumanMessage(content="Read A")])
+    assert reply.tool_calls[0]["args"]["memory"] == "A: V2.3.7"
+
+
+@pytest.mark.asyncio
+async def test_scripted_turn_callback_receives_actual_messages() -> None:
+    def remember(messages: list[BaseMessage]) -> AIMessage:
+        return AIMessage(content=messages[-1].text)
+
+    client = ScriptedChatModelClient(turns=[remember])
+    messages = [HumanMessage(content="Actual image artifact ID")]
+    reply = await client.create_model().bind_tools([]).ainvoke(messages)
+    assert reply.content == messages[0].content
+    assert client.invocations == [messages]
 
 
 def test_artifact_owner_is_direct_and_exclusive() -> None:

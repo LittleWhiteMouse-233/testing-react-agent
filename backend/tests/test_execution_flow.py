@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphBubbleUp, GraphInterrupt
@@ -42,6 +42,150 @@ def test_generic_tools_complete_deterministic_verdicts(tmp_path: Path, status: s
         assert "device_id" not in detail["run"]
         assert "device_environment" not in detail["environment"]
         assert "execution_model" in detail["environment"]
+
+
+def test_memory_is_projected_only_from_prior_tasks_in_the_same_run(tmp_path: Path) -> None:
+    memory = "A: model TV-X1\nfirmware V2.3.7"
+    turns = [
+        tool_turn(1), finish_turn(2),
+        tool_turn(3), {"status": "passed", "summary": "Read model and firmware at A", "memory": memory},
+        tool_turn(5), finish_turn(6),
+        tool_turn(7), finish_turn(8),
+    ] * 2
+    calls = [replay_call(content=[text_block(observation)])
+             for observation in ["Focus A", memory, "Focus B", "B: model TV-X1, firmware V2.3.7"] * 2]
+    with build_client(tmp_path, calls=calls, turns=turns) as client:
+        plan = create_plan(client, task_count=2)
+        definitions = [
+            {"type": task_type, "title": title, "goal": goal, "success_criteria": [criterion]}
+            for task_type, title, goal, criterion in [
+                ("act", "Focus A", "Focus A", "Focus is at A"),
+                ("act", "Read A", "Read and remember A model and firmware", "Model and firmware are read and retained"),
+                ("act", "Focus B", "Focus B", "Focus is at B"),
+                ("judge", "Compare B", "Compare B with the remembered A fields", "Model and firmware match A"),
+            ]
+        ]
+        revision = client.post(f"/api/test-plans/{plan['id']}/revisions",
+                               json={"content": {**plan["content"], "tasks": definitions}})
+        assert revision.status_code == 201, revision.text
+        plan = revision.json()
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        for _ in range(2):
+            first_invocation = len(model.invocations)
+            detail = wait_for_run(client, start_run(client, plan))
+            assert detail["run"]["verdict"] == "PASS"
+            task_runs = detail["task_runs"]
+            assert [task["result"]["memory"] for task in task_runs] == [None, memory, None, None]
+            contexts = [json.loads(invocation[1].text) for invocation in model.invocations[first_invocation:]]
+            expected = [{"id": task_runs[1]["id"], "test_task_id": task_runs[1]["test_task_id"],
+                         "result": {"memory": memory}}]
+            assert [context["memory_task_runs"] for context in contexts[::2]] == [[], [], expected, expected]
+            assert all("previous_task_runs" not in context for context in contexts)
+
+
+def test_memory_image_reads_preserve_original_identity_window_and_exports(tmp_path: Path) -> None:
+    memory_values: list[str] = []
+
+    def remember_image(messages: list[BaseMessage]) -> AIMessage:
+        reference = next(block["text"] for block in messages[-1].content_blocks
+                         if block["type"] == "text" and block["text"].startswith("[Image artifact "))
+        memory = f"A baseline <original>\n{reference}"
+        memory_values.append(memory)
+        reply = finish_turn(2)
+        reply.tool_calls[0]["args"]["memory"] = memory
+        return reply
+
+    read_count = 0
+
+    def read_baseline(messages: list[BaseMessage]) -> AIMessage:
+        nonlocal read_count
+        read_count += 1
+        memory = json.loads(messages[1].text)["memory_task_runs"][0]["result"]["memory"]
+        artifact_id = memory.splitlines()[-1].removeprefix("[Image artifact ").removesuffix("]")
+        return AIMessage(content="Read the saved baseline", tool_calls=[{
+            "name": "read_image_artifact", "args": {"artifact_id": artifact_id}, "id": f"read-{read_count}",
+        }])
+
+    with build_client(tmp_path, image_history_rounds=1, calls=[replay_call(), replay_call()],
+                      turns=[tool_turn(1), remember_image, read_baseline, tool_turn(4), read_baseline, finish_turn(6)]) as client:
+        run_id = start_run(client, create_plan(client, task_count=2))
+        detail = wait_for_run(client, run_id)
+        assert detail["run"]["verdict"] == "PASS"
+        assert detail["task_runs"][0]["result"]["memory"] == memory_values[0]
+        report = client.get(f"/api/runs/{run_id}").json()
+        assert len(report["artifacts"]) == 2
+        source = next(artifact for artifact in report["artifacts"]
+                      if artifact["task_run_id"] == detail["task_runs"][0]["id"])
+        assert source["id"] in memory_values[0]
+        events = [entry["event"] for entry in report["events"]]
+        assert not any(event["type"] == "message.validation_failed" for event in events)
+        reads = [event["message"] for event in events if event["type"] == "message.appended"
+                 and event["message"]["role"] == "tool" and event["message"]["name"] == "read_image_artifact"]
+        assert len(reads) == 2
+        for message in reads:
+            assert message["status"] == "success"
+            assert message["content"] == [{"type": "text", "text": f"[Image artifact {source['id']}]"},
+                                           {"type": "image_artifact", "artifact_id": source["id"]}]
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        before_reread = model.invocations[-2]
+        assert any("outside the image history" in message.text and source["id"] in message.text for message in before_reread)
+        assert not any(block["type"] == "image" and block.get("id") == source["id"]
+                       for message in before_reread for block in message.content_blocks)
+        assert any(block["type"] == "image" and block.get("id") == source["id"] and block.get("base64") == PNG_BASE64
+                   for message in model.invocations[-1] for block in message.content_blocks)
+        for export_format in ("json", "html"):
+            exported = client.post(f"/api/runs/{run_id}/exports", json={"format": export_format}).json()
+            downloaded = client.get(f"/api/artifacts/{exported['id']}")
+            if export_format == "json":
+                assert downloaded.json()["detail"]["task_runs"][0]["result"]["memory"] == memory_values[0]
+            else:
+                assert "A baseline &lt;original&gt;" in downloaded.text
+                assert "data:image/png;base64," in downloaded.text and source["id"] in downloaded.text
+
+
+@pytest.mark.parametrize("invalid_artifact", ["missing", "previous_run", "export"])
+def test_image_read_business_errors_can_be_corrected(tmp_path: Path, invalid_artifact: str) -> None:
+    invalid_id = "11111111-1111-4111-8111-111111111111"
+
+    def invalid_read(messages: list[BaseMessage]) -> AIMessage:
+        return AIMessage(content="Read a saved image", tool_calls=[{
+            "name": "read_image_artifact", "args": {"artifact_id": invalid_id}, "id": "invalid-read",
+        }])
+
+    def corrected_read(messages: list[BaseMessage]) -> AIMessage:
+        observation = next(message for message in reversed(messages)
+                           if isinstance(message, ToolMessage) and message.name == "fixture_inspect")
+        reference = next(block["text"] for block in observation.content_blocks
+                         if block["type"] == "text" and block["text"].startswith("[Image artifact "))
+        return AIMessage(content="Read this run's observed image", tool_calls=[{
+            "name": "read_image_artifact",
+            "args": {"artifact_id": reference.removeprefix("[Image artifact ").removesuffix("]")},
+            "id": "corrected-read",
+        }])
+
+    with build_client(tmp_path, calls=[replay_call(), replay_call()],
+                      turns=[tool_turn(1), finish_turn(2), tool_turn(3), invalid_read, corrected_read, finish_turn(6)]) as client:
+        plan = create_plan(client)
+        previous_run_id = start_run(client, plan)
+        wait_for_run(client, previous_run_id)
+        if invalid_artifact == "previous_run":
+            invalid_id = client.get(f"/api/runs/{previous_run_id}").json()["artifacts"][0]["id"]
+        elif invalid_artifact == "export":
+            invalid_id = client.post(f"/api/runs/{previous_run_id}/exports", json={"format": "json"}).json()["id"]
+        run_id = start_run(client, plan)
+        detail = wait_for_run(client, run_id)
+        assert detail["run"]["verdict"] == "PASS"
+        report = client.get(f"/api/runs/{run_id}").json()
+        assert len(report["artifacts"]) == 1
+        events = [entry["event"] for entry in report["events"]]
+        assert not any(event["type"] in {"message.validation_failed", "execution.error"} for event in events)
+        returned = [event["message"] for event in events if event["type"] == "message.appended"
+                    and event["message"]["role"] == "tool" and event["message"]["name"] == "read_image_artifact"]
+        assert [message["status"] for message in returned] == ["error", "success"]
+        assert returned[0]["tool_call_id"] == "invalid-read"
+        assert "current run" in returned[0]["content"][0]["text"]
 
 
 def test_required_context_over_budget_blocks_without_calling_model(tmp_path: Path) -> None:
@@ -255,7 +399,8 @@ def test_tool_errors_keep_partial_images_and_are_not_automatically_replayed(tmp_
         messages = [entry["event"]["message"] for entry in report["events"] if entry["event"]["type"] == "message.appended"]
         returned = next(message for message in messages if message["role"] == "tool" and message["name"] == "fixture_inspect")
         assert returned["status"] == "error"
-        assert [block["type"] for block in returned["content"]] == ["text", "image_artifact", "text"]
+        assert [block["type"] for block in returned["content"]] == ["text", "text", "image_artifact", "text"]
+        assert returned["content"][1]["text"] == f"[Image artifact {returned['content'][2]['artifact_id']}]"
         assert len([entry for entry in read_records(tmp_path) if entry["phase"] == "started"]) == 1
 
 

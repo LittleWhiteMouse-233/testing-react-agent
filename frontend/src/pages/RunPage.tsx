@@ -62,6 +62,7 @@ function RunExecution({ runId }: { runId: string }) {
               <details><summary>成功标准</summary><ul>{task.definition.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul></details>
               <div className="task-runtime"><span>{taskRun ? taskCycleCount(taskRun, report.events) : "—"} / {taskMaxCycles(task.definition.type, report.data.detail.environment)} 轮</span><ElapsedTime startedAt={taskRun?.started_at ?? null} finishedAt={taskRun?.finished_at ?? null} active={taskRun?.status === "running"} /></div>
               {taskRun?.result && <p className="task-result">{taskRun.result.summary}</p>}
+              {taskRun?.result?.memory && <div className="task-memory"><strong>跨任务记忆</strong><p>{taskRun.result.memory}</p></div>}
             </div>
           </article>;
         })}

@@ -105,6 +105,36 @@ it.each<TestRunVerdict>(["PASS", "FAIL", "BLOCKED", "CANCELLED"])("shows the aut
   expect(sources).toHaveLength(0);
 });
 
+it.each(["execution", "report"])("shows task memory as plain text in the %s page", async (page) => {
+  const memory = "A: TV-X1\n<img src=x onerror=alert(1)>";
+  report.detail.task_runs[0]!.result!.memory = memory;
+  renderPage(`/runs/${runId}${page === "report" ? "/report" : ""}`);
+  expect(await screen.findByText("跨任务记忆")).toBeInTheDocument();
+  expect(screen.getByText(memory, { normalizer: (text) => text })).toBeInTheDocument();
+  expect(document.querySelector(".task-memory img")).toBeNull();
+});
+
+it.each(["execution", "report"])("omits an empty task memory section in the %s page", async (page) => {
+  renderPage(`/runs/${runId}${page === "report" ? "/report" : ""}`);
+  await screen.findByText("设置页面验证");
+  expect(screen.queryByText("跨任务记忆")).not.toBeInTheDocument();
+});
+
+it("updates memory after task.finished fetches the persisted task result", async () => {
+  report = runReport(null);
+  renderPage(`/runs/${runId}`);
+  await waitFor(() => expect(sources).toHaveLength(1));
+  expect(screen.queryByText("跨任务记忆")).not.toBeInTheDocument();
+  report.detail.task_runs[0] = runReport("PASS").detail.task_runs[0]!;
+  report.detail.task_runs[0]!.result!.memory = "A: firmware V2.3.7";
+  const finished = runEvent(2, { type: "task.finished", test_run_id: runId, task_run_id: taskRunId });
+  report.events.push(finished);
+  act(() => sources[0]!.onmessage?.(new MessageEvent("message", { data: JSON.stringify(finished) })));
+  expect(await screen.findByText("A: firmware V2.3.7")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /终止/ })).toBeEnabled();
+  expect(requests.some((url) => url.pathname === `/api/runs/${runId}` && url.searchParams.get("events_after") === "1")).toBe(true);
+});
+
 it.each(["act", "judge"] as const)("shows the configured %s budget in the report", async (type) => {
   report.detail.test_plan.content.tasks[0]!.definition.type = type;
   report.detail.environment.max_cycles_by_task_type.act = 37;

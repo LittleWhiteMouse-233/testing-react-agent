@@ -788,9 +788,11 @@ export interface components {
         };
         /**
          * TaskRunResult
-         * @description TaskRun 的终态原因与判断摘要；状态和 cycle 不在此重复。
+         * @description TaskRun 的终态原因、判断摘要及供后续任务复用的观察记忆。
          */
         TaskRunResult: {
+            /** Memory */
+            memory?: string | null;
             reason_code: components["schemas"]["ReasonCode"];
             /** Summary */
             summary: string;
@@ -1015,7 +1017,7 @@ export interface components {
              * Execution Protocol Version
              * @constant
              */
-            execution_protocol_version: "7";
+            execution_protocol_version: "8";
             /** Max Cycles By Task Type */
             max_cycles_by_task_type: {
                 [key: string]: number;

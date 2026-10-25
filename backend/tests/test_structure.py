@@ -8,6 +8,7 @@ import json
 import tempfile
 from pathlib import Path
 from inspect import signature
+from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
@@ -24,6 +25,7 @@ from app.domain.execution import (
     TaskRunResult,
     TaskRunStatus,
     TestRun as DomainTestRun,
+    TestRunVerdict as RunVerdict,
     TestRunEnvironmentSnapshot as RunEnvironmentSnapshot,
 )
 from app.domain.planning import (
@@ -95,7 +97,7 @@ def run_environment_snapshot() -> RunEnvironmentSnapshot:
         max_cycles_by_task_type={TaskType.ACT: 30, TaskType.JUDGE: 10},
         prompt_fingerprints_by_task_type={TaskType.ACT: "act-v1", TaskType.JUDGE: "judge-v1"},
         app_version="0.1.0",
-        execution_protocol_version="7",
+        execution_protocol_version="8",
     )
 
 
@@ -420,12 +422,54 @@ async def test_task_results_persist_observations_without_image_associations(
     run = await repository.create_test_run(test_plan_id=plan.id, environment=run_environment_snapshot())
     await repository.start_run(run.id)
     task = await repository.start_task(run.id, plan.content.tasks[0])
-    result = TaskRunResult(reason_code=reason, summary="Observed target state and compared it with the success criteria")
+    result = TaskRunResult(reason_code=reason, summary="Observed target state and compared it with the success criteria",
+                           memory="Observed A: model TV-X1\nfirmware V2.3.7")
     await repository.finish_task(task.id, status=status, result=result, cycle_count=1)
     saved = (await repository.list_task_runs(run.id))[0]
     assert saved.status == status and saved.result == result
     assert (await api_repository.read_test_run_report(sessions, run.id)).artifacts == []
     await engine.dispose()
+
+@pytest.mark.asyncio
+async def test_image_reads_resolve_the_calling_tasks_run_and_reject_other_artifacts(tmp_path: Path) -> None:
+    from app.artifacts import ArtifactStore
+
+    engine = build_engine(f"sqlite+aiosqlite:///{(tmp_path / 'image-reads.db').as_posix()}")
+    await init_database(engine)
+    sessions = build_session_factory(engine)
+    repository = SqlAlchemyRunRepository(sessions, RunEventWriter(sessions, EventBus()))
+    artifacts = ArtifactStore(tmp_path / "artifacts", sessions)
+    try:
+        test_case = await api_repository.create_test_case(sessions, planning_context().test_case_content)
+        plan = await repository.create_plan(test_case_id=test_case.id, draft=plan_draft(2),
+                                           planning_context=planning_context(), origin=PlanOrigin.PLANNING)
+        run = await repository.create_test_run(test_plan_id=plan.id, environment=run_environment_snapshot())
+        await repository.start_run(run.id)
+        producer = await repository.start_task(run.id, plan.content.tasks[0])
+        image = await artifacts.save_image(task_run_id=producer.id, content=b"original image", mime_type="image/png")
+        assert await artifacts.load_image_for_task(image.id, task_run_id=producer.id) == (b"original image", "image/png")
+        await repository.finish_task(producer.id, status=TaskRunStatus.PASSED,
+                                     result=TaskRunResult(reason_code=ReasonCode.COMPLETED, summary="Read A"), cycle_count=1)
+        consumer = await repository.start_task(run.id, plan.content.tasks[1])
+        assert await artifacts.load_image_for_task(image.id, task_run_id=consumer.id) == (b"original image", "image/png")
+        exported = await artifacts.save_export(test_run_id=run.id, artifact_type=ArtifactType.JSON_EXPORT,
+                                               content=b"{}", mime_type="application/json", extension="json")
+        for artifact_id in (exported.id, str(uuid4())):
+            with pytest.raises(LookupError):
+                await artifacts.load_image_for_task(artifact_id, task_run_id=consumer.id)
+        await repository.finish_task(consumer.id, status=TaskRunStatus.PASSED,
+                                     result=TaskRunResult(reason_code=ReasonCode.COMPLETED, summary="Compared B"), cycle_count=1)
+        await repository.finish_run(run.id, RunVerdict.PASS)
+        rerun = await repository.create_test_run(test_plan_id=plan.id, environment=run_environment_snapshot())
+        await repository.start_run(rerun.id)
+        other_task = await repository.start_task(rerun.id, plan.content.tasks[0])
+        with pytest.raises(LookupError):
+            await artifacts.load_image_for_task(image.id, task_run_id=other_task.id)
+        assert await artifacts.load_content(image.id) == (b"original image", "image/png")
+        assert len((await api_repository.read_test_run_report(sessions, run.id)).artifacts) == 2
+    finally:
+        await engine.dispose()
+
 
 def test_domain_has_no_framework_or_integration_dependencies() -> None:
     domain_root = Path(__file__).resolve().parents[1] / "app" / "domain"

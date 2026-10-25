@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.ids import TaskRunId, TestPlanId, TestRunId, TestTaskId
 from app.domain.planning import TestPlan, TestTaskType
@@ -62,12 +62,18 @@ class ReasonCode(StrEnum):
 
 
 class TaskRunResult(BaseModel):
-    """TaskRun 的终态原因与判断摘要；状态和 cycle 不在此重复。"""
+    """TaskRun 的终态原因、判断摘要及供后续任务复用的观察记忆。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     reason_code: ReasonCode
     summary: str = Field(min_length=1)
+    memory: str | None = None
+
+    @field_validator("memory")
+    @classmethod
+    def normalize_optional_memory(cls, value: str | None) -> str | None:
+        return value if value and value.strip() else None
 
 
 class TestRunEnvironmentSnapshot(BaseModel):
@@ -81,7 +87,7 @@ class TestRunEnvironmentSnapshot(BaseModel):
     max_cycles_by_task_type: dict[TestTaskType, Annotated[int, Field(ge=1, le=100)]]
     prompt_fingerprints_by_task_type: dict[TestTaskType, Annotated[str, Field(min_length=1)] | None]
     app_version: str = Field(min_length=1)
-    execution_protocol_version: Literal["7"]
+    execution_protocol_version: Literal["8"]
 
     @model_validator(mode="after")
     def task_types_are_complete(self) -> "TestRunEnvironmentSnapshot":

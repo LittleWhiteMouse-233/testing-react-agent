@@ -64,6 +64,7 @@ export function RunReportContent({ runId }: { runId: string }) {
         </summary>
         <div className="timeline-task-body"><p><strong>目标：</strong>{task.definition.goal}</p><strong>成功标准</strong><ul>{task.definition.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul>
           {taskRun?.result && <div className="result-note"><p>{taskRun.result.summary}</p><small>{taskRun.result.reason_code} · {taskRun.cycle_count} / {taskMaxCycles(task.definition.type, detail.environment)} 轮</small></div>}
+          {taskRun?.result?.memory && <div className="task-memory"><strong>跨任务记忆</strong><p>{taskRun.result.memory}</p></div>}
           {events.length ? <EventTimeline events={events} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有任务事件" />}
           {taskImages.length > 0 && <Image.PreviewGroup><div className="image-grid">{taskImages.map((artifact) => <figure key={artifact.id}><Image src={artifactUrl(artifact.id)} alt={"图片 " + artifact.id} />
             <figcaption>{formatTime(artifact.created_at)}</figcaption></figure>)}</div></Image.PreviewGroup>}

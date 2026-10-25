@@ -151,7 +151,7 @@ class RunService:
                 max_cycles_by_task_type=self.max_cycles_by_task_type,
                 prompt_fingerprints_by_task_type=self.prompt_catalog.prompt_fingerprints_by_task_type,
                 app_version=self.app_version,
-                execution_protocol_version="7",
+                execution_protocol_version="8",
             )
             try:
                 creation = asyncio.create_task(self.repository.create_test_run(

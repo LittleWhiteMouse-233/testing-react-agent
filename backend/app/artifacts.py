@@ -10,11 +10,14 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
 
 from app.domain.execution import Artifact, ArtifactType
+from app.domain.ids import ArtifactId, TaskRunId
 from app.persistence.mappers import artifact_from_row
-from app.persistence.models import ArtifactRow
+from app.persistence.models import ArtifactRow, TaskRunRow
 
 
 class ArtifactStore:
@@ -111,6 +114,23 @@ class ArtifactStore:
             row = await session.get(ArtifactRow, artifact_id)
         if row is None:
             raise LookupError(f"Artifact not found: {artifact_id}")
+        content = await asyncio.to_thread(self.resolve(row.relative_path).read_bytes)
+        return content, row.mime_type
+
+    async def load_image_for_task(self, artifact_id: ArtifactId, *, task_run_id: TaskRunId) -> tuple[bytes, str]:
+        """Read an existing image owned by the calling task's run, preserving its identity."""
+        image_task_run = aliased(TaskRunRow)
+        calling_run_id = select(TaskRunRow.test_run_id).where(TaskRunRow.id == task_run_id).scalar_subquery()
+        async with self.sessions() as session:
+            row = await session.scalar(
+                select(ArtifactRow).join(image_task_run, ArtifactRow.task_run_id == image_task_run.id).where(
+                    ArtifactRow.id == artifact_id,
+                    ArtifactRow.type == ArtifactType.IMAGE,
+                    image_task_run.test_run_id == calling_run_id,
+                )
+            )
+        if row is None:
+            raise LookupError(f"Image artifact {artifact_id} is not available in the current run")
         content = await asyncio.to_thread(self.resolve(row.relative_path).read_bytes)
         return content, row.mime_type
 

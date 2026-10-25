@@ -60,7 +60,7 @@ class RunExecutor:
         try:
             detail = await self.repository.get_test_run_detail(test_run_id)
             await self.repository.start_run(test_run_id)
-            completed: list[TaskRun] = []
+            memory_task_runs: list[TaskRun] = []
             async with AsyncSqliteSaver.from_conn_string(
                 self.checkpoint_path
             ) as checkpointer:
@@ -79,7 +79,7 @@ class RunExecutor:
                             task_context=TaskAgentContext(
                                 task_run_id=active_task.id,
                                 task=test_task,
-                                previous_task_runs=tuple(completed),
+                                memory_task_runs=tuple(memory_task_runs),
                                 max_cycles=detail.environment.max_cycles_by_task_type[test_task.definition.type],
                             ),
                             tools=tools,
@@ -101,7 +101,8 @@ class RunExecutor:
                         active_task = (
                             await self.repository.list_task_runs(test_run_id)
                         )[-1]
-                        completed.append(active_task)
+                        if active_task.result is not None and active_task.result.memory is not None:
+                            memory_task_runs.append(active_task)
                         if completion.result.reason_code == ReasonCode.USER_CANCELLED:
                             cancellation_completed = True
                             break

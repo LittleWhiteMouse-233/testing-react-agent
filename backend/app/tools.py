@@ -31,7 +31,9 @@ class MCPToolProvider:
                     adapted_tool.metadata = {**(adapted_tool.metadata or {}), "mcp_server_name": server_name}
                     loaded_tools.append(adapted_tool)
         names = [entry.name for entry in loaded_tools]
-        if len(names) != len(set(names)) or set(names) & {"finish_task", "load_skill", "read_resource", "list_resources"}:
+        if len(names) != len(set(names)) or set(names) & {
+            "finish_task", "read_image_artifact", "load_skill", "read_resource", "list_resources",
+        }:
             raise ValueError("MCP tool names collide")
         return tuple(loaded_tools)
 
