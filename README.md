@@ -20,7 +20,7 @@
 
 - `backend/app/domain/`：用例、计划、运行、工具目录、模型快照和事件的领域事实。
 - `backend/app/planning/`：无工具的规划流程，读取原始用例、最新计划与本轮额外输入；`execution/`：Act/Judge 共用执行图。
-- `backend/app/mcp.py`：标准 stdio MCP 配置、工作目录和框架客户端；`tools.py` 通过官方适配器导入业务工具，`skill.py` 统一管理 Skill 与静态资源。
+- `backend/app/mcp.py`：标准 stdio MCP 配置、工作目录和框架客户端；`tools.py` 统一管理通过官方适配器导入的业务工具与装配层注入的内置工具，`skill.py` 统一管理 Skill 与静态资源。
 - `backend/app/event_stream/`：共享有界 EventBus；执行事件经 RunEventWriter 提交后通知，规划事件仅在连接中发送。慢订阅队列溢出会断开，执行流可从数据库补拉，规划流不保留历史。
 - `frontend/`：计划编辑、实时运行、历史和报告。
 - `backend/scripts/` 和 `frontend/scripts/`：开发用契约生成工具。
@@ -90,7 +90,7 @@ TEST_AGENT_EXECUTION_MODEL_ID=vision
 
 ## 执行、运行记录和历史
 
-执行协议版本为 8。用户取消通过运行取消标志在节点安全边界生效：等待当前调用返回或达到框架超时，保存已收到的图片后结束为 CANCELLED，不再请求模型或执行下一次工具调用。调用机制、结果处理或图片保存的未处理故障仍为 BLOCKED，不被取消标志覆盖。应用关闭请求同样的安全边界停止，并等待当前运行结束。
+执行协议版本为 9。用户取消通过运行取消标志在节点安全边界生效：等待当前调用返回或达到框架超时，保存已收到的图片后结束为 CANCELLED，不再请求模型或执行下一次工具调用。调用机制、结果处理或图片保存的未处理故障仍为 BLOCKED，不被取消标志覆盖。应用关闭请求同样的安全边界停止，并等待当前运行结束。
 
 工具参数错误和 MCP 正常返回的业务错误通过框架错误消息交给模型；原生工具节点超时由公开错误处理器转换为关联原调用 ID 的错误消息，提示操作可能部分执行、结果未确认。随后沿用纠错预算，由模型决定重新观察、继续或结束；工具不自动重放。会话退出交由框架与 SDK 处理，宿主不额外等待独立清理流程；迟到结果不进入 State、事件或运行记录。模型传输错误仍有限重试，不另计决策轮。未处理异常向上传播到 executor，记录执行错误并结束为 BLOCKED。运行工作任务结束后释放占用，不设置永久入口锁定；已保存的终态不被后续取消改写。
 
@@ -106,7 +106,13 @@ Act 达成目标，Judge 验证行为；Judge 可主动准备条件和触发交�
 
 工具内容顺序保留。图片先解码保存原图，原 base64 连同 Artifact ID 进入 ToolMessage，不重新编码。工具完成后，在 `after_tools` 阶段选取最近 3 个有图片的已完成决策轮，同轮多图全部保留，无图轮不占窗口。窗口外图片在 State 原内容位置替换为带artifact 引用的占位文本；仅复制变化的消息，通过公开 `add_messages` reducer 按相同 message ID 替换，不直接修改输入 State。该产品边界只实现图片轮数策略，消息合并及 checkpoint 序列化仍由框架负责。模型请求基于回收后的 State 执行 token 预算与必要上下文检查；token 裁剪不删除 State 历史，窗口限制轮数而非图片字节总量，也不保证所有图片都能装入预算。
 
-`TaskAgentContext` 仅包含当前任务、TaskRun ID、前序任务结果和运行快照中的轮次上限。`TaskAgentInput` 嵌套该上下文，另外携带外部工具、运行快照中的完整资源目录及模型 profile ID。Factory 按该 ID 从共享的 ModelProvider 取得客户端，将外部工具与 `finish_task` 整合，并通过 `top_level_skills` 筛选初始可见的 Skill；Runtime 接收整合后的工具和筛选后的 Skill 列表，不持有完整 Factory 输入或资源目录。相同的完整工具集合供 Runtime、ToolNode 和模型上下文预算使用。
+`TaskAgentContext` 仅包含当前任务、TaskRun ID、前序含记忆的 TaskRun 和运行快照中的轮次上限。`TaskAgentInput` 嵌套该上下文，另外携带当前 Run 的完整工具集合、运行快照中的完整资源目录及模型 profile ID。装配层将 Skill 提供方的 BaseTool 与 `TASK_AGENT_TOOLS` 注入 `ToolProvider`；每次发现返回 MCP 工具和内置工具的完整元组，并按实际工具名检查重名。RunService 使用该元组冻结目录并传给执行器；Factory 不再追加工具，只按模型 ID 取得客户端、通过 `top_level_skills` 筛选初始 Skill。模型绑定、ToolNode 和模型上下文预算使用同一工具集合。
+
+`TaskAgentRuntimeContext` 是每个任务的框架注入边界，组合已有任务上下文和 `ArtifactStore`。Factory 返回编译图、初始 State 和运行时上下文；executor 显式通过 `astream(..., context=...)` 传入，由 ToolNode 将 `ToolRuntime` 注入模块级 `read_image_artifact`。模型只提供 artifact ID，服务依赖不进入模型 schema、Graph State、运行快照或导出。节点运行对象组合相同上下文，复用同一份任务事实与图片服务。
+
+`task_agent.py` 只导出一个消息发布节点名称集合 `MESSAGE_PUBLISHING_NODES`，在组装结束时与框架实际注册的业务节点减去 `tools` 严格比较；工具注册前后的节点差集用于识别框架附加的错误处理节点。这是应用发布边界的约束，框架本身不验证该清单。executor 的 `_execute_task` 独立提取和校验完成结果，等待流自然结束再返回；`_publish_message_updates` 仅投影和保存消息，原始 tools 更新仍由 after_tools 处理后发布。
+
+`finish_task` 的文本回执保留结论和摘要，有有效 memory 时追加 `Submitted memory:` 段，保留原文与换行。该回执随 ToolMessage 持久化为事件，事件流、报告和导出直接展示它；结果计算、后续任务记忆和任务结果区域仍读取类型明确的参数及持久化 TaskRun，不解析回执文本，也不从结果补造历史消息。
 
 应用装配直接实例化 `PromptCatalog()`，由初始化方法按 `AgentActivity` 和 `TestTaskType` 的枚举值加载同名 `.txt` 文件，以名称索引提示词定义；`prompt_directory` 参数可指定目录，默认使用提示词模块所在目录。`prompt_for_activity` 选择活动提示词（规划使用 `planning.txt`）；`prompt_for_task_type` 优先选择任务类型专用提示词，缺失时回退到 `execution.txt`，两者不拼接。文件不存在时对应定义为 `None`，消费者使用空文本；文件存在但内容为空时仍有定义，并覆盖通用 execution 提示词。其它读取或编码错误正常报错。`PromptDefinition.fingerprint` 是文件字节内容的 SHA-256 前 12 位十六进制指纹，缺失文件不生成指纹。
 
@@ -136,7 +142,7 @@ RunService 用一个工作状态管理准备与执行阶段；准备阶段尚无
 
 ## API 与数据升级
 
-- 执行协议为 `8`：结果包含可选 `memory`，普通图片类型为 `image`，图片统计字段为 `image_count`；图片窗口配置使用 `TEST_AGENT_IMAGE_HISTORY_ROUNDS`，资源相对引用参数为 `base_uri`。开发期直接使用新的建库定义，不兼容旧运行数据。
+- 执行协议为 `9`：工具快照覆盖完整 TaskAgent 工具集合，结果包含可选 `memory`，普通图片类型为 `image`，图片统计字段为 `image_count`；图片窗口配置使用 `TEST_AGENT_IMAGE_HISTORY_ROUNDS`，资源相对引用参数为 `base_uri`。开发期直接使用新的建库定义，不兼容旧运行数据。
 - 运行环境按任务类型保存 `max_cycles_by_task_type` 和 `prompt_fingerprints_by_task_type`；两个映射的键都必须完整覆盖 `TestTaskType`，轮次范围为 1～100，指纹为非空字符串或 `null`。`null` 表示没有提示词，显式空文件则记录空内容的指纹；报告将 `null` 展示为“未定义”。执行与报告按任务类型索引快照；轮次环境变量仍为 `TEST_AGENT_ACT_MAX_CYCLES` 和 `TEST_AGENT_JUDGE_MAX_CYCLES`，在应用装配时转换为映射。
 - `POST /api/test-cases/{id}/plans` 接受请求体 `{"planning_request_id":"客户端生成的 UUID","user_input":"本轮补充或修改要求"}`。关联 ID 必填且不持久化；首次规划的额外输入可不填写，已有计划时必须提供非空白输入，基于最新已保存计划（含人工修订）重新规划。缺少额外输入返回 `422 / planning_user_input_required`；生成期间参考版本变化返回 `409 / test_plan_not_latest`，不保存结果或自动重试。规划不读取设备信息。
 - `GET /api/test-cases/{id}/planning/stream` 订阅临时规划进度。后端注册后发送命名 `ready` 控制事件，前端收到后才 POST；后续 data 为 OpenAPI 的 PlanningEvent，按 case 路由、按 planning_request_id 筛选。Graph 使用公开 custom stream 提供模型尝试进度，服务补充请求归属、准备输入及保存阶段；校验通过不等于保存成功。
@@ -149,7 +155,7 @@ RunService 用一个工作状态管理准备与执行阶段；准备阶段尚无
 - `GET /api/test-cases` 支持 `search`、`limit`、`offset`；返回最新计划版本或 `null`。搜索按 ID、名称、正文作字面子串匹配。
 - `GET /api/runs` 支持 `search`、`test_case_id`、重复的 `status` 参数、`verdict`、`created_from`、`created_before`、`limit`、`offset`，返回关联用例、计划任务数、任务状态计数及去重图片数。`GET /api/runs/statistics` 使用同一筛选字段，返回分页前的运行数、结果分布、平均时长与每日趋势。
 - 时间参数必须携带时区，区间左闭右开；每日统计采用 `Asia/Shanghai`，平均时长只计算有开始和结束时间的已结束运行。没有有效耗时样本返回 `null`。查询只读取现有事实，不连接 MCP、不写库；原领域模型、业务命令及 JSON／HTML 导出内容不变。
-- 执行协议为 `8`，支持跨任务记忆和同 Run 图片重读，沿用 Skill 渐进式读取、资源目录快照、任务内正文保留、框架管理会话和节点边界取消语义。HTTP 契约与前端生成类型同步更新；开发阶段不为旧运行快照或 checkpoint 增加兼容处理与数据迁移，也不主动删除本地数据。
+- 执行协议为 `9`，统一工具组装并保存完整工具快照，完成回执包含有效记忆。支持跨任务记忆和同 Run 图片重读，沿用 Skill 渐进式读取、资源目录快照、任务内正文保留、框架管理会话和节点边界取消语义。HTTP 契约与前端生成类型同步更新；开发阶段不为旧运行快照或 checkpoint 增加兼容处理与数据迁移，也不主动删除本地数据。
 
 ## TestPilot 界面
 
@@ -183,7 +189,7 @@ npm.cmd run build
 
 已有环境升级时，先在该 Python 环境执行 `python -m pip uninstall -y langchain-mcp-adapters`，再安装本版依赖，避免旧独立 adapter 的 MCP 1.x 约束残留。
 
-本地 Skill 放在 `skills/base/` 或 `skills/external/`，也可通过 `TEST_AGENT_SKILLS_DIR` 指定根目录；用法见 [Skill 说明](skills/README.md)。`app/mcp.py` 管理配置和客户端，`app/tools.py` 导入业务工具，`app/skill.py` 统一包边界、摘要、列表和读取。初始只披露顶层摘要，嵌套 Skill 按需访问。三个目录资源工具是 `load_skill`、`read_resource` 和 `list_resources`；`read_resource` 可用 `base_uri` 解析正文中的相对引用。TaskAgent 另内置 `read_image_artifact` 重读已保存的运行图片。所有调用计入原有执行限制，新增图片统一存储，重读沿用原 ID，保留消息引用并遵循同一图片窗口。运行快照只保存目录元数据，实际读取内容记录在消息中；当前不兼容旧版本运行快照。
+本地 Skill 放在 `skills/base/` 或 `skills/external/`，也可通过 `TEST_AGENT_SKILLS_DIR` 指定根目录；用法见 [Skill 说明](skills/README.md)。`app/mcp.py` 管理配置和客户端，`app/tools.py` 统一集合管理，`app/skill.py` 拥有资源工具的包边界、摘要、列表和读取定义。初始只披露顶层摘要，嵌套 Skill 按需访问。三个目录资源工具是 `load_skill`、`read_resource` 和 `list_resources`；`read_resource` 可用 `base_uri` 解析正文中的相对引用。TaskAgent 的 `read_image_artifact` 重读已保存的运行图片。所有调用计入原有执行限制，新增图片统一存储，重读沿用原 ID，保留消息引用并遵循同一图片窗口。执行协议 v9 的工具快照包含全部可用工具及其模型可见 schema；来源为 MCP 服务器名、`builtin:skill` 或 `builtin:task_agent`。资源快照只保存目录元数据，实际读取内容记录在消息中；当前不兼容旧版本运行快照。
 
 会话和协议取消由适配器与 SDK 管理，宿主不维护请求 ID、会话重连或子进程清理状态。MCP [取消规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/cancellation)允许取消与返回结果竞态；没有收到的结果始终标为未确认。
 

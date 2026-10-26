@@ -97,7 +97,7 @@ def run_environment_snapshot() -> RunEnvironmentSnapshot:
         max_cycles_by_task_type={TaskType.ACT: 30, TaskType.JUDGE: 10},
         prompt_fingerprints_by_task_type={TaskType.ACT: "act-v1", TaskType.JUDGE: "judge-v1"},
         app_version="0.1.0",
-        execution_protocol_version="8",
+        execution_protocol_version="9",
     )
 
 

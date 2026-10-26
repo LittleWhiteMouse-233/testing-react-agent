@@ -16,12 +16,13 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.messages.content import ImageContentBlock, create_image_block
-from langchain_core.tools import BaseTool, StructuredTool, ToolException, tool
+from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import NodeError, NodeTimeoutError
 from langgraph.graph import END, START, MessagesState, StateGraph, add_messages
 from langgraph.graph.message import Messages
-from langgraph.prebuilt import ToolNode
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.prebuilt import ToolNode, ToolRuntime
 from langgraph.types import Command, RetryPolicy
 # Documented public API; LangGraph 1.2.9 omits this re-export from its type declarations.
 from langgraph.types import default_retry_on  # type: ignore[reportPrivateImportUsage]
@@ -51,7 +52,9 @@ from app.prompts import PromptCatalog, PromptDefinition
 
 
 _JSON_VALUE = TypeAdapter(JsonValue)
-READ_IMAGE_ARTIFACT_TOOL_NAME = "read_image_artifact"
+MESSAGE_PUBLISHING_NODES = frozenset({
+    "initialize", "cycle_guard", "model", "validate", "announce_tool", "after_tools",
+})
 
 
 class TaskAgentGraphState(MessagesState):
@@ -79,7 +82,13 @@ async def finish_task(status: str, summary: str, memory: str | None = None) -> s
     values, their source and relevant image artifact IDs. Do not copy the full history.
     """
 
-    return f"{status}: {summary}"
+    receipt = f"{status}: {summary}"
+    if memory and memory.strip():
+        receipt += f"\n\nSubmitted memory:\n{memory}"
+    return receipt
+
+
+finish_task.metadata = {"tool_source": "builtin:task_agent"}
 
 
 @dataclass(frozen=True)
@@ -94,6 +103,38 @@ class TaskAgentContext:
     task: TestTask
     memory_task_runs: tuple[TaskRun, ...]
     max_cycles: int
+
+
+@dataclass(frozen=True)
+class TaskAgentRuntimeContext:
+    """Per-task framework injection boundary, sharing task facts and live image access."""
+
+    task_context: TaskAgentContext
+    artifacts: ArtifactStore
+
+
+@tool
+async def read_image_artifact(
+    artifact_id: ArtifactId, runtime: ToolRuntime[TaskAgentRuntimeContext, TaskAgentGraphState],
+) -> list[ImageContentBlock]:
+    """Read an original saved image by its artifact_id within this run.
+
+    Copy the artifact ID disclosed before an image or retained in task memory.
+    This returns a previously saved image, not a fresh observation. A reference
+    image remains a reference; rereading it does not make it an observed target.
+    """
+    try:
+        content, mime_type = await runtime.context.artifacts.load_image_for_task(
+            artifact_id, task_run_id=runtime.context.task_context.task_run_id,
+        )
+    except LookupError as exc:
+        raise ToolException(str(exc)) from exc
+    return [create_image_block(id=artifact_id, base64=base64.b64encode(content).decode("ascii"), mime_type=mime_type)]
+
+
+read_image_artifact.handle_tool_error = True
+read_image_artifact.metadata = {"tool_source": "builtin:task_agent"}
+TASK_AGENT_TOOLS = (read_image_artifact, finish_task)
 
 
 @dataclass(frozen=True)
@@ -126,38 +167,20 @@ class TaskAgentFactory:
         self, *, task_input: TaskAgentInput,
         run_cancellation_event: asyncio.Event, checkpointer: BaseCheckpointSaver[Any] | None,
         event_recorder: TaskAgentEventRecorder,
-    ) -> tuple[Any, TaskAgentGraphState]:
+    ) -> tuple[CompiledStateGraph[TaskAgentGraphState, TaskAgentRuntimeContext], TaskAgentGraphState, TaskAgentRuntimeContext]:
         model_client = self.model_provider.client_by_id(task_input.model_profile_id)
         prompt = self.prompt_catalog.prompt_for_task_type(task_input.task_context.task.definition.type)
-
-        async def read_image_artifact(artifact_id: ArtifactId) -> list[ImageContentBlock]:
-            """Read an original saved image by its artifact_id within this run.
-
-            Copy the artifact ID disclosed before an image or retained in task memory.
-            This returns a previously saved image, not a fresh observation. A reference
-            image remains a reference; rereading it does not make it an observed target.
-            """
-            try:
-                content, mime_type = await self.artifacts.load_image_for_task(
-                    artifact_id, task_run_id=task_input.task_context.task_run_id,
-                )
-            except LookupError as exc:
-                raise ToolException(str(exc)) from exc
-            return [create_image_block(id=artifact_id, base64=base64.b64encode(content).decode("ascii"), mime_type=mime_type)]
-
-        image_read_tool = StructuredTool.from_function(coroutine=read_image_artifact, handle_tool_error=True)
-        model_tools: tuple[BaseTool, ...] = (*task_input.tools, image_read_tool, finish_task)
+        runtime_context = TaskAgentRuntimeContext(task_context=task_input.task_context, artifacts=self.artifacts)
         runtime = _TaskRuntime(
-            artifacts=self.artifacts, run_cancellation_event=run_cancellation_event,
-            task_context=task_input.task_context,
-            model_client=model_client, prompt_definition=prompt, tools=model_tools,
+            runtime_context=runtime_context, run_cancellation_event=run_cancellation_event,
+            model_client=model_client, prompt_definition=prompt, tools=task_input.tools,
             available_skills=top_level_skills(task_input.resource_catalog),
-            model_context_window=ModelContextWindow(model_profile=model_client.profile_snapshot, tools=model_tools),
+            model_context_window=ModelContextWindow(model_profile=model_client.profile_snapshot, tools=task_input.tools),
             model_image_window=ModelImageWindow(history_rounds=self.image_history_rounds),
             model_response_max_attempts=self.model_response_max_attempts,
             event_recorder=event_recorder,
         )
-        graph = StateGraph(TaskAgentGraphState)
+        graph = StateGraph(TaskAgentGraphState, context_schema=TaskAgentRuntimeContext)
         graph.add_node("initialize", runtime.initialize)
         graph.add_node("cycle_guard", runtime.cycle_guard)
         graph.add_node("model", runtime.call_model, retry_policy=RetryPolicy(
@@ -166,11 +189,13 @@ class TaskAgentFactory:
         ))
         graph.add_node("validate", runtime.validate_message)
         graph.add_node("announce_tool", runtime.announce_tool)
+        nodes_before_tools = set(graph.nodes)
         graph.add_node(
-            "tools", ToolNode(model_tools), timeout=self.tool_call_timeout_seconds,
+            "tools", ToolNode(task_input.tools), timeout=self.tool_call_timeout_seconds,
             # LangGraph 1.2.9 supports NodeError injection but omits it from StateNode's type.
             error_handler=runtime.handle_tool_error,  # type: ignore[reportArgumentType]
         )
+        framework_tool_nodes = set(graph.nodes) - nodes_before_tools - {"tools"}
         graph.add_node("after_tools", runtime.after_tools)
         graph.add_edge(START, "initialize")
         graph.add_edge("initialize", "cycle_guard")
@@ -181,9 +206,16 @@ class TaskAgentFactory:
         graph.add_conditional_edges("announce_tool", lambda state: state["route"], {"tools": "tools", "end": END})
         graph.add_edge("tools", "after_tools")
         graph.add_conditional_edges("after_tools", lambda state: state["route"], {"cycle_guard": "cycle_guard", "end": END})
+        publishing_nodes = set(graph.nodes) - framework_tool_nodes - {"tools", START, END}
+        if publishing_nodes != MESSAGE_PUBLISHING_NODES:
+            raise ValueError(
+                "Message publishing nodes do not match graph: "
+                f"missing={sorted(publishing_nodes - MESSAGE_PUBLISHING_NODES)}, "
+                f"extra={sorted(MESSAGE_PUBLISHING_NODES - publishing_nodes)}"
+            )
         return graph.compile(checkpointer=checkpointer), {
             "messages": [], "cycle_count": 0, "model_response_attempt": 0, "completion": None, "route": "cycle_guard",
-        }
+        }, runtime_context
 
 
 def _retry_model_error(exc: Exception) -> bool:
@@ -198,9 +230,8 @@ def _retry_model_error(exc: Exception) -> bool:
 
 @dataclass
 class _TaskRuntime:
-    artifacts: ArtifactStore
+    runtime_context: TaskAgentRuntimeContext
     run_cancellation_event: asyncio.Event
-    task_context: TaskAgentContext
     model_client: ChatModelClient
     prompt_definition: PromptDefinition | None
     tools: tuple[BaseTool, ...]
@@ -215,11 +246,11 @@ class _TaskRuntime:
         return {"messages": [
             SystemMessage(content=self.prompt_definition.text if self.prompt_definition is not None else ""),
             HumanMessage(content=json.dumps({
-                "task": self.task_context.task.model_dump(mode="json"),
-                "max_cycles": self.task_context.max_cycles,
+                "task": self.runtime_context.task_context.task.model_dump(mode="json"),
+                "max_cycles": self.runtime_context.task_context.max_cycles,
                 "memory_task_runs": [run.model_dump(mode="json", include={
                     "id": True, "test_task_id": True, "result": {"memory"},
-                }) for run in self.task_context.memory_task_runs],
+                }) for run in self.runtime_context.task_context.memory_task_runs],
                 "available_skills": [entry.model_dump(include={"source_id", "uri", "name", "description"})
                                      for entry in self.available_skills],
             }, ensure_ascii=False)),
@@ -228,7 +259,7 @@ class _TaskRuntime:
     async def cycle_guard(self, state: TaskAgentGraphState) -> dict[str, object]:
         if self.run_cancellation_event.is_set():
             return self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"])
-        if state["cycle_count"] >= self.task_context.max_cycles:
+        if state["cycle_count"] >= self.runtime_context.task_context.max_cycles:
             return self._completion(TaskRunStatus.BLOCKED, ReasonCode.CYCLE_LIMIT,
                                     "Decision round limit reached", state["cycle_count"])
         cycle_count = state["cycle_count"] + 1
@@ -277,7 +308,7 @@ class _TaskRuntime:
         if self.run_cancellation_event.is_set():
             return {"messages": repairs,
                     **self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"])}
-        if state["cycle_count"] >= self.task_context.max_cycles:
+        if state["cycle_count"] >= self.runtime_context.task_context.max_cycles:
             return {"messages": repairs, "route": "cycle_guard"}
         if state["model_response_attempt"] >= self.model_response_max_attempts:
             return {"messages": repairs,
@@ -325,8 +356,8 @@ class _TaskRuntime:
                     raw = await asyncio.to_thread(base64.b64decode, encoded, validate=True)
                     artifact_id = existing_artifact_id
                     if artifact_id is None:
-                        artifact = await self.artifacts.save_image(
-                            task_run_id=self.task_context.task_run_id, content=raw, mime_type=mime_type,
+                        artifact = await self.runtime_context.artifacts.save_image(
+                            task_run_id=self.runtime_context.task_context.task_run_id, content=raw, mime_type=mime_type,
                         )
                         artifact_id = artifact.id
                     saved_block["id"] = artifact_id
@@ -366,7 +397,7 @@ class _TaskRuntime:
         assert isinstance(tool_message, ToolMessage)
         call = _latest_ai_call(state["messages"])
         existing_artifact_id = (call["args"]["artifact_id"]
-                                if call["name"] == READ_IMAGE_ARTIFACT_TOOL_NAME and tool_message.status == "success" else None)
+                                if call["name"] == read_image_artifact.name and tool_message.status == "success" else None)
         tool_message = await self._prepare_tool_result(tool_message, existing_artifact_id=existing_artifact_id)
         messages = cast(list[BaseMessage], add_messages(cast(Messages, state["messages"]), [tool_message]))
         # Product image retention policy; add_messages replaces these messages
@@ -379,10 +410,10 @@ class _TaskRuntime:
             terminal = FinishTaskRunToolInput.model_validate(call["args"])
             status = TaskRunStatus(terminal.status)
             reason = {TaskRunStatus.PASSED: ReasonCode.COMPLETED, TaskRunStatus.BLOCKED: ReasonCode.AGENT_BLOCKED,
-                      TaskRunStatus.FAILED: ReasonCode.GOAL_UNREACHABLE if self.task_context.task.definition.type == TestTaskType.ACT else ReasonCode.ASSERTION_FAILED}[status]
+                      TaskRunStatus.FAILED: ReasonCode.GOAL_UNREACHABLE if self.runtime_context.task_context.task.definition.type == TestTaskType.ACT else ReasonCode.ASSERTION_FAILED}[status]
             update.update(self._completion(status, reason, terminal.summary, state["cycle_count"], memory=terminal.memory))
         elif tool_message.status == "error":
-            if (state["cycle_count"] < self.task_context.max_cycles
+            if (state["cycle_count"] < self.runtime_context.task_context.max_cycles
                     and state["model_response_attempt"] >= self.model_response_max_attempts):
                 update.update(self._completion(TaskRunStatus.BLOCKED, ReasonCode.TOOL_FAILED, tool_message.text, state["cycle_count"]))
         else:

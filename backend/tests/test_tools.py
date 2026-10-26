@@ -2,10 +2,11 @@ from pathlib import Path
 
 import pytest
 from langchain_core.messages import ToolMessage
+from langchain_core.tools import StructuredTool
 from langsmith import tracing_context
 
 from app.mcp import MCPClientProvider
-from app.tools import MCPToolProvider, snapshot_tools
+from app.tools import ToolProvider, snapshot_tools
 from mcp_support import image_block, load_mcp_client_provider, read_records, replay_call, text_block, write_mcp_config
 
 
@@ -16,7 +17,7 @@ async def test_replay_scenario_continues_across_framework_sessions(tmp_path: Pat
         replay_call(content=[text_block("second observation")]),
     ])
     with tracing_context(enabled=False):
-        tools = await MCPToolProvider(await load_mcp_client_provider(config)).discover_tools()
+        tools = await ToolProvider(await load_mcp_client_provider(config)).discover_tools()
         responses = [await tools[0].ainvoke({
             "name": tools[0].name, "args": {}, "id": str(index), "type": "tool_call",
         }) for index in range(2)]
@@ -30,7 +31,7 @@ async def test_discovery_closes_sessions_and_tools_use_independent_calls(tmp_pat
         replay_call(content=[text_block("first"), image_block()]),
         replay_call(content=[text_block("second"), image_block()]),
     ], servers=("first", "second"))
-    tools = await MCPToolProvider(await load_mcp_client_provider(config)).discover_tools()
+    tools = await ToolProvider(await load_mcp_client_provider(config)).discover_tools()
     assert [tool.name for tool in tools] == ["first_inspect", "second_inspect"]
     snapshot = snapshot_tools(tools)
     assert [tool.source for tool in snapshot.tools] == ["first", "second"]
@@ -64,3 +65,39 @@ async def test_configuration_errors_do_not_require_a_device(tmp_path: Path) -> N
     from pydantic import ValidationError
     with pytest.raises(ValidationError, match="transport"):
         await MCPClientProvider(config).load_clients()
+
+
+@pytest.mark.asyncio
+async def test_additional_tools_are_frozen_per_discovery_and_snapshotted(tmp_path: Path) -> None:
+    async def finish_task() -> str:
+        """Finish the current task."""
+        return "passed"
+
+    extra_tool = StructuredTool.from_function(
+        coroutine=finish_task, metadata={"tool_source": "builtin:fixture"},
+    )
+    additional_tools = [extra_tool]
+    provider = ToolProvider(MCPClientProvider(tmp_path / "unused.json"), additional_tools=additional_tools)
+    additional_tools.clear()
+    first = await provider.discover_tools()
+    second = await provider.discover_tools()
+    assert first == second == (extra_tool,)
+    snapshot = snapshot_tools(first)
+    assert snapshot.tools[0].name == extra_tool.name
+    assert snapshot.tools[0].source == "builtin:fixture"
+    assert snapshot.tools[0].annotations.readOnlyHint is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_mcp", [False, True])
+async def test_complete_tool_collection_rejects_duplicate_names(tmp_path: Path, with_mcp: bool) -> None:
+    async def inspect() -> str:
+        """Inspect the current target."""
+        return "observed"
+
+    extra_tool = StructuredTool.from_function(coroutine=inspect, name="fixture_inspect")
+    clients = (await load_mcp_client_provider(write_mcp_config(tmp_path, []))
+               if with_mcp else MCPClientProvider(tmp_path / "unused.json"))
+    provider = ToolProvider(clients, additional_tools=(extra_tool,) if with_mcp else (extra_tool, extra_tool))
+    with pytest.raises(ValueError, match="fixture_inspect"):
+        await provider.discover_tools()

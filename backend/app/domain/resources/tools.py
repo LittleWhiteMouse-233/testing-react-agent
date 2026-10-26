@@ -1,4 +1,4 @@
-"""Immutable, credential-free projections of discovered MCP tools."""
+"""Immutable, credential-free projections of all tools available to one run."""
 from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
@@ -16,7 +16,7 @@ class ToolAnnotationsSnapshot(BaseModel):
 
 
 class ToolDefinitionSnapshot(BaseModel):
-    """One discovered tool definition, owned by its external MCP server."""
+    """One model-visible tool definition with its MCP or built-in source."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     name: str = Field(min_length=1)
@@ -27,7 +27,7 @@ class ToolDefinitionSnapshot(BaseModel):
 
 
 class ToolCatalogSnapshot(BaseModel):
-    """The actual discovered tool catalog frozen for one execution."""
+    """The complete TaskAgent tool catalog frozen for one execution."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     tools: list[ToolDefinitionSnapshot]

@@ -120,6 +120,14 @@ def test_memory_image_reads_preserve_original_identity_window_and_exports(tmp_pa
         assert source["id"] in memory_values[0]
         events = [entry["event"] for entry in report["events"]]
         assert not any(event["type"] == "message.validation_failed" for event in events)
+        receipt = next(event["message"] for event in events if event["type"] == "message.appended"
+                       and event["task_run_id"] == detail["task_runs"][0]["id"]
+                       and event["message"]["role"] == "tool" and event["message"]["name"] == "finish_task")
+        assert receipt["content"][0]["text"].endswith(f"\n\nSubmitted memory:\n{memory_values[0]}")
+        with client.stream("GET", f"/api/runs/{run_id}/stream?after=0") as stream:
+            streamed_events = [json.loads(line.removeprefix("data: ")) for line in stream.iter_lines()
+                               if line.startswith("data: ")]
+        assert streamed_events == report["events"]
         reads = [event["message"] for event in events if event["type"] == "message.appended"
                  and event["message"]["role"] == "tool" and event["message"]["name"] == "read_image_artifact"]
         assert len(reads) == 2
@@ -140,8 +148,10 @@ def test_memory_image_reads_preserve_original_identity_window_and_exports(tmp_pa
             downloaded = client.get(f"/api/artifacts/{exported['id']}")
             if export_format == "json":
                 assert downloaded.json()["detail"]["task_runs"][0]["result"]["memory"] == memory_values[0]
+                assert downloaded.json()["events"] == report["events"]
             else:
                 assert "A baseline &lt;original&gt;" in downloaded.text
+                assert "Submitted memory:\nA baseline &lt;original&gt;" in downloaded.text
                 assert "data:image/png;base64," in downloaded.text and source["id"] in downloaded.text
 
 
@@ -247,7 +257,15 @@ def test_configured_cycle_limits_by_task_type(
                     )
 
 
-def test_act_and_judge_share_tools_and_model(tmp_path: Path) -> None:
+def test_act_and_judge_share_tools_and_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bound_tool_names: list[tuple[str, ...]] = []
+    original_bind_tools = ScriptedChatModel.bind_tools
+
+    def bind_tools(model: ScriptedChatModel, tools: Any, **kwargs: Any):
+        bound_tool_names.append(tuple(tool.name for tool in tools))
+        return original_bind_tools(model, tools, **kwargs)
+
+    monkeypatch.setattr(ScriptedChatModel, "bind_tools", bind_tools)
     prompt_catalog = PromptCatalog()
     act_prompt = prompt_catalog.prompt_for_task_type(TaskType.ACT)
     judge_prompt = prompt_catalog.prompt_for_task_type(TaskType.JUDGE)
@@ -260,6 +278,14 @@ def test_act_and_judge_share_tools_and_model(tmp_path: Path) -> None:
             detail = wait_for_run(client, run_id)
             assert detail["run"]["verdict"] == "PASS"
             assert [task["cycle_count"] for task in detail["task_runs"]] == [2, 2]
+            snapshots = detail["environment"]["tool_catalog"]["tools"]
+            assert [entry["name"] for entry in snapshots] == [
+                "fixture_inspect", "load_skill", "read_resource", "list_resources", "read_image_artifact", "finish_task",
+            ]
+            assert bound_tool_names[-2:] == [tuple(entry["name"] for entry in snapshots)] * 2
+            assert [entry["source"] for entry in snapshots] == [
+                "fixture", *(["builtin:skill"] * 3), *(["builtin:task_agent"] * 2),
+            ]
             assert detail["environment"]["prompt_fingerprints_by_task_type"] == {
                 "act": act_prompt.fingerprint, "judge": judge_prompt.fingerprint,
             }
@@ -802,7 +828,11 @@ def test_run_tools_ignore_config_changes_and_hold_the_single_run_slot(tmp_path: 
         write_mcp_config(tmp_path, [replay_call(content=[text_block("New target state")])], servers=("updated",))
         next_detail = wait_for_run(client, start_run(client, plan))
         assert next_detail["run"]["verdict"] == "PASS"
-        assert [tool["source"] for tool in next_detail["environment"]["tool_catalog"]["tools"]] == ["updated"]
+        snapshots = next_detail["environment"]["tool_catalog"]["tools"]
+        assert [tool["source"] for tool in snapshots] == [
+            "updated", *(["builtin:skill"] * 3), *(["builtin:task_agent"] * 2),
+        ]
+        assert len({tool["name"] for tool in snapshots}) == len(snapshots) == 6
     records = read_records(tmp_path)
     # Tool and resource capability discovery each close their own session,
     # followed by the two independent business calls.

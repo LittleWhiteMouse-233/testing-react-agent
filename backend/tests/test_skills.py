@@ -144,7 +144,7 @@ async def test_invalid_local_file_addresses_are_model_visible_errors(tmp_path: P
 async def test_mcp_manifest_nested_resources_and_source_bound_reads(tmp_path: Path) -> None:
     from mcp_support import load_mcp_client_provider
     from app.skill import SkillResourceProvider, top_level_skills
-    from app.tools import MCPToolProvider
+    from app.tools import ToolProvider
     from mcp_support import PNG_BASE64, read_records, write_mcp_config
 
     meta = {"fastmcp": {"skill": {"name": "Parent", "is_manifest": False}}}
@@ -166,7 +166,7 @@ async def test_mcp_manifest_nested_resources_and_source_bound_reads(tmp_path: Pa
     }
     config = write_mcp_config(tmp_path, [], resources=resources, resource_contents=contents,
                              templates=[{"uriTemplate": "skill://parent/{path*}", "name": "attachments"}], tools_enabled=False)
-    assert await MCPToolProvider(await load_mcp_client_provider(config)).discover_tools() == ()
+    assert await ToolProvider(await load_mcp_client_provider(config)).discover_tools() == ()
     provider = SkillResourceProvider(tmp_path / "skills", await load_mcp_client_provider(config))
     catalog = await provider.discover_resources()
     assert {entry.name for entry in top_level_skills(catalog)} == {"Parent", "Other"}

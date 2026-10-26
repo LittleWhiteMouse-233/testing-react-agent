@@ -28,7 +28,7 @@ export function runReport(verdict: TestRunVerdict | null = "PASS"): TestRunRepor
       environment: { tool_catalog: { tools: [{ name: "fixture_inspect", source: "fixture", description: "读取观察", input_schema: { type: "object" }, annotations: {} }] },
         resource_catalog: { local_root: null, resources: [], templates: [] },
         execution_model: profile, prompt_fingerprints_by_task_type: { act: "act-v1", judge: "judge-v1" },
-        max_cycles_by_task_type: { act: 30, judge: 10 }, app_version: "0.1.0", execution_protocol_version: "8" },
+        max_cycles_by_task_type: { act: 30, judge: 10 }, app_version: "0.1.0", execution_protocol_version: "9" },
       task_runs: [{ id: taskRunId, test_run_id: runId, test_task_id: runId, status, cycle_count: 2,
         started_at: createdAt, finished_at: verdict ? "2026-09-14T02:23:47Z" : null,
         result: verdict ? { summary: "已根据截图检查版本号", reason_code: verdict === "CANCELLED" ? "user_cancelled" : verdict === "BLOCKED" ? "tool_failed" : verdict === "FAIL" ? "assertion_failed" : "completed" } : null }]

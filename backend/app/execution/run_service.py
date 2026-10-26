@@ -15,7 +15,7 @@ from app.persistence.run_repository import (
     SqlAlchemyRunRepository,
 )
 from app.prompts import PromptCatalog
-from app.tools import MCPToolProvider, snapshot_tools
+from app.tools import ToolProvider, snapshot_tools
 from app.mcp import MCPClientProvider, MCPConnectionError
 from app.skill import SkillResourceProvider
 from app.test_case_lock import TestCaseLock
@@ -52,7 +52,7 @@ class RunService:
         model_provider: ModelProvider,
         prompt_catalog: PromptCatalog,
         mcp_clients: MCPClientProvider,
-        tools: MCPToolProvider,
+        tools: ToolProvider,
         skills: SkillResourceProvider,
         max_cycles_by_task_type: dict[TestTaskType, int],
         app_version: str,
@@ -151,7 +151,7 @@ class RunService:
                 max_cycles_by_task_type=self.max_cycles_by_task_type,
                 prompt_fingerprints_by_task_type=self.prompt_catalog.prompt_fingerprints_by_task_type,
                 app_version=self.app_version,
-                execution_protocol_version="8",
+                execution_protocol_version="9",
             )
             try:
                 creation = asyncio.create_task(self.repository.create_test_run(
@@ -169,7 +169,7 @@ class RunService:
             assert run is not None
             work.test_run_id = run.id
             prepared_run.set_result(run)
-            await self.executor.run(run.id, work.cancellation, tools + self.skills.build_resource_tools())
+            await self.executor.run(run.id, work.cancellation, tools)
         except Exception as exc:
             if not prepared_run.done():
                 prepared_run.set_exception(exc)

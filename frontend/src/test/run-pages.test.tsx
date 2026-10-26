@@ -120,6 +120,20 @@ it.each(["execution", "report"])("omits an empty task memory section in the %s p
   expect(screen.queryByText("跨任务记忆")).not.toBeInTheDocument();
 });
 
+it.each(["execution", "report"])("renders saved finish receipts independently of task results in the %s page", async (page) => {
+  const receipt = "passed: Observed A\n\nSubmitted memory:\nA: <original>\nfirmware V2.3.7";
+  report.detail.task_runs[0]!.result!.memory = "Task result memory";
+  report.events = [runEvent(1, { type: "message.appended", test_run_id: runId, task_run_id: taskRunId, message: {
+    role: "tool", message_id: "finish-receipt", tool_call_id: "finish-1", name: "finish_task", status: "success",
+    content: [{ type: "text", text: receipt }],
+  } })];
+  renderPage(`/runs/${runId}${page === "report" ? "/report" : ""}`);
+  expect(await screen.findByText(receipt, { normalizer: (text) => text })).toBeInTheDocument();
+  expect(screen.getByText("Task result memory")).toBeInTheDocument();
+  expect(document.querySelector(".message-text")?.textContent).toBe(receipt);
+  expect(document.querySelector(".message-text img")).toBeNull();
+});
+
 it("updates memory after task.finished fetches the persisted task result", async () => {
   report = runReport(null);
   renderPage(`/runs/${runId}`);

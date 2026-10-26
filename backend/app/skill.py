@@ -302,5 +302,6 @@ class SkillResourceProvider:
         return package_prefix.startswith(prefix) or prefix.startswith(package_prefix)
 
     def build_resource_tools(self) -> tuple[BaseTool, ...]:
-        return tuple(StructuredTool.from_function(coroutine=handler, handle_tool_error=True)
+        return tuple(StructuredTool.from_function(coroutine=handler, handle_tool_error=True,
+                                                  metadata={"tool_source": "builtin:skill"})
                      for handler in (self.load_skill, self.read_resource, self.list_resources))

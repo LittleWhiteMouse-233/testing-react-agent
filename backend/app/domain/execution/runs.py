@@ -87,7 +87,7 @@ class TestRunEnvironmentSnapshot(BaseModel):
     max_cycles_by_task_type: dict[TestTaskType, Annotated[int, Field(ge=1, le=100)]]
     prompt_fingerprints_by_task_type: dict[TestTaskType, Annotated[str, Field(min_length=1)] | None]
     app_version: str = Field(min_length=1)
-    execution_protocol_version: Literal["8"]
+    execution_protocol_version: Literal["9"]
 
     @model_validator(mode="after")
     def task_types_are_complete(self) -> "TestRunEnvironmentSnapshot":

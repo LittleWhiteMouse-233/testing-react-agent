@@ -2046,7 +2046,7 @@
             "$ref": "#/components/schemas/LLMProfileSnapshot"
           },
           "execution_protocol_version": {
-            "const": "8",
+            "const": "9",
             "title": "Execution Protocol Version",
             "type": "string"
           },
@@ -2437,7 +2437,7 @@
       },
       "ToolCatalogSnapshot": {
         "additionalProperties": false,
-        "description": "The actual discovered tool catalog frozen for one execution.",
+        "description": "The complete TaskAgent tool catalog frozen for one execution.",
         "properties": {
           "tools": {
             "items": {
@@ -2455,7 +2455,7 @@
       },
       "ToolDefinitionSnapshot": {
         "additionalProperties": false,
-        "description": "One discovered tool definition, owned by its external MCP server.",
+        "description": "One model-visible tool definition with its MCP or built-in source.",
         "properties": {
           "annotations": {
             "$ref": "#/components/schemas/ToolAnnotationsSnapshot"

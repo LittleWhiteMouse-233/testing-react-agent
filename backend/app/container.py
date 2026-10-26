@@ -17,7 +17,7 @@ from app.domain.planning.events import PlanningEvent
 from app.domain.planning import TestTaskType
 from app.execution.executor import RunExecutor
 from app.execution.run_service import RunService
-from app.execution.task_agent import TaskAgentFactory
+from app.execution.task_agent import TASK_AGENT_TOOLS, TaskAgentFactory
 from app.persistence.db import build_engine, build_session_factory
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.planning import PlanningGraph, PlanningService
@@ -25,7 +25,7 @@ from app.prompts import PromptCatalog
 from app.reporting import ReportService
 from app.mcp import MCPClientProvider
 from app.skill import SkillResourceProvider
-from app.tools import MCPToolProvider
+from app.tools import ToolProvider
 from app.test_case_lock import TestCaseLock
 
 
@@ -42,8 +42,10 @@ class Container:
             self.sessions,
         )
         self.mcp_clients = MCPClientProvider(settings.mcp_config_path)
-        self.tools = MCPToolProvider(self.mcp_clients)
         self.skills = SkillResourceProvider(settings.skills_dir, self.mcp_clients)
+        self.tools = ToolProvider(
+            self.mcp_clients, additional_tools=(*self.skills.build_resource_tools(), *TASK_AGENT_TOOLS),
+        )
         prompt_catalog = PromptCatalog()
         model_clients_by_id: dict[str, ChatModelClient] = {}
         for profile in settings.llm_profiles:

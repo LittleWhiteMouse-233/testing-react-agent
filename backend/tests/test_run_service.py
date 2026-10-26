@@ -37,7 +37,7 @@ def test_one_preparation_timeout_covers_every_stage_and_releases_run_entry(
 
         async def discover_tools():
             await stage("tools")
-            return ()
+            return container.tools.additional_tools
 
         async def discover_resources() -> ResourceCatalogSnapshot:
             await stage("resources")
@@ -104,8 +104,8 @@ def test_tool_failure_blocks_releases_slot_and_allows_another_run(
         async def discover_tools():
             return (StructuredTool.from_function(
                 coroutine=fail_tool, name="fixture_inspect", description="Observe target",
-                metadata={"mcp_server_name": "fixture"},
-            ),)
+                metadata={"tool_source": "fixture"},
+            ), *container.tools.additional_tools)
 
         async def exercise():
             monkeypatch.setattr(container.tools, "discover_tools", discover_tools)
@@ -287,7 +287,7 @@ def test_shutdown_cancels_discovery_before_run_creation(tmp_path: Path, monkeypa
                 try:
                     preparing.set()
                     await asyncio.Event().wait()
-                    return ()
+                    return container.tools.additional_tools
                 finally:
                     cleaned.set()
 

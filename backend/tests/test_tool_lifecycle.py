@@ -12,16 +12,24 @@ from uuid import uuid4
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
 from langsmith import tracing_context
 
 from app.artifacts import ArtifactStore
 from app.domain.resources.static_resources import ResourceCatalogSnapshot
 from app.domain import planning
-from app.domain.execution import Artifact, ArtifactType
+from app.domain.execution import Artifact, ArtifactType, ReasonCode, TaskAgentCompletion, TaskRunResult, TaskRunStatus
 from app.domain.errors import ToolCallError, describe_exception
 from app.execution.model_context import ModelContextWindow, ModelImageWindow
-from app.execution.task_agent import TaskAgentContext, TaskAgentFactory, TaskAgentGraphState, TaskAgentInput, _TaskRuntime, finish_task
+from app.execution.task_agent import (
+    TASK_AGENT_TOOLS, TaskAgentContext, TaskAgentFactory, TaskAgentGraphState,
+    TaskAgentInput, TaskAgentRuntimeContext, _TaskRuntime, finish_task,
+)
+from app.execution.executor import RunExecutor
+from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.execution.task_agent_events import TaskAgentEventRecorder
+from app.execution import task_agent
 from app.event_stream.projector import project_run_message
 from app.llm import ModelProvider, ScriptedChatModelClient
 from app.prompts import PromptCatalog
@@ -42,9 +50,10 @@ def task_runtime() -> _TaskRuntime:
         memory_task_runs=(), max_cycles=3,
     )
     return _TaskRuntime(
-        artifacts=create_autospec(ArtifactStore, instance=True),
+        runtime_context=TaskAgentRuntimeContext(
+            task_context=task_context, artifacts=create_autospec(ArtifactStore, instance=True),
+        ),
         run_cancellation_event=asyncio.Event(),
-        task_context=task_context,
         tools=model_tools, model_client=model_client,
         available_skills=[],
         model_context_window=ModelContextWindow(model_profile=model_client.profile_snapshot, tools=model_tools),
@@ -59,6 +68,99 @@ def initial_tool_state() -> TaskAgentGraphState:
         "messages": [AIMessage(content="", tool_calls=[{"name": "observe", "args": {}, "id": "call"}])],
         "cycle_count": 1, "model_response_attempt": 1, "completion": None, "route": "tools",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("memory", [None, "", " \t\n", "  A: <original>\nfirmware V2.3.7  "])
+async def test_finish_tool_receipt_preserves_only_effective_submitted_memory(memory: str | None) -> None:
+    receipt = await finish_task.ainvoke({"status": "passed", "summary": "Observed A", "memory": memory})
+    expected = "passed: Observed A"
+    if memory and memory.strip():
+        expected += f"\n\nSubmitted memory:\n{memory}"
+    assert receipt == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declaration_change", ["missing", "extra"])
+async def test_message_publication_contract_is_checked_during_build(
+    task_runtime: _TaskRuntime, monkeypatch: pytest.MonkeyPatch, declaration_change: str,
+) -> None:
+    declared_nodes = frozenset({"initialize", "cycle_guard", "model", "validate", "announce_tool", "after_tools"})
+    declared_nodes = (declared_nodes - {"initialize"} if declaration_change == "missing"
+                      else declared_nodes | {"unexpected"})
+    monkeypatch.setattr(task_agent, "MESSAGE_PUBLISHING_NODES", declared_nodes, raising=False)
+    model = ScriptedChatModelClient()
+    factory = TaskAgentFactory(
+        artifacts=task_runtime.runtime_context.artifacts, model_provider=ModelProvider({model.model_id: model}),
+        prompt_catalog=PromptCatalog(),
+    )
+    expected_difference = r"missing=\['initialize'\]" if declaration_change == "missing" else r"extra=\['unexpected'\]"
+    with pytest.raises(ValueError, match=expected_difference):
+        await factory.build(
+            task_input=TaskAgentInput(
+                task_context=task_runtime.runtime_context.task_context, tools=TASK_AGENT_TOOLS,
+                resource_catalog=ResourceCatalogSnapshot(), model_profile_id=model.profile_snapshot.profile_id,
+            ),
+            run_cancellation_event=asyncio.Event(), checkpointer=None, event_recorder=task_runtime.event_recorder,
+        )
+    assert model.invocations == []
+
+
+def test_image_tool_snapshot_contains_only_model_visible_arguments() -> None:
+    from app.tools import snapshot_tools
+
+    snapshots = snapshot_tools(task_agent.TASK_AGENT_TOOLS)
+    image_tool = next(entry for entry in snapshots.tools if entry.name == "read_image_artifact")
+    assert image_tool.source == "builtin:task_agent"
+    assert set(image_tool.input_schema["properties"]) == {"artifact_id"}
+    assert image_tool.input_schema["required"] == ["artifact_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("serialized", [False, True])
+async def test_executor_captures_completion_independently_and_waits_for_stream_end(
+    task_runtime: _TaskRuntime, serialized: bool,
+) -> None:
+    completion = TaskAgentCompletion(
+        status=TaskRunStatus.PASSED,
+        result=TaskRunResult(reason_code=ReasonCode.COMPLETED, summary="Observed target"), cycle_count=1,
+    )
+    tail_reached = asyncio.Event()
+
+    async def complete(state: TaskAgentGraphState) -> dict[str, object]:
+        return {"completion": completion.model_dump(mode="json") if serialized else completion}
+
+    async def publish_tail(state: TaskAgentGraphState) -> dict[str, object]:
+        tail_reached.set()
+        return {"messages": [AIMessage(id=str(uuid4()), content="Published before stream exit")]}
+
+    graph = StateGraph(TaskAgentGraphState, context_schema=TaskAgentRuntimeContext)
+    graph.add_node("completion_only", complete)
+    graph.add_node("model", publish_tail)
+    graph.add_edge(START, "completion_only")
+    graph.add_edge("completion_only", "model")
+    graph.add_edge("model", END)
+    initial: TaskAgentGraphState = {
+        "messages": [], "cycle_count": 0, "model_response_attempt": 0, "completion": None, "route": "model",
+    }
+    factory = create_autospec(TaskAgentFactory, instance=True)
+    checkpointer = InMemorySaver()
+    factory.build.return_value = (graph.compile(checkpointer=checkpointer), initial, task_runtime.runtime_context)
+    repository = create_autospec(SqlAlchemyRunRepository, instance=True)
+    executor = RunExecutor(repository=repository, agent_factory=factory, checkpoint_path="unused")
+    with tracing_context(enabled=False):
+        actual = await executor._execute_task(
+            test_run_id=str(uuid4()),
+            task_input=TaskAgentInput(
+                task_context=task_runtime.runtime_context.task_context, tools=TASK_AGENT_TOOLS,
+                resource_catalog=ResourceCatalogSnapshot(), model_profile_id=task_runtime.model_client.profile_snapshot.profile_id,
+            ),
+            run_cancellation_event=asyncio.Event(), checkpointer=checkpointer,
+        )
+    assert actual == completion
+    assert tail_reached.is_set()
+    repository.append_events.assert_awaited_once()
+    assert repository.append_events.await_args.args[0][0][0].message.content[0].text == "Published before stream exit"
 
 
 @pytest.mark.asyncio
@@ -103,14 +205,14 @@ async def test_cancellation_at_model_or_event_boundary_prevents_further_calls(
         AIMessage(content="invalid") if boundary == "invalid_response" else tool_turn(1, "observe"),
     ])
     factory = TaskAgentFactory(
-        artifacts=task_runtime.artifacts, model_provider=ModelProvider({model.model_id: model}),
+        artifacts=task_runtime.runtime_context.artifacts, model_provider=ModelProvider({model.model_id: model}),
         prompt_catalog=PromptCatalog(),
         model_response_max_attempts=1, image_history_rounds=1,
     )
-    graph, initial = await factory.build(
+    graph, initial, runtime_context = await factory.build(
         task_input=TaskAgentInput(
-            task_context=task_runtime.task_context,
-            tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"),),
+            task_context=task_runtime.runtime_context.task_context,
+            tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"), *TASK_AGENT_TOOLS),
             resource_catalog=ResourceCatalogSnapshot(),
             model_profile_id=model.profile_snapshot.profile_id,
         ),
@@ -118,7 +220,7 @@ async def test_cancellation_at_model_or_event_boundary_prevents_further_calls(
         event_recorder=event_recorder,
     )
     with tracing_context(enabled=False):
-        final_state = await graph.ainvoke(initial)
+        final_state = await graph.ainvoke(initial, context=runtime_context)
     assert final_state["completion"].status.value == "cancelled"
     assert final_state["completion"].result.reason_code.value == "user_cancelled"
     assert calls == 0
@@ -147,14 +249,14 @@ async def test_native_timeout_returns_to_model_without_waiting_for_late_result(t
 
     model = ScriptedChatModelClient(turns=[tool_turn(1, "observe"), finish_turn(2, "blocked")])
     factory = TaskAgentFactory(
-        artifacts=task_runtime.artifacts, model_provider=ModelProvider({model.model_id: model}),
+        artifacts=task_runtime.runtime_context.artifacts, model_provider=ModelProvider({model.model_id: model}),
         prompt_catalog=PromptCatalog(),
         tool_call_timeout_seconds=0.05, image_history_rounds=1,
     )
-    graph, initial = await factory.build(
+    graph, initial, runtime_context = await factory.build(
         task_input=TaskAgentInput(
-            task_context=task_runtime.task_context,
-            tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"),),
+            task_context=task_runtime.runtime_context.task_context,
+            tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"), *TASK_AGENT_TOOLS),
             resource_catalog=ResourceCatalogSnapshot(),
             model_profile_id=model.profile_snapshot.profile_id,
         ),
@@ -163,7 +265,7 @@ async def test_native_timeout_returns_to_model_without_waiting_for_late_result(t
     )
     try:
         with tracing_context(enabled=False):
-            final_state = await asyncio.wait_for(graph.ainvoke(initial), 5)
+            final_state = await asyncio.wait_for(graph.ainvoke(initial, context=runtime_context), 5)
         assert interrupted.is_set() and not finished.is_set()
         assert calls == 1
         returned = next(message for message in model.invocations[1] if isinstance(message, ToolMessage))
@@ -200,11 +302,11 @@ async def test_each_image_discloses_its_id_and_keeps_its_public_reference(
     task_runtime: _TaskRuntime, status: str,
 ) -> None:
     artifacts = [Artifact(
-        id=str(uuid4()), test_run_id=None, task_run_id=task_runtime.task_context.task_run_id,
+        id=str(uuid4()), test_run_id=None, task_run_id=task_runtime.runtime_context.task_context.task_run_id,
         type=ArtifactType.IMAGE, mime_type="image/png", size_bytes=len(base64.b64decode(PNG_BASE64)),
         sha256="a" * 64, created_at=datetime.now(timezone.utc),
     ) for _ in range(2)]
-    task_runtime.artifacts.save_image.side_effect = artifacts  # type: ignore[attr-defined]
+    task_runtime.runtime_context.artifacts.save_image.side_effect = artifacts  # type: ignore[attr-defined]
     message = ToolMessage(id="images", tool_call_id="call", status=status, content=[
         {"type": "text", "text": "before"},
         {"type": "image", "base64": PNG_BASE64, "mime_type": "image/png", "id": "external-id"},

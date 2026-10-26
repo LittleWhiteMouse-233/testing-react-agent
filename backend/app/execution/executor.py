@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from typing import Any, cast
 
 from langchain_core.messages import BaseMessage
@@ -30,7 +31,7 @@ from app.domain.execution import (
     aggregate_test_run_verdict,
 )
 from app.domain.planning import TestTask
-from app.execution.task_agent import TaskAgentContext, TaskAgentFactory, TaskAgentInput
+from app.execution.task_agent import MESSAGE_PUBLISHING_NODES, TaskAgentContext, TaskAgentFactory, TaskAgentInput
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.event_stream.projector import project_run_message
@@ -162,7 +163,7 @@ class RunExecutor:
         checkpointer: BaseCheckpointSaver[Any],
     ) -> TaskAgentCompletion:
         task_context = task_input.task_context
-        graph, initial = await self.agent_factory.build(
+        graph, initial, runtime_context = await self.agent_factory.build(
             task_input=task_input,
             run_cancellation_event=run_cancellation_event,
             checkpointer=checkpointer,
@@ -173,6 +174,7 @@ class RunExecutor:
         completion: TaskAgentCompletion | None = None
         async for part in graph.astream(
             initial,
+            context=runtime_context,
             config={"configurable": {"thread_id": f"task-run:{task_context.task_run_id}"},
                     "recursion_limit": task_context.max_cycles * 8 + 20},
             # LangGraph 1.2.9 re-raises handled errors with custom streams (#8608).
@@ -181,29 +183,31 @@ class RunExecutor:
             version="v2",
             durability="exit",
         ):
-            completion = await self._consume_updates(
-                test_run_id, task_context.task_run_id, part["data"], completion
-            )
+            node_updates = part["data"]
+            if not isinstance(node_updates, dict):
+                raise TypeError("LangGraph updates stream must contain a node mapping")
+            await self._publish_message_updates(test_run_id, task_context.task_run_id, node_updates)
+            for update in node_updates.values():
+                if not isinstance(update, dict):
+                    continue
+                value = update.get("completion")
+                if value is not None:
+                    completion = TaskAgentCompletion.model_validate(value)
         if completion is None:
             raise RuntimeError("TaskAgent ended without TaskAgentCompletion")
         return completion
 
-    async def _consume_updates(
+    async def _publish_message_updates(
         self,
         test_run_id: str,
         task_run_id: str,
-        data: object,
-        completion: TaskAgentCompletion | None,
-    ) -> TaskAgentCompletion | None:
-        if not isinstance(data, dict):
-            raise TypeError("LangGraph updates stream must contain a node mapping")
-        for node_name, update in data.items():
+        node_updates: Mapping[str, object],
+    ) -> None:
+        for node_name, update in node_updates.items():
             # Only application-owned publication boundaries expose messages.
             # ToolNode first writes raw results to State;
             # after_tools saves images and returns the same-ID public version.
-            if not isinstance(update, dict) or node_name not in {
-                "initialize", "cycle_guard", "model", "validate", "announce_tool", "after_tools",
-            }:
+            if not isinstance(update, dict) or node_name not in MESSAGE_PUBLISHING_NODES:
                 continue
             messages = update.get("messages", [])
             if isinstance(messages, BaseMessage):
@@ -226,14 +230,6 @@ class RunExecutor:
                 )
             if message_events:
                 await self.repository.append_events(message_events)
-            value = update.get("completion")
-            if value is not None:
-                completion = (
-                    value
-                    if isinstance(value, TaskAgentCompletion)
-                    else TaskAgentCompletion.model_validate(value)
-                )
-        return completion
 
     async def _report_execution_error(
         self, test_run_id: str, reason: ReasonCode, message: str

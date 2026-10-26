@@ -1017,7 +1017,7 @@ export interface components {
              * Execution Protocol Version
              * @constant
              */
-            execution_protocol_version: "8";
+            execution_protocol_version: "9";
             /** Max Cycles By Task Type */
             max_cycles_by_task_type: {
                 [key: string]: number;
@@ -1157,7 +1157,7 @@ export interface components {
         };
         /**
          * ToolCatalogSnapshot
-         * @description The actual discovered tool catalog frozen for one execution.
+         * @description The complete TaskAgent tool catalog frozen for one execution.
          */
         ToolCatalogSnapshot: {
             /** Tools */
@@ -1165,7 +1165,7 @@ export interface components {
         };
         /**
          * ToolDefinitionSnapshot
-         * @description One discovered tool definition, owned by its external MCP server.
+         * @description One model-visible tool definition with its MCP or built-in source.
          */
         ToolDefinitionSnapshot: {
             annotations: components["schemas"]["ToolAnnotationsSnapshot"];
