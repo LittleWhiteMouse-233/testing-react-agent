@@ -84,14 +84,15 @@ class TestPlanRow(Base):
 class TestTaskRow(Base):
     __tablename__ = "test_tasks"
     __table_args__ = (
-        UniqueConstraint("test_plan_id", "position", name="uq_test_task_position"),
+        UniqueConstraint("test_plan_id", "task_no", name="uq_test_task_no"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     test_plan_id: Mapped[str] = mapped_column(
         ForeignKey("test_plans.id", ondelete="CASCADE"), index=True
     )
-    position: Mapped[int] = mapped_column(Integer)
+    task_no: Mapped[int] = mapped_column(Integer)
+    jump_back_to_task_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
     type: Mapped[TestTaskType] = mapped_column(
         enum_column(TestTaskType, "test_task_type")
     )
@@ -130,7 +131,7 @@ class TaskRunRow(Base):
     __tablename__ = "task_runs"
     __table_args__ = (
         UniqueConstraint(
-            "test_run_id", "test_task_id", name="uq_task_run_test_task"
+            "test_run_id", "sequence", name="uq_task_run_sequence"
         ),
         CheckConstraint("cycle_count >= 0", name="ck_task_run_cycle_count"),
     )
@@ -142,6 +143,7 @@ class TaskRunRow(Base):
     test_task_id: Mapped[str] = mapped_column(
         ForeignKey("test_tasks.id", ondelete="RESTRICT"), index=True
     )
+    sequence: Mapped[int] = mapped_column(Integer)
     status: Mapped[TaskRunStatus] = mapped_column(
         enum_column(TaskRunStatus, "task_run_status")
     )

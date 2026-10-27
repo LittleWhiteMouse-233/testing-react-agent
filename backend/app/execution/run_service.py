@@ -55,6 +55,7 @@ class RunService:
         tools: ToolProvider,
         skills: SkillResourceProvider,
         max_cycles_by_task_type: dict[TestTaskType, int],
+        goal_max_failures: int,
         app_version: str,
         discovery_timeout_seconds: float,
     ) -> None:
@@ -67,6 +68,7 @@ class RunService:
         self.skills = skills
         self.mcp_clients = mcp_clients
         self.max_cycles_by_task_type = max_cycles_by_task_type
+        self.goal_max_failures = goal_max_failures
         self.app_version = app_version
         self.discovery_timeout_seconds = discovery_timeout_seconds
         self._start_lock = asyncio.Lock()
@@ -149,9 +151,10 @@ class RunService:
                     AgentActivity.EXECUTION
                 ).profile_snapshot,
                 max_cycles_by_task_type=self.max_cycles_by_task_type,
+                goal_max_failures=self.goal_max_failures,
                 prompt_fingerprints_by_task_type=self.prompt_catalog.prompt_fingerprints_by_task_type,
                 app_version=self.app_version,
-                execution_protocol_version="9",
+                execution_protocol_version="10",
             )
             try:
                 creation = asyncio.create_task(self.repository.create_test_run(

@@ -685,6 +685,7 @@
           "assertion_failed",
           "goal_unreachable",
           "cycle_limit",
+          "goal_failure_limit",
           "model_unavailable",
           "invalid_model_response",
           "agent_blocked",
@@ -1375,7 +1376,7 @@
       },
       "TaskRun": {
         "additionalProperties": false,
-        "description": "真正启动或由 fail-fast 跳过的单个计划任务执行实体。",
+        "description": "单次计划任务执行或跳过记录；同一任务可重入，sequence 保留运行内顺序。",
         "properties": {
           "cycle_count": {
             "minimum": 0.0,
@@ -1409,6 +1410,11 @@
               }
             ]
           },
+          "sequence": {
+            "minimum": 1.0,
+            "title": "Sequence",
+            "type": "integer"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -1439,6 +1445,7 @@
           "id",
           "test_run_id",
           "test_task_id",
+          "sequence",
           "status",
           "cycle_count",
           "result",
@@ -1494,7 +1501,7 @@
       },
       "TasksSkippedEvent": {
         "additionalProperties": false,
-        "description": "全局 fail-fast 批量创建未执行 TaskRun 的事实。",
+        "description": "执行停止后，按任务终止策略批量创建后缀 skipped 记录的事实。",
         "properties": {
           "task_run_id": {
             "anyOf": [
@@ -2046,9 +2053,14 @@
             "$ref": "#/components/schemas/LLMProfileSnapshot"
           },
           "execution_protocol_version": {
-            "const": "9",
+            "const": "10",
             "title": "Execution Protocol Version",
             "type": "string"
+          },
+          "goal_max_failures": {
+            "minimum": 1.0,
+            "title": "Goal Max Failures",
+            "type": "integer"
           },
           "max_cycles_by_task_type": {
             "additionalProperties": {
@@ -2092,6 +2104,7 @@
           "resource_catalog",
           "execution_model",
           "max_cycles_by_task_type",
+          "goal_max_failures",
           "prompt_fingerprints_by_task_type",
           "app_version",
           "execution_protocol_version"
@@ -2337,6 +2350,18 @@
             "title": "Goal",
             "type": "string"
           },
+          "jump_back_to_task_no": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jump Back To Task No"
+          },
           "success_criteria": {
             "items": {
               "type": "string"
@@ -2344,6 +2369,11 @@
             "minItems": 1,
             "title": "Success Criteria",
             "type": "array"
+          },
+          "task_no": {
+            "minimum": 1.0,
+            "title": "Task No",
+            "type": "integer"
           },
           "title": {
             "maxLength": 200,
@@ -2356,6 +2386,7 @@
           }
         },
         "required": [
+          "task_no",
           "type",
           "title",
           "goal",
@@ -2368,7 +2399,8 @@
         "description": "计划任务的业务类型；执行过程据此选择提示词与轮次上限。",
         "enum": [
           "act",
-          "judge"
+          "judge",
+          "goal"
         ],
         "title": "TestTaskType",
         "type": "string"

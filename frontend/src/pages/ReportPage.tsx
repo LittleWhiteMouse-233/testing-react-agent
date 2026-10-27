@@ -3,7 +3,7 @@ import { Alert, Button, Empty, Image, Spin, message } from "antd";
 import { Link, useParams } from "react-router-dom";
 import { $api, apiErrorMessage, artifactUrl } from "../api/client";
 import { useRunReport } from "../api/useRunReport";
-import { ElapsedTime, EventTimeline, formatTime, RunResources, StatusBadge, taskStatus, taskMaxCycles } from "../runPresentation";
+import { ElapsedTime, EventTimeline, formatTime, RunResources, StatusBadge, TaskStatusBadge, taskMaxCycles } from "../runPresentation";
 
 export default function ReportPage() {
   const { runId = "" } = useParams();
@@ -33,6 +33,9 @@ export function RunReportContent({ runId }: { runId: string }) {
   const images = artifacts.filter((artifact) => artifact.type === "image");
   const messageCount = report.events.filter((stored) => stored.event.type === "message.appended").length;
   const completed = taskRuns.filter((task) => task.status === "passed" || task.status === "failed" || task.status === "blocked" || task.status === "cancelled").length;
+  const executionCount = taskRuns.filter((task) => task.started_at !== null).length;
+  const executionCounts = new Map<string, number>();
+  const unstartedTasks = plan.content.tasks.filter((task) => !taskRuns.some((entry) => entry.test_task_id === task.test_task_id));
   return <div className="run-report">
     <header className="report-heading"><div className="eyebrow">执行记录 <span className="mono">{runId}</span></div><h2>{plan.planning_context.test_case_content.name}</h2>{report.data.test_case_archived && <span className="pill archived">用例已归档</span>}</header>
     {report.contractError && <Alert type="warning" title="实时更新已停止：事件契约错误" />}
@@ -42,7 +45,7 @@ export function RunReportContent({ runId }: { runId: string }) {
       <div><small>状态</small><StatusBadge status={run.verdict ?? run.status} /></div>
       <div><small>开始时间</small><strong>{formatTime(run.started_at)}</strong><small>Asia/Shanghai · +08</small></div>
       <div><small>时长</small><strong><ElapsedTime startedAt={run.started_at} finishedAt={run.finished_at} active={!finished} /></strong><small>分:秒</small></div>
-      <div><small>已结束任务</small><strong>{completed} <em>/ {plan.content.tasks.length}</em></strong><small>不包含跳过和未执行</small></div>
+      <div><small>执行次数</small><strong>{executionCount}</strong><small>{plan.content.tasks.length} 项计划任务 · {completed} 次已结束</small></div>
     </div></section>
     <details className="report-plan"><summary>计划 v{plan.version_number} · {plan.content.title}</summary>
       <h4>原始用例</h4><p>{plan.planning_context.test_case_content.source_text}</p>
@@ -52,17 +55,20 @@ export function RunReportContent({ runId }: { runId: string }) {
       <h4>版本来源</h4><p>{plan.origin} · {plan.derived_from_plan_id ?? "首次规划"}</p>
       <RunResources report={report.data} />
     </details>
-    <div className="section-heading"><h3>执行记录 · 时间线</h3><span>{plan.content.tasks.length} 步任务 · {messageCount} 条消息 · {images.length} 张图片</span></div>
+    <div className="section-heading"><h3>执行记录 · 时间线</h3><span>{plan.content.tasks.length} 项计划 · {executionCount} 次执行 · {messageCount} 条消息 · {images.length} 张图片</span></div>
     {report.events.some((stored) => !stored.event.task_run_id) && <details className="timeline-block"><summary>运行生命周期与错误</summary><EventTimeline events={report.events.filter((stored) => !stored.event.task_run_id)} /></details>}
-    {plan.content.tasks.map((task, index) => {
-      const taskRun = taskRuns.find((entry) => entry.test_task_id === task.test_task_id);
-      const events = taskRun ? report.events.filter((stored) => stored.event.task_run_id === taskRun.id) : [];
-      const taskImages = images.filter((artifact) => artifact.task_run_id === taskRun?.id);
-      return <details className="timeline-block" key={task.test_task_id} open={index === 0 ? true : undefined}>
-        <summary><span className={"task-number " + task.definition.type}>{index + 1}</span><div className="timeline-task-heading"><h3>{task.definition.title}</h3><small>{task.definition.type.toUpperCase()} · {events.filter((stored) => stored.event.type === "message.appended").length} 条消息 · {taskImages.length} 张图片</small></div>
-          <StatusBadge status={taskStatus(taskRun, finished)} />{taskRun && <ElapsedTime startedAt={taskRun.started_at} finishedAt={taskRun.finished_at} active={taskRun.status === "running"} />}
+    {taskRuns.map((taskRun, index) => {
+      const task = plan.content.tasks.find((entry) => entry.test_task_id === taskRun.test_task_id)!;
+      const executionNo = (executionCounts.get(task.test_task_id) ?? 0) + (taskRun.started_at !== null ? 1 : 0);
+      if (taskRun.started_at !== null) executionCounts.set(task.test_task_id, executionNo);
+      const events = report.events.filter((stored) => stored.event.task_run_id === taskRun.id);
+      const taskImages = images.filter((artifact) => artifact.task_run_id === taskRun.id);
+      return <details className="timeline-block" key={taskRun.id} open={index === 0 ? true : undefined}>
+        <summary><span className={"task-number " + task.definition.type}>{task.definition.task_no}</span><div className="timeline-task-heading"><h3>{task.definition.title}</h3><small>记录 #{taskRun.sequence} · {taskRun.started_at !== null ? "第 " + executionNo + " 次执行" : "未执行"} · {task.definition.type.toUpperCase()} · {events.filter((stored) => stored.event.type === "message.appended").length} 条消息 · {taskImages.length} 张图片</small></div>
+          <TaskStatusBadge task={task.definition} taskRun={taskRun} finished={finished} /><ElapsedTime startedAt={taskRun.started_at} finishedAt={taskRun.finished_at} active={taskRun.status === "running"} />
         </summary>
         <div className="timeline-task-body"><p><strong>目标：</strong>{task.definition.goal}</p><strong>成功标准</strong><ul>{task.definition.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul>
+          {task.definition.type === "goal" && <p>未满足时回到任务 {task.definition.jump_back_to_task_no} · 累计失败上限 {detail.environment.goal_max_failures}</p>}
           {taskRun?.result && <div className="result-note"><p>{taskRun.result.summary}</p><small>{taskRun.result.reason_code} · {taskRun.cycle_count} / {taskMaxCycles(task.definition.type, detail.environment)} 轮</small></div>}
           {taskRun?.result?.memory && <div className="task-memory"><strong>跨任务记忆</strong><p>{taskRun.result.memory}</p></div>}
           {events.length ? <EventTimeline events={events} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有任务事件" />}
@@ -71,6 +77,9 @@ export function RunReportContent({ runId }: { runId: string }) {
         </div>
       </details>;
     })}
+    {unstartedTasks.length > 0 && <section><h3>{finished ? "未执行任务" : "待执行任务"}</h3>{unstartedTasks.map((task) => <article className="task-result" key={task.test_task_id}>
+      <h4>任务 {task.definition.task_no} · {task.definition.title}</h4><TaskStatusBadge task={task.definition} finished={finished} /><p>{task.definition.goal}</p><ul>{task.definition.success_criteria.map((criterion, index) => <li key={index}>{criterion}</li>)}</ul>
+    </article>)}</section>}
     <footer className="report-footer"><span className="mono">Run ID {runId}</span><div>
       {(["json", "html"] as const).map((format) => <Button key={format} icon={<DownloadOutlined />} disabled={!finished} loading={exportReport.isPending} onClick={() => exportReport.mutate({ params: { path: { test_run_id: runId } }, body: { format } })}>{format.toUpperCase()} 报告</Button>)}
       {report.data.test_case_archived ? <Button disabled icon={<ReloadOutlined />}>用例已归档，无法重新执行</Button> : <Link to={"/cases/" + plan.test_case_id + "/plan"}><Button type="primary" icon={<ReloadOutlined />}>重新执行 · 确认最新计划</Button></Link>}

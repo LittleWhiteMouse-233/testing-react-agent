@@ -33,7 +33,7 @@ def test_missing_task_prompts_use_execution_and_its_fingerprint(tmp_path: Path) 
         assert prompt.name == "execution"
         assert prompt.text == "abc"
     assert catalog.prompt_fingerprints_by_task_type == {
-        TaskType.ACT: "ba7816bf8f01", TaskType.JUDGE: "ba7816bf8f01",
+        TaskType.ACT: "ba7816bf8f01", TaskType.JUDGE: "ba7816bf8f01", TaskType.GOAL: "ba7816bf8f01",
     }
 
 
@@ -42,7 +42,7 @@ def test_missing_prompts_have_no_definition_or_fingerprint(tmp_path: Path) -> No
 
     assert all(catalog.prompt_for_activity(activity) is None for activity in AgentActivity)
     assert all(catalog.prompt_for_task_type(task_type) is None for task_type in TaskType)
-    assert catalog.prompt_fingerprints_by_task_type == {TaskType.ACT: None, TaskType.JUDGE: None}
+    assert catalog.prompt_fingerprints_by_task_type == {TaskType.ACT: None, TaskType.JUDGE: None, TaskType.GOAL: None}
 
 
 def test_explicit_empty_prompt_has_a_content_fingerprint(tmp_path: Path) -> None:

@@ -44,10 +44,11 @@ def task_runtime() -> _TaskRuntime:
     task_context = TaskAgentContext(
         task_run_id=str(uuid4()),
         task=planning.TestTask(test_task_id=str(uuid4()), definition=planning.TestTaskDefinition(
+            task_no=1,
             type=planning.TestTaskType.ACT, title="Observe", goal="Observe the target",
             success_criteria=["Expected content is visible"],
         )),
-        memory_task_runs=(), max_cycles=3,
+        memory_text="[]", max_cycles=3,
     )
     return _TaskRuntime(
         runtime_context=TaskAgentRuntimeContext(

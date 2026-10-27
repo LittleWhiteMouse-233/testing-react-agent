@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.ids import TaskRunId, TestPlanId, TestRunId, TestTaskId
-from app.domain.planning import TestPlan, TestTaskType
+from app.domain.planning import TestPlan, TestTask, TestTaskType
 from app.domain.resources.llm import LLMProfileSnapshot
 from app.domain.resources.tools import ToolCatalogSnapshot
 from app.domain.resources.static_resources import ResourceCatalogSnapshot
@@ -50,6 +51,7 @@ class ReasonCode(StrEnum):
     ASSERTION_FAILED = "assertion_failed"
     GOAL_UNREACHABLE = "goal_unreachable"
     CYCLE_LIMIT = "cycle_limit"
+    GOAL_FAILURE_LIMIT = "goal_failure_limit"
     MODEL_UNAVAILABLE = "model_unavailable"
     INVALID_MODEL_RESPONSE = "invalid_model_response"
     AGENT_BLOCKED = "agent_blocked"
@@ -85,9 +87,10 @@ class TestRunEnvironmentSnapshot(BaseModel):
     resource_catalog: ResourceCatalogSnapshot
     execution_model: LLMProfileSnapshot
     max_cycles_by_task_type: dict[TestTaskType, Annotated[int, Field(ge=1, le=100)]]
+    goal_max_failures: int = Field(ge=1)
     prompt_fingerprints_by_task_type: dict[TestTaskType, Annotated[str, Field(min_length=1)] | None]
     app_version: str = Field(min_length=1)
-    execution_protocol_version: Literal["9"]
+    execution_protocol_version: Literal["10"]
 
     @model_validator(mode="after")
     def task_types_are_complete(self) -> "TestRunEnvironmentSnapshot":
@@ -125,13 +128,14 @@ class TestRun(BaseModel):
 
 
 class TaskRun(BaseModel):
-    """真正启动或由 fail-fast 跳过的单个计划任务执行实体。"""
+    """单次计划任务执行或跳过记录；同一任务可重入，sequence 保留运行内顺序。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True, from_attributes=True)
 
     id: TaskRunId
     test_run_id: TestRunId
     test_task_id: TestTaskId
+    sequence: int = Field(ge=1)
     status: TaskRunStatus
     cycle_count: int = Field(ge=0)
     result: TaskRunResult | None
@@ -190,19 +194,22 @@ class TestRunDetail(BaseModel):
     task_runs: list[TaskRun]
 
 
-def aggregate_test_run_verdict(task_runs: list[TaskRun]) -> TestRunVerdict:
+def aggregate_test_run_verdict(task_runs: list[TaskRun], test_tasks: Sequence[TestTask]) -> TestRunVerdict:
     """按产品规则从普通 TaskRun 终态确定性聚合 TestRun verdict。"""
 
     statuses = [task.status for task in task_runs]
     if TaskRunStatus.CANCELLED in statuses:
         raise ValueError("cancelled TaskRun requires the explicit cancellation path")
-    if TaskRunStatus.FAILED in statuses:
-        return TestRunVerdict.FAIL
-    if any(
-        status in {TaskRunStatus.BLOCKED, TaskRunStatus.SKIPPED}
-        for status in statuses
+    if TaskRunStatus.BLOCKED in statuses or any(
+        task.result is not None and task.result.reason_code == ReasonCode.GOAL_FAILURE_LIMIT
+        for task in task_runs
     ):
         return TestRunVerdict.BLOCKED
-    if statuses and all(status == TaskRunStatus.PASSED for status in statuses):
+    task_types = {task.test_task_id: task.definition.type for task in test_tasks}
+    if any(task.status == TaskRunStatus.FAILED and task_types[task.test_task_id] != TestTaskType.GOAL
+           for task in task_runs):
+        return TestRunVerdict.FAIL
+    if statuses and all(status in {TaskRunStatus.PASSED, TaskRunStatus.FAILED, TaskRunStatus.SKIPPED}
+                        for status in statuses):
         return TestRunVerdict.PASS
     return TestRunVerdict.BLOCKED

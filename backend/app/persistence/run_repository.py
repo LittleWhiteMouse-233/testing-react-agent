@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.execution import ReasonCode
@@ -160,7 +160,8 @@ class SqlAlchemyRunRepository:
                 TestTaskRow(
                     id=task.test_task_id,
                     test_plan_id=row.id,
-                    position=position,
+                    task_no=task.definition.task_no,
+                    jump_back_to_task_no=task.definition.jump_back_to_task_no,
                     type=task.definition.type,
                     title=task.definition.title,
                     goal=task.definition.goal,
@@ -168,7 +169,7 @@ class SqlAlchemyRunRepository:
                         task.definition.success_criteria
                     ),
                 )
-                for position, task in enumerate(identified.tasks)
+                for task in identified.tasks
             ]
             session.add_all(task_rows)
             await session.commit()
@@ -272,10 +273,12 @@ class SqlAlchemyRunRepository:
         )
 
         async def mutation(session: AsyncSession) -> TaskRunRow:
+            sequence = await self._next_task_run_sequence(session, test_run_id)
             row = TaskRunRow(
                 id=task_run_id,
                 test_run_id=test_run_id,
                 test_task_id=task.test_task_id,
+                sequence=sequence,
                 status=TaskRunStatus.RUNNING,
                 cycle_count=0,
                 started_at=now(),
@@ -312,7 +315,7 @@ class SqlAlchemyRunRepository:
         status: TaskRunStatus,
         result: TaskRunResult,
         cycle_count: int,
-    ) -> None:
+    ) -> TaskRun:
         async with self.sessions() as session:
             current = await self._require_task_run(session, task_run_id)
             test_run_id = current.test_run_id
@@ -322,7 +325,7 @@ class SqlAlchemyRunRepository:
             task_run_id=task_run_id,
         )
 
-        async def mutation(session: AsyncSession) -> None:
+        async def mutation(session: AsyncSession) -> TaskRunRow:
             row = await self._require_task_run(session, task_run_id)
             is_user_cancelled = result.reason_code == ReasonCode.USER_CANCELLED
             if (status == TaskRunStatus.CANCELLED) != is_user_cancelled:
@@ -333,12 +336,14 @@ class SqlAlchemyRunRepository:
             row.result_json = dump_task_run_result(result)
             row.cycle_count = cycle_count
             row.finished_at = now()
+            return row
 
-        await self.run_event_writer.commit(
+        row, _ = await self.run_event_writer.commit(
             event,
             mutation,
             dedup_key=f"{test_run_id}:{task_run_id}:task.finished",
         )
+        return task_run_from_row(row)
 
     async def skip_remaining(
         self, test_run_id: str, tasks: Sequence[TestTask]
@@ -354,7 +359,7 @@ class SqlAlchemyRunRepository:
                 result_json=dump_task_run_result(
                     TaskRunResult(
                         reason_code=ReasonCode.GLOBAL_FAIL_FAST,
-                        summary="Skipped by global fail-fast",
+                        summary="Skipped after execution stopped",
                     )
                 ),
                 finished_at=timestamp,
@@ -368,6 +373,9 @@ class SqlAlchemyRunRepository:
         )
 
         async def mutation(session: AsyncSession) -> list[TaskRunRow]:
+            sequence = await self._next_task_run_sequence(session, test_run_id)
+            for offset, row in enumerate(rows):
+                row.sequence = sequence + offset
             session.add_all(rows)
             await session.flush()
             return rows
@@ -459,7 +467,7 @@ class SqlAlchemyRunRepository:
                 await session.scalars(
                     select(TestTaskRow)
                     .where(TestTaskRow.test_plan_id == test_plan_id)
-                    .order_by(TestTaskRow.position)
+                    .order_by(TestTaskRow.task_no)
                 )
             ).all()
         )
@@ -472,12 +480,18 @@ class SqlAlchemyRunRepository:
             (
                 await session.scalars(
                     select(TaskRunRow)
-                    .join(TestTaskRow, TestTaskRow.id == TaskRunRow.test_task_id)
                     .where(TaskRunRow.test_run_id == test_run_id)
-                    .order_by(TestTaskRow.position)
+                    .order_by(TaskRunRow.sequence)
                 )
             ).all()
         )
+
+    @staticmethod
+    async def _next_task_run_sequence(session: AsyncSession, test_run_id: str) -> int:
+        current = await session.scalar(select(func.max(TaskRunRow.sequence)).where(
+            TaskRunRow.test_run_id == test_run_id,
+        ))
+        return (current or 0) + 1
 
     @staticmethod
     async def _require_run(session: AsyncSession, test_run_id: str) -> TestRunRow:

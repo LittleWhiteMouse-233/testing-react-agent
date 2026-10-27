@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TestPlan } from "../api/contracts";
-import { isPlanDraftValid, toPlanDraft } from "../planDraft";
+import { isPlanDraftValid, toPlanDraft, updateTaskOrder } from "../planDraft";
+import type { TestTaskDefinition } from "../api/contracts";
 
 const plan: TestPlan = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -32,6 +33,7 @@ const plan: TestPlan = {
     tasks: [{
       test_task_id: "33333333-3333-4333-8333-333333333333",
       definition: {
+        task_no: 1,
         type: "judge",
         title: "判断",
         goal: "确认页面",
@@ -61,6 +63,57 @@ describe("plan UI draft mapper", () => {
     expect(draftTask).toBeDefined();
     if (!draftTask) throw new Error("Expected one draft task");
     draftTask.success_criteria = [""];
+    expect(isPlanDraftValid(draft)).toBe(false);
+  });
+});
+
+function traversalTasks(): TestTaskDefinition[] {
+  const base = plan.content.tasks[0]!.definition;
+  return [
+    { ...base, task_no: 1, title: "Root", type: "act" },
+    { ...base, task_no: 2, title: "Next node", type: "act" },
+    { ...base, task_no: 3, title: "Complete?", type: "goal", jump_back_to_task_no: 2 }
+  ];
+}
+
+describe("goal references in editable drafts", () => {
+  it("preserves the referenced task when reordering and renumbering", () => {
+    const tasks = traversalTasks();
+    const reordered = updateTaskOrder([tasks[1]!, tasks[0]!, tasks[2]!]);
+    expect(reordered.map((task) => [task.task_no, task.title])).toEqual([[1, "Next node"], [2, "Root"], [3, "Complete?"]]);
+    expect(reordered[2]!.jump_back_to_task_no).toBe(1);
+    expect(tasks[2]!.jump_back_to_task_no).toBe(2);
+  });
+
+  it("clears a deleted target and prevents saving until a new target is selected", () => {
+    const tasks = traversalTasks();
+    const remaining = updateTaskOrder([tasks[0]!, tasks[2]!]);
+    expect(remaining[1]!.jump_back_to_task_no).toBeNull();
+    const draft = { ...toPlanDraft(plan), tasks: remaining };
+    expect(isPlanDraftValid(draft)).toBe(false);
+    draft.tasks[1]!.jump_back_to_task_no = 1;
+    expect(isPlanDraftValid(draft)).toBe(true);
+  });
+
+  it("clears a target moved after its Goal", () => {
+    const tasks = traversalTasks();
+    const reordered = updateTaskOrder([tasks[0]!, tasks[2]!, tasks[1]!]);
+    expect(reordered[1]!.jump_back_to_task_no).toBeNull();
+  });
+
+  it("adjusts the target when an earlier unrelated task is removed", () => {
+    const tasks = traversalTasks();
+    const remaining = updateTaskOrder([tasks[1]!, tasks[2]!]);
+    expect(remaining.map((task) => task.task_no)).toEqual([1, 2]);
+    expect(remaining[1]!.jump_back_to_task_no).toBe(1);
+  });
+
+  it("rejects invalid numbering and non-Goal jump values", () => {
+    const draft = { ...toPlanDraft(plan), tasks: traversalTasks() };
+    draft.tasks[1]!.task_no = 1;
+    expect(isPlanDraftValid(draft)).toBe(false);
+    draft.tasks[1]!.task_no = 2;
+    draft.tasks[1]!.jump_back_to_task_no = 1;
     expect(isPlanDraftValid(draft)).toBe(false);
   });
 });

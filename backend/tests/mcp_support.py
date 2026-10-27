@@ -114,7 +114,9 @@ def build_client(root: Path, *, calls: list[dict[str, Any]] | None = None,
 
 def create_plan(client: TestClient, *, task_count: int = 1) -> dict[str, Any]:
     case = client.post("/api/test-cases", json={"name": "Protocol test", "source_text": "Verify an observed result"}).json()
-    plan = client.post(f"/api/test-cases/{case['id']}/plans", json={"planning_request_id": str(uuid4())}).json()
+    planning = client.post(f"/api/test-cases/{case['id']}/plans", json={"planning_request_id": str(uuid4())})
+    assert planning.status_code == 201, planning.text
+    plan = planning.json()
     tasks = [entry["definition"] for entry in plan["content"]["tasks"][:task_count]]
     response = client.post(f"/api/test-plans/{plan['id']}/revisions", json={"content": {**plan["content"], "tasks": tasks}})
     assert response.status_code == 201, response.text

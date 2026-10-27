@@ -282,8 +282,11 @@ def test_plan_versions_batch_tasks_and_preserve_history(tmp_path: Path) -> None:
         expected = client.get(f"/api/test-cases/{plan['test_case_id']}/plans").json()["items"]
         for index in range(3):
             content = {**plan["content"], "title": f"Revision {index}",
-                       "tasks": [task["definition"] for task in reversed(plan["content"]["tasks"])]}
-            plan = client.post(f"/api/test-plans/{plan['id']}/revisions", json={"content": content}).json()
+                       "tasks": [{**task["definition"], "task_no": task_no}
+                                 for task_no, task in enumerate(reversed(plan["content"]["tasks"]), 1)]}
+            response = client.post(f"/api/test-plans/{plan['id']}/revisions", json={"content": content})
+            assert response.status_code == 201, response.text
+            plan = response.json()
             expected.insert(0, plan)
         container = cast(Container, cast(FastAPI, client.app).state.container)
         statements: list[str] = []

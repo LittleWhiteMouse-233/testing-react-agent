@@ -36,7 +36,6 @@ from app.domain.errors import (
 from app.domain.execution import (
     TaskAgentCompletion,
     ReasonCode,
-    TaskRun,
     TaskRunResult,
     TaskRunStatus,
 )
@@ -101,7 +100,7 @@ class TaskAgentContext:
 
     task_run_id: TaskRunId
     task: TestTask
-    memory_task_runs: tuple[TaskRun, ...]
+    memory_text: str
     max_cycles: int
 
 
@@ -248,9 +247,7 @@ class _TaskRuntime:
             HumanMessage(content=json.dumps({
                 "task": self.runtime_context.task_context.task.model_dump(mode="json"),
                 "max_cycles": self.runtime_context.task_context.max_cycles,
-                "memory_task_runs": [run.model_dump(mode="json", include={
-                    "id": True, "test_task_id": True, "result": {"memory"},
-                }) for run in self.runtime_context.task_context.memory_task_runs],
+                "memory_text": self.runtime_context.task_context.memory_text,
                 "available_skills": [entry.model_dump(include={"source_id", "uri", "name", "description"})
                                      for entry in self.available_skills],
             }, ensure_ascii=False)),

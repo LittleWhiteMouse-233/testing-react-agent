@@ -54,6 +54,8 @@ def test_task_from_row(row: TestTaskRow) -> TestTask:
     return TestTask(
         test_task_id=row.id,
         definition=TestTaskDefinition(
+            task_no=row.task_no,
+            jump_back_to_task_no=row.jump_back_to_task_no,
             type=row.type,
             title=row.title,
             goal=row.goal,
@@ -97,6 +99,7 @@ def task_run_from_row(row: TaskRunRow) -> TaskRun:
         id=row.id,
         test_run_id=row.test_run_id,
         test_task_id=row.test_task_id,
+        sequence=row.sequence,
         status=row.status,
         cycle_count=row.cycle_count,
         result=(

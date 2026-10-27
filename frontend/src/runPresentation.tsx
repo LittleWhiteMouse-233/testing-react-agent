@@ -9,8 +9,12 @@ export const statusLabels: Record<string, string> = {
   PASS: "通过", FAIL: "失败", BLOCKED: "阻塞", CANCELLED: "取消"
 };
 
-export function StatusBadge({ status }: { status: string }) {
-  return <span className={`status-badge status-${status.toLowerCase()}`}><span className="status-dot" />{statusLabels[status] ?? status}</span>;
+export function StatusBadge({ status, label }: { status: string; label?: string }) {
+  return <span className={`status-badge status-${status.toLowerCase()}`}><span className="status-dot" />{label ?? statusLabels[status] ?? status}</span>;
+}
+
+export function TaskStatusBadge({ task, taskRun, finished }: { task: TestTaskDefinition; taskRun?: TaskRun; finished: boolean }) {
+  return <StatusBadge status={taskStatus(taskRun, finished)} label={task.type === "goal" && taskRun?.status === "failed" ? "条件未满足" : undefined} />;
 }
 
 export function formatTime(value: string | null | undefined, timeOnly = false) {
@@ -39,8 +43,8 @@ export function ElapsedTime({ startedAt, finishedAt, active = false }: { started
 }
 
 export function runSummary(run: TestRunListResponse) {
-  const counts = Object.entries(run.task_status_counts).map(([status, count]) => `${statusLabels[status]} ${count}`);
-  return `${counts.join(" · ") || "尚未执行任务"} / ${run.task_count} 步 · ${run.image_count} 张图片`;
+  const counts = Object.entries(run.task_status_counts).map(([status, count]) => `${status === "failed" ? "失败/条件未满足" : statusLabels[status]} ${count}`);
+  return `${run.task_count} 项计划 · 执行记录：${counts.join(" · ") || "尚未执行任务"} · ${run.image_count} 张图片`;
 }
 
 export function taskStatus(taskRun: TaskRun | undefined, finished: boolean) {
@@ -144,6 +148,7 @@ export function RunResources({ report }: { report: TestRunReport }) {
     <section className="resource-card"><h3>模型与提示词</h3><dl>
       <dt>执行模型</dt><dd>{environment.execution_model.model}</dd>
       <dt>配置</dt><dd>{environment.execution_model.profile_id}</dd>
+      <dt>Goal 累计失败上限</dt><dd>{environment.goal_max_failures}</dd>
       {Object.entries(environment.prompt_fingerprints_by_task_type).map(([taskType, fingerprint]) => <Fragment key={taskType}>
         <dt>{taskType.charAt(0).toUpperCase() + taskType.slice(1)}</dt><dd>{fingerprint ?? "未定义"}</dd>
       </Fragment>)}

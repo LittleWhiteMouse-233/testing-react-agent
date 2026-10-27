@@ -75,14 +75,15 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column(
-            "type", _enum("test_task_type", "act", "judge"), nullable=False
+            "type", _enum("test_task_type", "act", "judge", "goal"), nullable=False
         ),
-        sa.Column("position", sa.Integer(), nullable=False),
+        sa.Column("task_no", sa.Integer(), nullable=False),
+        sa.Column("jump_back_to_task_no", sa.Integer()),
         sa.Column("title", sa.String(200), nullable=False),
         sa.Column("goal", sa.Text(), nullable=False),
         sa.Column("success_criteria_json", sa.JSON(), nullable=False),
         sa.UniqueConstraint(
-            "test_plan_id", "position", name="uq_test_task_position"
+            "test_plan_id", "task_no", name="uq_test_task_no"
         ),
     )
     op.create_index("ix_test_tasks_test_plan_id", "test_tasks", ["test_plan_id"])
@@ -148,12 +149,13 @@ def upgrade() -> None:
             ),
             nullable=False,
         ),
+        sa.Column("sequence", sa.Integer(), nullable=False),
         sa.Column("cycle_count", sa.Integer(), nullable=False),
         sa.Column("result_json", sa.JSON()),
         sa.Column("started_at", sa.DateTime(timezone=True)),
         sa.Column("finished_at", sa.DateTime(timezone=True)),
         sa.UniqueConstraint(
-            "test_run_id", "test_task_id", name="uq_task_run_test_task"
+            "test_run_id", "sequence", name="uq_task_run_sequence"
         ),
         sa.CheckConstraint("cycle_count >= 0", name="ck_task_run_cycle_count"),
     )

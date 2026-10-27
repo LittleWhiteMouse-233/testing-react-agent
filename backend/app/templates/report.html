@@ -24,6 +24,14 @@
     <p>规划额外输入：</p>
     <pre>{{ report.detail.test_plan.planning_context.user_input or '无' }}</pre>
     <p>执行模型：{{ report.detail.environment.execution_model.profile_id }}</p>
+    <p>Goal 累计失败上限：{{ report.detail.environment.goal_max_failures }}（各 Goal 独立计数，passed 不计数也不清零）</p>
+    <h3>确认的任务计划</h3>
+    <ol>{% for task in report.detail.test_plan.content.tasks %}
+      <li><strong>任务 {{ task.definition.task_no }} · {{ task.definition.title }}</strong>（{{ task.definition.type }}）
+        <p>{{ task.definition.goal }}</p><p>{{ task.definition.success_criteria | join('；') }}</p>
+        {% if task.definition.type == 'goal' %}<p>未满足时回到任务 {{ task.definition.jump_back_to_task_no }}</p>{% endif %}
+      </li>
+    {% endfor %}</ol>
     <h3>Skill 与静态资源</h3>
     {% if report.detail.environment.resource_catalog.local_root %}<p>本地根目录：{{ report.detail.environment.resource_catalog.local_root }}</p>{% endif %}
     {% for resource in report.detail.environment.resource_catalog.resources %}
@@ -36,10 +44,17 @@
   </section>
   <section>
     <h2>任务结果</h2>
+    {% set execution_counts = {} %}
     {% for task_run in report.detail.task_runs %}
       {% set task = report.detail.test_plan.content.tasks | selectattr('test_task_id', 'equalto', task_run.test_task_id) | first %}
+      {% set execution_no = execution_counts.get(task_run.test_task_id, 0) %}
+      {% if task_run.started_at %}
+        {% set execution_no = execution_no + 1 %}
+        {% set _ = execution_counts.update({task_run.test_task_id: execution_no}) %}
+      {% endif %}
       <article class="task">
-        <h3>{{ loop.index }}. {{ task.definition.title }} — {{ task_run.status }}</h3>
+        <h3>任务 {{ task.definition.task_no }} · {% if task_run.started_at %}第 {{ execution_no }} 次执行{% else %}未执行{% endif %} · {{ task.definition.title }} — {{ '条件未满足' if task.definition.type == 'goal' and task_run.status == 'failed' else task_run.status }}</h3>
+        <p class="meta">执行记录 #{{ task_run.sequence }}</p>
         <p><strong>目标：</strong>{{ task.definition.goal }}</p>
         <p><strong>标准：</strong>{{ task.definition.success_criteria | join('；') }}</p>
         <p><strong>结论：</strong>{{ task_run.result.summary if task_run.result else '无' }}（{{ task_run.cycle_count }} cycles）</p>

@@ -94,10 +94,11 @@ def run_environment_snapshot() -> RunEnvironmentSnapshot:
         tool_catalog=ToolCatalogSnapshot(tools=[]),
         resource_catalog=ResourceCatalogSnapshot(),
         execution_model=model_snapshot(),
-        max_cycles_by_task_type={TaskType.ACT: 30, TaskType.JUDGE: 10},
-        prompt_fingerprints_by_task_type={TaskType.ACT: "act-v1", TaskType.JUDGE: "judge-v1"},
+        max_cycles_by_task_type={TaskType.ACT: 30, TaskType.JUDGE: 10, TaskType.GOAL: 10},
+        goal_max_failures=10,
+        prompt_fingerprints_by_task_type={TaskType.ACT: "act-v1", TaskType.JUDGE: "judge-v1", TaskType.GOAL: "goal-v1"},
         app_version="0.1.0",
-        execution_protocol_version="9",
+        execution_protocol_version="10",
     )
 
 
@@ -108,6 +109,7 @@ def plan_draft(task_count: int = 1) -> PlanContent[TaskDefinition]:
         assumptions=[],
         tasks=[
             TaskDefinition(
+                task_no=index + 1,
                 type=TaskType.JUDGE,
                 title=f"Task {index}",
                 goal="Verify the screen",

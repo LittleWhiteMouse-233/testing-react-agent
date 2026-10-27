@@ -527,7 +527,7 @@ export interface components {
          * @description TaskRun/执行错误的稳定结果原因；它是持久化事实而非异常类型。
          * @enum {string}
          */
-        ReasonCode: "completed" | "assertion_failed" | "goal_unreachable" | "cycle_limit" | "model_unavailable" | "invalid_model_response" | "agent_blocked" | "tool_failed" | "process_restarted" | "global_fail_fast" | "user_cancelled" | "model_context_exceeded" | "unexpected_error";
+        ReasonCode: "completed" | "assertion_failed" | "goal_unreachable" | "cycle_limit" | "goal_failure_limit" | "model_unavailable" | "invalid_model_response" | "agent_blocked" | "tool_failed" | "process_restarted" | "global_fail_fast" | "user_cancelled" | "model_context_exceeded" | "unexpected_error";
         /** ReportExportRequest */
         ReportExportRequest: {
             /**
@@ -768,7 +768,7 @@ export interface components {
         };
         /**
          * TaskRun
-         * @description 真正启动或由 fail-fast 跳过的单个计划任务执行实体。
+         * @description 单次计划任务执行或跳过记录；同一任务可重入，sequence 保留运行内顺序。
          */
         TaskRun: {
             /** Cycle Count */
@@ -778,6 +778,8 @@ export interface components {
             /** Id */
             id: string;
             result: components["schemas"]["TaskRunResult"] | null;
+            /** Sequence */
+            sequence: number;
             /** Started At */
             started_at: string | null;
             status: components["schemas"]["TaskRunStatus"];
@@ -805,7 +807,7 @@ export interface components {
         TaskRunStatus: "running" | "passed" | "failed" | "blocked" | "skipped" | "cancelled";
         /**
          * TasksSkippedEvent
-         * @description 全局 fail-fast 批量创建未执行 TaskRun 的事实。
+         * @description 执行停止后，按任务终止策略批量创建后缀 skipped 记录的事实。
          */
         TasksSkippedEvent: {
             /** Task Run Id */
@@ -1017,7 +1019,9 @@ export interface components {
              * Execution Protocol Version
              * @constant
              */
-            execution_protocol_version: "9";
+            execution_protocol_version: "10";
+            /** Goal Max Failures */
+            goal_max_failures: number;
             /** Max Cycles By Task Type */
             max_cycles_by_task_type: {
                 [key: string]: number;
@@ -1127,8 +1131,12 @@ export interface components {
         TestTaskDefinition: {
             /** Goal */
             goal: string;
+            /** Jump Back To Task No */
+            jump_back_to_task_no?: number | null;
             /** Success Criteria */
             success_criteria: string[];
+            /** Task No */
+            task_no: number;
             /** Title */
             title: string;
             type: components["schemas"]["TestTaskType"];
@@ -1138,7 +1146,7 @@ export interface components {
          * @description 计划任务的业务类型；执行过程据此选择提示词与轮次上限。
          * @enum {string}
          */
-        TestTaskType: "act" | "judge";
+        TestTaskType: "act" | "judge" | "goal";
         /**
          * ToolAnnotationsSnapshot
          * @description Standard MCP annotation facts retained for audit, never used as permissions.

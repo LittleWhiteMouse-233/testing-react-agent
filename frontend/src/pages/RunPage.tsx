@@ -5,7 +5,7 @@ import { Link, Navigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage, artifactUrl } from "../api/client";
 import { latestImageArtifactId } from "../api/runEvents";
 import { useRunReport } from "../api/useRunReport";
-import { ElapsedTime, EventTimeline, RunResources, StatusBadge, taskCycleCount, taskMaxCycles, taskStatus } from "../runPresentation";
+import { ElapsedTime, EventTimeline, RunResources, StatusBadge, TaskStatusBadge, taskCycleCount, taskMaxCycles } from "../runPresentation";
 
 export function ActiveRunPage() {
   const runs = $api.useQuery("get", "/api/runs", { params: { query: { status: ["pending", "running"], limit: 1 } } }, {
@@ -38,7 +38,7 @@ function RunExecution({ runId }: { runId: string }) {
   const finished = run.status === "finished";
   const activeTask = taskRuns.find((task) => task.status === "running");
   const activeIndex = plan.content.tasks.findIndex((task) => task.test_task_id === activeTask?.test_task_id);
-  const passed = taskRuns.filter((task) => task.status === "passed").length;
+  const executionCount = taskRuns.filter((task) => task.started_at !== null).length;
   const imageId = latestImageArtifactId(report.events);
   return <>
     <header className="page-heading"><div><div className="eyebrow"><Link to={report.data.test_case_archived ? "/" : "/cases/" + plan.test_case_id + "/plan"}>用例库</Link> / <span className="mono">{plan.test_case_id.slice(0, 8)}</span> / 执行</div>
@@ -52,13 +52,17 @@ function RunExecution({ runId }: { runId: string }) {
     {report.error && <Alert type="warning" title="运行详情刷新失败，保留最近一次读取的记录" action={<Button loading={report.isFetching} onClick={() => void report.refetch()}>重试</Button>} />}
     {report.awaitingFinalResult && <Alert type="info" title="已收到结束通知，等待服务端最终结果" />}
     <div className="execution-layout">
-      <aside className="task-queue"><div className="section-heading"><div><small>任务队列</small><h2>执行进度</h2></div><span>{passed}/{plan.content.tasks.length} 通过</span></div>
+      <aside className="task-queue"><div className="section-heading"><div><small>任务队列</small><h2>执行进度</h2></div><span>{plan.content.tasks.length} 项计划 · {executionCount} 次执行</span></div>
         <div className="queue-meta"><span>已用 <ElapsedTime startedAt={run.started_at} finishedAt={run.finished_at} active={!finished} /></span><span>{activeIndex >= 0 ? "当前第 " + (activeIndex + 1) + " 步" : finished ? "已结束" : "等待启动"}</span></div>
-        {plan.content.tasks.map((task, index) => {
-          const taskRun = taskRuns.find((entry) => entry.test_task_id === task.test_task_id);
+        {plan.content.tasks.map((task) => {
+          const executions = taskRuns.filter((entry) => entry.test_task_id === task.test_task_id);
+          const taskRun = executions.at(-1);
+          const startedCount = executions.filter((entry) => entry.started_at !== null).length;
+          const failureCount = executions.filter((entry) => entry.status === "failed").length;
           return <article key={task.test_task_id} className={"queue-task " + (taskRun?.status === "running" ? "active" : "")}>
-            <span className={"task-number " + task.definition.type}>{index + 1}</span><div><div className="task-title"><h3>{task.definition.title}</h3><StatusBadge status={taskStatus(taskRun, finished)} /></div>
-              <small>{task.definition.type.toUpperCase()}</small><p>{task.definition.goal}</p>
+            <span className={"task-number " + task.definition.type}>{task.definition.task_no}</span><div><div className="task-title"><h3>{task.definition.title}</h3><TaskStatusBadge task={task.definition} taskRun={taskRun} finished={finished} /></div>
+              <small>{task.definition.type.toUpperCase()} · 已执行 {startedCount} 次</small><p>{task.definition.goal}</p>
+              {task.definition.type === "goal" && <p className="muted">累计失败 {failureCount} / {report.data.detail.environment.goal_max_failures} · 未满足时回到任务 {task.definition.jump_back_to_task_no}</p>}
               <details><summary>成功标准</summary><ul>{task.definition.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul></details>
               <div className="task-runtime"><span>{taskRun ? taskCycleCount(taskRun, report.events) : "—"} / {taskMaxCycles(task.definition.type, report.data.detail.environment)} 轮</span><ElapsedTime startedAt={taskRun?.started_at ?? null} finishedAt={taskRun?.finished_at ?? null} active={taskRun?.status === "running"} /></div>
               {taskRun?.result && <p className="task-result">{taskRun.result.summary}</p>}

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from langchain_core.messages import BaseMessage
@@ -11,6 +12,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import add_messages
 from langsmith import tracing_context
 from mcp import MCPError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from app.domain.errors import (
     describe_exception,
@@ -30,11 +32,29 @@ from app.domain.execution import (
     TestRunVerdict,
     aggregate_test_run_verdict,
 )
-from app.domain.planning import TestTask
+from app.domain.planning import TestTask, TestTaskType
 from app.execution.task_agent import MESSAGE_PUBLISHING_NODES, TaskAgentContext, TaskAgentFactory, TaskAgentInput
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.event_stream.projector import project_run_message
+
+
+class TaskRunMemory(BaseModel):
+    """Model-visible projection of a persisted result and its actual execution origin."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    task_no: int = Field(ge=1)
+    execution_no: int = Field(ge=1)
+    memory: str
+
+
+_TASK_MEMORIES = TypeAdapter(list[TaskRunMemory])
+
+
+def serialize_task_memories(memories: Sequence[TaskRunMemory]) -> str:
+    """Serialize chronological memory projections without exposing database identities."""
+    return _TASK_MEMORIES.dump_json(list(memories)).decode("utf-8")
 
 
 class RunExecutor:
@@ -61,26 +81,30 @@ class RunExecutor:
         try:
             detail = await self.repository.get_test_run_detail(test_run_id)
             await self.repository.start_run(test_run_id)
-            memory_task_runs: list[TaskRun] = []
+            task_memories: list[TaskRunMemory] = []
+            execution_counts: Counter[str] = Counter()
+            goal_failure_counts: Counter[str] = Counter()
+            test_tasks = detail.test_plan.content.tasks
+            task_index = 0
             async with AsyncSqliteSaver.from_conn_string(
                 self.checkpoint_path
             ) as checkpointer:
                 with tracing_context(enabled=False):
-                    for index, test_task in enumerate(detail.test_plan.content.tasks):
+                    while task_index < len(test_tasks):
                         if run_cancellation_event.is_set():
                             cancellation_completed = True
                             break
+                        test_task = test_tasks[task_index]
                         active_task = await self.repository.start_task(
                             test_run_id, test_task
                         )
-                        remaining_after_active_task = list(
-                            detail.test_plan.content.tasks[index + 1 :]
-                        )
+                        execution_counts[test_task.test_task_id] += 1
+                        remaining_after_active_task = test_tasks[task_index + 1 :]
                         task_input = TaskAgentInput(
                             task_context=TaskAgentContext(
                                 task_run_id=active_task.id,
                                 task=test_task,
-                                memory_task_runs=tuple(memory_task_runs),
+                                memory_text=serialize_task_memories(task_memories),
                                 max_cycles=detail.environment.max_cycles_by_task_type[test_task.definition.type],
                             ),
                             tools=tools,
@@ -93,34 +117,48 @@ class RunExecutor:
                             run_cancellation_event=run_cancellation_event,
                             checkpointer=checkpointer,
                         )
-                        await self.repository.finish_task(
+                        is_goal_failure = (test_task.definition.type == TestTaskType.GOAL
+                                       and completion.status == TaskRunStatus.FAILED)
+                        if is_goal_failure:
+                            goal_failure_counts[test_task.test_task_id] += 1
+                        if is_goal_failure and goal_failure_counts[test_task.test_task_id] >= detail.environment.goal_max_failures:
+                            completion = completion.model_copy(update={"result": completion.result.model_copy(
+                                update={"reason_code": ReasonCode.GOAL_FAILURE_LIMIT},
+                            )})
+                        active_task = await self.repository.finish_task(
                             active_task.id,
                             status=completion.status,
                             result=completion.result,
                             cycle_count=completion.cycle_count,
                         )
-                        active_task = (
-                            await self.repository.list_task_runs(test_run_id)
-                        )[-1]
                         if active_task.result is not None and active_task.result.memory is not None:
-                            memory_task_runs.append(active_task)
-                        if completion.result.reason_code == ReasonCode.USER_CANCELLED:
+                            task_memories.append(TaskRunMemory(
+                                task_no=test_task.definition.task_no,
+                                execution_no=execution_counts[test_task.test_task_id],
+                                memory=active_task.result.memory,
+                            ))
+                        if completion.result.reason_code == ReasonCode.USER_CANCELLED or run_cancellation_event.is_set():
                             cancellation_completed = True
                             break
-                        if completion.status in {
-                            TaskRunStatus.FAILED,
-                            TaskRunStatus.BLOCKED,
-                        }:
+                        if (completion.status == TaskRunStatus.BLOCKED
+                            or completion.result.reason_code == ReasonCode.GOAL_FAILURE_LIMIT
+                            or (completion.status == TaskRunStatus.FAILED and test_task.definition.type == TestTaskType.ACT)):
                             if remaining_after_active_task:
                                 await self.repository.skip_remaining(
                                     test_run_id,
                                     remaining_after_active_task,
                                 )
                             break
+                        if is_goal_failure:
+                            jump_target = test_task.definition.jump_back_to_task_no
+                            assert jump_target is not None
+                            task_index = jump_target - 1
+                        else:
+                            task_index += 1
                         active_task = None
             task_runs = await self.repository.list_task_runs(test_run_id)
             verdict = (TestRunVerdict.CANCELLED if cancellation_completed
-                       else aggregate_test_run_verdict(task_runs))
+                       else aggregate_test_run_verdict(task_runs, test_tasks))
         except Exception as exc:
             reason = self._reason_for_exception(exc)
             summary = describe_exception(exc, phase="Task agent failed")

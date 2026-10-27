@@ -101,6 +101,7 @@ dd { margin-left: 0; font-size: 12px; white-space: pre-wrap; }
 .plan-task > div, .queue-task > div { min-width: 0; flex: 1; }
 .task-number { display: inline-flex; width: 28px; height: 28px; border-radius: 50%; background: #f0f4ff; color: var(--accent); font-size: 12px; font-weight: 600; align-items: center; justify-content: center; flex-shrink: 0; }
 .task-number.judge { background: #f3eeff; color: #7c3aed; }
+.task-number.goal, .pill.goal { background: #fff4df; color: #9a6100; }
 .task-title { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 5px; }
 .task-title h3 { font-size: 13px; margin: 0; }
 .plan-task p, .queue-task p { font-size: 12px; color: #555559; margin: 5px 0; white-space: pre-wrap; }

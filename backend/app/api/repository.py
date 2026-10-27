@@ -202,7 +202,7 @@ async def list_test_plans(
         tasks_by_plan: dict[str, list[TestTaskRow]] = {}
         tasks = await session.scalars(
             select(TestTaskRow).where(TestTaskRow.test_plan_id.in_([plan.id for plan in plans]))
-            .order_by(TestTaskRow.test_plan_id, TestTaskRow.position)
+            .order_by(TestTaskRow.test_plan_id, TestTaskRow.task_no)
         )
         for task in tasks:
             tasks_by_plan.setdefault(task.test_plan_id, []).append(task)

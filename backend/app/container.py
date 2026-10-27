@@ -101,6 +101,8 @@ class Container:
             max_cycles_by_task_type={
                 TestTaskType.ACT: settings.act_max_cycles,
                 TestTaskType.JUDGE: settings.judge_max_cycles,
+                TestTaskType.GOAL: settings.goal_max_cycles,
             },
+            goal_max_failures=settings.goal_max_failures,
         )
         self.reports = ReportService(partial(read_test_run_report, self.sessions), self.artifacts)

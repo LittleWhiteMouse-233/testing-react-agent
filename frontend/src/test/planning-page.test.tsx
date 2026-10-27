@@ -71,7 +71,7 @@ function savedPlan(version = 1, userInput: string | null = null): TestPlan {
       title: `计划 ${version}`, assumptions: ["电视已开机"], setup_steps: [],
       tasks: [{
         test_task_id: `33333333-3333-4333-8333-${String(version).padStart(12, "0")}`,
-        definition: { type: "judge", title: "检查页面", goal: "确认设置页面",
+        definition: { task_no: 1, type: "judge", title: "检查页面", goal: "确认设置页面",
           success_criteria: ["设置标题可见"] }
       }]
     },
@@ -537,7 +537,7 @@ describe("planning page", () => {
   it("can discard a draft after another client saves a newer plan", async () => {
     plans = [savedPlan()];
     plans[0]!.content.setup_steps = ["准备环境"];
-    plans[0]!.content.tasks.push({ test_task_id: "second-task", definition: { ...plans[0]!.content.tasks[0]!.definition, title: "第二任务" } });
+    plans[0]!.content.tasks.push({ test_task_id: "second-task", definition: { ...plans[0]!.content.tasks[0]!.definition, task_no: 2, title: "第二任务" } });
     renderPlanPage();
     fireEvent.click(await screen.findByRole("button", { name: /编辑计划/ }));
     fireEvent.change(screen.getByDisplayValue("计划 1"), { target: { value: "未保存草稿" } });
@@ -561,7 +561,7 @@ describe("planning page", () => {
   it("keeps queue editing available on the latest plan and saves a new version", async () => {
     const original = savedPlan();
     original.content.setup_steps = ["准备环境"];
-    original.content.tasks.push({ test_task_id: "second-task", definition: { ...original.content.tasks[0]!.definition, title: "第二任务" } });
+    original.content.tasks.push({ test_task_id: "second-task", definition: { ...original.content.tasks[0]!.definition, task_no: 2, title: "第二任务" } });
     plans = [original];
     renderPlanPage();
     fireEvent.click(await screen.findByRole("button", { name: /编辑计划/ }));
@@ -580,6 +580,29 @@ describe("planning page", () => {
     expect(plans[0]!.content.tasks[0]!.test_task_id).not.toBe("second-task");
     expect(original.content.tasks.map((task) => task.definition.title)).toEqual(["检查页面", "第二任务"]);
   });
+});
+
+it.each(["delete", "move"])("confirms and clears an invalidated Goal reference on %s", async (operation) => {
+  const original = savedPlan();
+  original.content.tasks.push({ test_task_id: "goal-task", definition: {
+    task_no: 2, type: "goal", title: "遍历结束", goal: "所有节点已检查", success_criteria: ["没有待检查节点"], jump_back_to_task_no: 1
+  } });
+  plans = [original];
+  renderPlanPage();
+  fireEvent.click(await screen.findByRole("button", { name: /编辑计划/ }));
+  const action = operation === "delete" ? "删除任务 1" : "下移任务 1";
+  fireEvent.click(screen.getByRole("button", { name: action }));
+  await screen.findByText("跳转目标失效");
+  expect(document.querySelectorAll(".task-editor")).toHaveLength(2);
+  fireEvent.click(screen.getByRole("button", { name: /取\s*消/ }));
+  await waitFor(() => expect(screen.getByText("跳转目标失效")).not.toBeVisible());
+  expect(document.querySelector(".task-editor input[maxlength='200']")).toHaveValue("检查页面");
+  fireEvent.click(screen.getByRole("button", { name: action }));
+  fireEvent.click(await screen.findByRole("button", { name: "继续并清空" }));
+  await screen.findByText("请选择前序任务");
+  await waitFor(() => expect(document.querySelectorAll(".task-editor")).toHaveLength(operation === "delete" ? 1 : 2));
+  expect(screen.getByRole("button", { name: /保存新版本/ })).toBeDisabled();
+  expect(original.content.tasks[1]!.definition.jump_back_to_task_no).toBe(1);
 });
 
 function renderCasesPage() {
@@ -656,7 +679,7 @@ it("shows the saved planning input in the online report", async () => {
       created_at: plan.created_at, started_at: plan.created_at, finished_at: plan.created_at
     }, environment: { execution_model: plan.planning_context.planning_model, tool_catalog: { tools: [] },
       resource_catalog: { local_root: null, resources: [], templates: [] },
-      prompt_fingerprints_by_task_type: { act: "act-v1", judge: "judge-v1" }, app_version: "0.1.0", execution_protocol_version: "9", max_cycles_by_task_type: { act: 30, judge: 10 }
+      prompt_fingerprints_by_task_type: { act: "act-v1", judge: "judge-v1", goal: "goal-v1" }, goal_max_failures: 10, app_version: "0.1.0", execution_protocol_version: "10", max_cycles_by_task_type: { act: 30, judge: 10, goal: 10 }
     }, task_runs: [] },
     artifacts: [], events: []
   };

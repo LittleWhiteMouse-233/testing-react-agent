@@ -22,6 +22,7 @@ class TestTaskType(StrEnum):
 
     ACT = "act"
     JUDGE = "judge"
+    GOAL = "goal"
 
 
 class TestPlanOrigin(StrEnum):
@@ -63,10 +64,12 @@ class TestTaskDefinition(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    task_no: int = Field(ge=1)
     type: TestTaskType
     title: str = Field(min_length=1, max_length=200)
     goal: str = Field(min_length=1)
     success_criteria: list[str] = Field(min_length=1)
+    jump_back_to_task_no: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def text_is_not_blank(self) -> "TestTaskDefinition":
@@ -74,6 +77,11 @@ class TestTaskDefinition(BaseModel):
             raise ValueError("task title and goal must not be blank")
         if any(not criterion.strip() for criterion in self.success_criteria):
             raise ValueError("success_criteria must not contain blank values")
+        if self.type == TestTaskType.GOAL:
+            if self.jump_back_to_task_no is None or self.jump_back_to_task_no >= self.task_no:
+                raise ValueError("Goal jump_back_to_task_no must reference an earlier task_no")
+        elif self.jump_back_to_task_no is not None:
+            raise ValueError("Only Goal may set jump_back_to_task_no")
         return self
 
 
@@ -108,6 +116,10 @@ class TestPlanContent(BaseModel, Generic[TTask]):
                 "setup_steps and assumptions must not contain blank values"
             )
         identified_tasks = [task for task in self.tasks if isinstance(task, TestTask)]
+        task_numbers = [task.definition.task_no if isinstance(task, TestTask) else task.task_no
+                        for task in self.tasks]
+        if task_numbers != list(range(1, len(self.tasks) + 1)):
+            raise ValueError("task_no must be consecutive from 1 and match array order")
         task_ids = [task.test_task_id for task in identified_tasks]
         if len(task_ids) != len(set(task_ids)):
             raise ValueError("test_task_id values must be unique")

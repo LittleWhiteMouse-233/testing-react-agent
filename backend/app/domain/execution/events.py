@@ -71,7 +71,7 @@ class ExecutionErrorEvent(RunEventBase):
 
 
 class TasksSkippedEvent(RunEventBase):
-    """全局 fail-fast 批量创建未执行 TaskRun 的事实。"""
+    """执行停止后，按任务终止策略批量创建后缀 skipped 记录的事实。"""
 
     type: Literal["tasks.skipped"] = "tasks.skipped"
     task_run_ids: list[TaskRunId]

@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { Link, useBlocker, useNavigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage } from "../api/client";
 import type { TestCaseContent, TestPlan, TestPlanDraft, TestTaskDefinition } from "../api/contracts";
-import { emptyTask, isPlanDraftValid, toPlanDraft } from "../planDraft";
+import { emptyTask, isPlanDraftValid, toPlanDraft, updateTaskOrder } from "../planDraft";
 import { formatTime, runSummary, StatusBadge } from "../runPresentation";
 import { usePlanningProgress } from "../api/usePlanningProgress";
 import PlanningProgressDialog from "./PlanningProgressDialog";
@@ -28,6 +28,7 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   const [confirmed, setConfirmed] = useState(false);
   const [userInput, setUserInput] = useState("");
   const [editing, setEditing] = useState(false);
+  const [pendingTaskOrder, setPendingTaskOrder] = useState<TestTaskDefinition[] | null>(null);
   const [caseDraft, setCaseDraft] = useState<TestCaseContent | null>(null);
   const [caseUpdated, setCaseUpdated] = useState(false);
   const testCase = $api.useQuery("get", "/api/test-cases/{test_case_id}", { params: { path: { test_case_id: caseId } } });
@@ -111,13 +112,23 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   const updateTask = (index: number, patch: Partial<TestTaskDefinition>) => {
     if (draft) updateDraft({ ...draft, tasks: draft.tasks.map((task, position) => position === index ? { ...task, ...patch } : task) });
   };
+  const applyTaskOrder = (tasks: TestTaskDefinition[]) => {
+    if (!draft) return;
+    const ordered = updateTaskOrder(tasks);
+    if (tasks.some((task, index) => task.type === "goal" && task.jump_back_to_task_no != null && ordered[index]!.jump_back_to_task_no == null)) {
+      setPendingTaskOrder(tasks);
+    } else {
+      updateDraft({ ...draft, tasks: ordered });
+    }
+  };
   const moveTask = (index: number, direction: number) => {
     if (!draft) return;
     const tasks = [...draft.tasks];
     const current = tasks[index]; const other = tasks[index + direction];
     if (!current || !other) return;
-    tasks[index] = other; tasks[index + direction] = current; updateDraft({ ...draft, tasks });
+    tasks[index] = other; tasks[index + direction] = current; applyTaskOrder(tasks);
   };
+  const pendingOrderedTasks = pendingTaskOrder ? updateTaskOrder(pendingTaskOrder) : [];
   const progressDialog = planning.progress && <PlanningProgressDialog progress={planning.progress} onClose={planning.close} />;
   if (testCase.isLoading || plans.isLoading) return <section className="plan-context">{progressDialog}<div className="planning-welcome"><Spin /></div></section>;
   if (testCase.error || plans.error || !testCase.data) return <section className="plan-context">{progressDialog}<div className="planning-welcome"><Alert type="error" title={apiErrorMessage(testCase.error ?? plans.error, "用例加载失败")} action={<Button onClick={() => { void testCase.refetch(); void plans.refetch(); }}>重试</Button>} /><Link to="/">返回用例列表</Link></div></section>;
@@ -163,9 +174,10 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
           options={plans.data?.items.map((entry) => ({ value: entry.id, label: "v" + entry.version_number + (entry.id === latest?.id ? " · 最新" : " · 只读") }))} />
       </div>}
       {plan && draft ? <>
-        <div className="plan-task-list"><h3>{draft.title}</h3>{draft.tasks.map((task, index) => <article className="plan-task" key={index}><span className={"task-number " + task.type}>{index + 1}</span><div>
-          <div className="task-title"><h3>{task.title}</h3><span className={"pill " + (task.type === "judge" ? "purple" : "blue")}>{task.type === "judge" ? "Judge" : "Act"}</span></div>
+        <div className="plan-task-list"><h3>{draft.title}</h3>{draft.tasks.map((task) => <article className="plan-task" key={task.task_no}><span className={"task-number " + task.type}>{task.task_no}</span><div>
+          <div className="task-title"><h3>{task.title}</h3><span className={"pill " + (task.type === "judge" ? "purple" : task.type === "goal" ? "goal" : "blue")}>{task.type.toUpperCase()}</span></div>
           <p>{task.goal}</p><ul>{task.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul>
+          {task.type === "goal" && <p className="muted">未满足时回到任务 {task.jump_back_to_task_no ?? "待选择"}{task.jump_back_to_task_no != null && " · " + draft.tasks.find((target) => target.task_no === task.jump_back_to_task_no)?.title}</p>}
         </div></article>)}</div>
         <div className="plan-start"><Checkbox disabled={busy || dirty || !isLatest} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}>我已确认计划 assumptions、任务目标和成功标准</Checkbox>
           <Button block size="large" type="primary" icon={<RocketOutlined />} loading={start.isPending} disabled={busy || !valid || dirty || !confirmed || !isLatest}
@@ -184,21 +196,35 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
         <Form.Item label="计划标题"><Input value={draft.title} maxLength={200} onChange={(event) => updateDraft({ ...draft, title: event.target.value })} /></Form.Item>
         <Form.Item label="前置假设（每行一条）"><Input.TextArea value={draft.assumptions.join("\n")} onChange={(event) => updateDraft({ ...draft, assumptions: event.target.value ? event.target.value.split("\n") : [] })} /></Form.Item>
         <Form.Item label="准备步骤（每行一条）"><Input.TextArea value={draft.setup_steps.join("\n")} onChange={(event) => updateDraft({ ...draft, setup_steps: event.target.value ? event.target.value.split("\n") : [] })} /></Form.Item>
-        {draft.tasks.map((task, index) => <section className="task-editor" key={index}><div className="task-editor-heading"><strong>任务 {index + 1}</strong><div>
+        {draft.tasks.map((task, index) => <section className="task-editor" key={task.task_no}><div className="task-editor-heading"><strong>任务 {task.task_no}</strong><div>
           <Button aria-label={"上移任务 " + (index + 1)} icon={<ArrowUpOutlined />} disabled={!canEdit || index === 0} onClick={() => moveTask(index, -1)} />
           <Button aria-label={"下移任务 " + (index + 1)} icon={<ArrowDownOutlined />} disabled={!canEdit || index === draft.tasks.length - 1} onClick={() => moveTask(index, 1)} />
-          <Button aria-label={"删除任务 " + (index + 1)} danger icon={<DeleteOutlined />} onClick={() => updateDraft({ ...draft, tasks: draft.tasks.filter((_, position) => position !== index) })} /></div></div>
-          <Form.Item label="类型"><Radio.Group value={task.type} onChange={(event) => updateTask(index, { type: event.target.value })}><Radio.Button value="act">Act</Radio.Button><Radio.Button value="judge">Judge</Radio.Button></Radio.Group></Form.Item>
+          <Button aria-label={"删除任务 " + task.task_no} danger icon={<DeleteOutlined />} onClick={() => applyTaskOrder(draft.tasks.filter((_, position) => position !== index))} /></div></div>
+          <Form.Item label="类型"><Radio.Group value={task.type} onChange={(event) => updateTask(index, { type: event.target.value, jump_back_to_task_no: null })}><Radio.Button value="act">Act</Radio.Button><Radio.Button value="judge">Judge</Radio.Button><Radio.Button value="goal">Goal</Radio.Button></Radio.Group></Form.Item>
+          {task.type === "goal" && <Form.Item label="回跳目标" required validateStatus={task.jump_back_to_task_no == null ? "error" : undefined} help={task.jump_back_to_task_no == null ? "请选择前序任务" : undefined}>
+            <Select aria-label={"回跳目标 " + task.task_no} value={task.jump_back_to_task_no ?? undefined} allowClear placeholder="选择前序任务"
+              options={draft.tasks.slice(0, index).map((target) => ({ value: target.task_no, label: target.task_no + " · " + target.title }))}
+              onChange={(target: number | undefined) => updateTask(index, { jump_back_to_task_no: target ?? null })} />
+          </Form.Item>}
           <Form.Item label="任务标题"><Input value={task.title} maxLength={200} onChange={(event) => updateTask(index, { title: event.target.value })} /></Form.Item>
           <Form.Item label="目标"><Input.TextArea value={task.goal} onChange={(event) => updateTask(index, { goal: event.target.value })} /></Form.Item>
           <Form.Item label="成功标准（每行一条）"><Input.TextArea value={task.success_criteria.join("\n")} onChange={(event) => updateTask(index, { success_criteria: event.target.value.split("\n") })} /></Form.Item>
         </section>)}
-        <Button block icon={<PlusOutlined />} onClick={() => updateDraft({ ...draft, tasks: [...draft.tasks, emptyTask()] })}>新增任务</Button>
-        {draft.setup_steps.map((step, index) => <Button key={index} type="link" onClick={() => updateDraft({ ...draft, tasks: [...draft.tasks, emptyTask(step)] })}>将准备步骤 {index + 1} 转为任务</Button>)}
-        {!valid && <Alert type="warning" title="请补全计划标题、任务目标、成功标准" />}
+        <Button block icon={<PlusOutlined />} onClick={() => applyTaskOrder([...draft.tasks, emptyTask(draft.tasks.length + 1)])}>新增任务</Button>
+        {draft.setup_steps.map((step, index) => <Button key={index} type="link" onClick={() => applyTaskOrder([...draft.tasks, emptyTask(draft.tasks.length + 1, step)])}>将准备步骤 {index + 1} 转为任务</Button>)}
+        {!valid && <Alert type="warning" title="请补全计划标题、任务目标、成功标准及有效的 Goal 回跳目标" />}
         <div className="editor-footer"><Button disabled={busy} onClick={() => { if (plan) selectPlan(plan); }}>放弃修改</Button><Button type="primary" icon={<SaveOutlined />} disabled={!canEdit || !dirty || !valid} loading={revise.isPending}
           onClick={() => { if (plan) revise.mutate({ params: { path: { test_plan_id: plan.id } }, body: { content: draft } }); }}>保存新版本</Button></div>
       </Form>}
+    </Modal>
+    <Modal title="跳转目标失效" open={pendingTaskOrder !== null} okText="继续并清空" cancelText="取消" okButtonProps={{ disabled: !canEdit }}
+      onCancel={() => setPendingTaskOrder(null)} onOk={() => {
+        if (draft && pendingTaskOrder) updateDraft({ ...draft, tasks: pendingOrderedTasks });
+        setPendingTaskOrder(null);
+      }}>
+      <p>此次操作会使以下 Goal 的跳转目标失效，继续后将清空引用，重新选择有效目标前不能保存。</p>
+      <ul>{pendingTaskOrder?.filter((task, index) => task.type === "goal" && task.jump_back_to_task_no != null && pendingOrderedTasks[index]!.jump_back_to_task_no == null)
+        .map((task) => <li key={task.task_no}>任务 {task.task_no} · {task.title}</li>)}</ul>
     </Modal>
   </>;
 }

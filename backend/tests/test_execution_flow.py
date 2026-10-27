@@ -57,13 +57,13 @@ def test_memory_is_projected_only_from_prior_tasks_in_the_same_run(tmp_path: Pat
     with build_client(tmp_path, calls=calls, turns=turns) as client:
         plan = create_plan(client, task_count=2)
         definitions = [
-            {"type": task_type, "title": title, "goal": goal, "success_criteria": [criterion]}
-            for task_type, title, goal, criterion in [
+            {"task_no": task_no, "type": task_type, "title": title, "goal": goal, "success_criteria": [criterion]}
+            for task_no, (task_type, title, goal, criterion) in enumerate([
                 ("act", "Focus A", "Focus A", "Focus is at A"),
                 ("act", "Read A", "Read and remember A model and firmware", "Model and firmware are read and retained"),
                 ("act", "Focus B", "Focus B", "Focus is at B"),
                 ("judge", "Compare B", "Compare B with the remembered A fields", "Model and firmware match A"),
-            ]
+            ], 1)
         ]
         revision = client.post(f"/api/test-plans/{plan['id']}/revisions",
                                json={"content": {**plan["content"], "tasks": definitions}})
@@ -78,9 +78,8 @@ def test_memory_is_projected_only_from_prior_tasks_in_the_same_run(tmp_path: Pat
             task_runs = detail["task_runs"]
             assert [task["result"]["memory"] for task in task_runs] == [None, memory, None, None]
             contexts = [json.loads(invocation[1].text) for invocation in model.invocations[first_invocation:]]
-            expected = [{"id": task_runs[1]["id"], "test_task_id": task_runs[1]["test_task_id"],
-                         "result": {"memory": memory}}]
-            assert [context["memory_task_runs"] for context in contexts[::2]] == [[], [], expected, expected]
+            expected = [{"task_no": 2, "execution_no": 1, "memory": memory}]
+            assert [json.loads(context["memory_text"]) for context in contexts[::2]] == [[], [], expected, expected]
             assert all("previous_task_runs" not in context for context in contexts)
 
 
@@ -101,7 +100,7 @@ def test_memory_image_reads_preserve_original_identity_window_and_exports(tmp_pa
     def read_baseline(messages: list[BaseMessage]) -> AIMessage:
         nonlocal read_count
         read_count += 1
-        memory = json.loads(messages[1].text)["memory_task_runs"][0]["result"]["memory"]
+        memory = json.loads(json.loads(messages[1].text)["memory_text"])[0]["memory"]
         artifact_id = memory.splitlines()[-1].removeprefix("[Image artifact ").removesuffix("]")
         return AIMessage(content="Read the saved baseline", tool_calls=[{
             "name": "read_image_artifact", "args": {"artifact_id": artifact_id}, "id": f"read-{read_count}",
@@ -238,7 +237,7 @@ def test_configured_cycle_limits_by_task_type(
         assert [task["cycle_count"] for task in detail["task_runs"]] == counts
         blocked = next(task for task in detail["task_runs"] if task["status"] == "blocked")
         assert blocked["result"]["reason_code"] == "cycle_limit"
-        assert detail["environment"]["max_cycles_by_task_type"] == {"act": act_limit, "judge": judge_limit}
+        assert detail["environment"]["max_cycles_by_task_type"] == {"act": act_limit, "judge": judge_limit, "goal": 10}
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
         model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
         contexts = [json.loads(invocation[1].text) for invocation in model.invocations[1:]]
@@ -269,7 +268,8 @@ def test_act_and_judge_share_tools_and_model(tmp_path: Path, monkeypatch: pytest
     prompt_catalog = PromptCatalog()
     act_prompt = prompt_catalog.prompt_for_task_type(TaskType.ACT)
     judge_prompt = prompt_catalog.prompt_for_task_type(TaskType.JUDGE)
-    assert act_prompt is not None and judge_prompt is not None
+    goal_prompt = prompt_catalog.prompt_for_task_type(TaskType.GOAL)
+    assert act_prompt is not None and judge_prompt is not None and goal_prompt is not None
     with build_client(tmp_path, calls=[replay_call() for _ in range(4)],
                       turns=[tool_turn(1), finish_turn(2), tool_turn(3), finish_turn(4)] * 2) as client:
         plan = create_plan(client, task_count=2)
@@ -287,7 +287,7 @@ def test_act_and_judge_share_tools_and_model(tmp_path: Path, monkeypatch: pytest
                 "fixture", *(["builtin:skill"] * 3), *(["builtin:task_agent"] * 2),
             ]
             assert detail["environment"]["prompt_fingerprints_by_task_type"] == {
-                "act": act_prompt.fingerprint, "judge": judge_prompt.fingerprint,
+                "act": act_prompt.fingerprint, "judge": judge_prompt.fingerprint, "goal": goal_prompt.fingerprint,
             }
             events = [entry["event"] for entry in client.get(f"/api/runs/{run_id}").json()["events"]]
             for task_run in detail["task_runs"]:
@@ -329,7 +329,7 @@ def test_optional_prompts_preserve_selected_text_and_snapshot_fingerprints(
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "PASS"
         assert detail["environment"]["prompt_fingerprints_by_task_type"] == {
-            "act": fingerprint, "judge": fingerprint,
+            "act": fingerprint, "judge": fingerprint, "goal": fingerprint,
         }
         stored = client.get(f"/api/runs/{run_id}").json()["detail"]
         assert stored["environment"] == detail["environment"]

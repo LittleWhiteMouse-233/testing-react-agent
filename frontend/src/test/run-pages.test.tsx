@@ -74,6 +74,17 @@ it("shows frozen Skill resource addresses and templates in run resources", () =>
   expect(screen.getByText("skill://focus/{path*}")).toBeInTheDocument();
   expect(screen.getByText("D:/skills")).toBeInTheDocument();
 });
+it("shows every execution of a repeated task in the report", async () => {
+  const first = report.detail.task_runs[0]!;
+  report.detail.task_runs.push({ ...first, id: "55555555-5555-4555-8555-555555555555", sequence: 2,
+    result: { reason_code: "completed", summary: "第二次执行的独立观察", memory: "第二轮节点" } });
+  renderPage(`/runs/${runId}/report`);
+  await screen.findByText("第二次执行的独立观察");
+  expect(screen.getByText("已根据截图检查版本号")).toBeInTheDocument();
+  expect(screen.getByText("第二轮节点")).toBeInTheDocument();
+  expect(document.querySelectorAll("details.timeline-block")).toHaveLength(2);
+});
+
 function renderPage(path: string, history = false) {
   render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={[path]}><Location /><Routes>
     <Route path="/runs" element={<HistoryPage />} />
@@ -189,7 +200,7 @@ it("uses the history case query to filter archived runs", async () => {
 
 it("keeps cancelled unstarted tasks distinct from fail-fast skipped tasks", async () => {
   report = runReport("CANCELLED");
-  report.detail.test_plan.content.tasks.push({ test_task_id: caseId, definition: { ...report.detail.test_plan.content.tasks[0]!.definition, title: "后续任务" } });
+  report.detail.test_plan.content.tasks.push({ test_task_id: caseId, definition: { ...report.detail.test_plan.content.tasks[0]!.definition, task_no: 2, title: "后续任务" } });
   renderPage(`/runs/${runId}/report`);
   expect(await screen.findByText("未执行")).toBeInTheDocument();
   expect(screen.queryByText("跳过")).not.toBeInTheDocument();
@@ -204,7 +215,7 @@ it.each(["act", "judge"] as const)("restores history and merges live cycles with
   report.detail.environment.max_cycles_by_task_type.act = 37;
   report.detail.environment.max_cycles_by_task_type.judge = 14;
   const limit = type === "act" ? 37 : 14;
-  report.detail.test_plan.content.tasks.push({ test_task_id: caseId, definition: { ...report.detail.test_plan.content.tasks[0]!.definition, title: "后续任务" } });
+  report.detail.test_plan.content.tasks.push({ test_task_id: caseId, definition: { ...report.detail.test_plan.content.tasks[0]!.definition, task_no: 2, title: "后续任务" } });
   renderPage(`/runs/${runId}`);
   await waitFor(() => expect(sources).toHaveLength(1));
   expect(screen.getByText("待执行")).toBeInTheDocument();
@@ -248,6 +259,20 @@ it("uses whole-filter counts and retains pagination when opening and closing a r
   expect(screen.getByTestId("location")).toHaveTextContent("page=2");
   fireEvent.click(screen.getByRole("button", { name: /close/i }));
   await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/runs?from=2026-09-01&to=2026-09-30&page=2&verdict=PASS"));
+});
+
+it("distinguishes unmet Goal conditions from product failures in successful history summaries", async () => {
+  const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (request) => {
+    if (new URL((request as Request).url).pathname === "/api/runs") {
+      return Response.json({ items: [{ ...report.detail.run, test_case_id: caseId, test_case_name: "设置页面验证",
+        test_case_archived: false, task_count: 3, task_status_counts: { passed: 12, failed: 9 }, image_count: 2 }], total: 1 });
+    }
+    return originalFetch(request);
+  });
+  renderPage("/runs");
+  expect(await screen.findByText(/失败\/条件未满足 9/)).toBeInTheDocument();
+  expect(document.querySelector(".status-pass")).toBeInTheDocument();
 });
 
 it("opens a report directly from its address", async () => {
@@ -413,7 +438,7 @@ it.each(["1.5", "Infinity"])("uses a whole first page for invalid URL page %s on
 it("refreshes only on lifecycle changes and reconnection for a multi-task event history", async () => {
   report = runReport(null);
   report.detail.environment.max_cycles_by_task_type.judge = 30;
-  report.detail.test_plan.content.tasks.push({ test_task_id: caseId, definition: { ...report.detail.test_plan.content.tasks[0]!.definition, title: "第二任务" } });
+  report.detail.test_plan.content.tasks.push({ test_task_id: caseId, definition: { ...report.detail.test_plan.content.tasks[0]!.definition, task_no: 2, title: "第二任务" } });
   const transmittedEventCounts: number[] = [];
   const originalFetch = vi.mocked(fetch).getMockImplementation()!;
   vi.mocked(fetch).mockImplementation(async (request) => {

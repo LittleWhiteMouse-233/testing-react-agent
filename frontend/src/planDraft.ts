@@ -13,13 +13,24 @@ export function toPlanDraft(plan: TestPlan): TestPlanDraft {
   };
 }
 
-export function emptyTask(setup = ""): TestTaskDefinition {
+export function emptyTask(taskNo: number, setup = ""): TestTaskDefinition {
   return {
+    task_no: taskNo,
     type: "act",
     title: setup || "新任务",
     goal: setup,
     success_criteria: [""]
   };
+}
+
+export function updateTaskOrder(tasks: TestTaskDefinition[]): TestTaskDefinition[] {
+  const taskNumbers = new Map(tasks.map((task, index) => [task.task_no, index + 1]));
+  return tasks.map((task, index) => {
+    const taskNo = index + 1;
+    const target = task.jump_back_to_task_no == null ? undefined : taskNumbers.get(task.jump_back_to_task_no);
+    return { ...task, task_no: taskNo,
+      jump_back_to_task_no: task.type === "goal" && target !== undefined && target < taskNo ? target : null };
+  });
 }
 
 export function isPlanDraftValid(plan: TestPlanDraft | null): boolean {
@@ -29,7 +40,12 @@ export function isPlanDraftValid(plan: TestPlanDraft | null): boolean {
     [...plan.assumptions, ...plan.setup_steps].every((text) => text.trim().length > 0) &&
     plan.tasks.length > 0 &&
     plan.tasks.every(
-      (task) =>
+      (task, index) =>
+        Number.isInteger(task.task_no) && task.task_no === index + 1 &&
+        (task.type === "goal"
+          ? task.jump_back_to_task_no != null && Number.isInteger(task.jump_back_to_task_no) &&
+            task.jump_back_to_task_no >= 1 && task.jump_back_to_task_no < task.task_no
+          : task.jump_back_to_task_no == null) &&
         task.title.trim().length > 0 &&
         task.title.length <= 200 &&
         task.goal.trim().length > 0 &&

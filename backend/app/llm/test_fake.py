@@ -32,12 +32,14 @@ def _default_plan(request: TestCaseContent) -> PlanDraft:
         assumptions=[],
         tasks=[
             TestTaskDefinition(
+                task_no=1,
                 type=TestTaskType.ACT,
                 title="到达目标页面",
                 goal=goal,
                 success_criteria=["当前截图显示用例描述的目标页面或目标状态"],
             ),
             TestTaskDefinition(
+                task_no=2,
                 type=TestTaskType.JUDGE,
                 title="验证预期结果",
                 goal=goal,

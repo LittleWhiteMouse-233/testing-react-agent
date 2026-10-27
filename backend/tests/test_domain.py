@@ -35,8 +35,9 @@ ARTIFACT_ID = "44444444-4444-4444-8444-444444444444"
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def definition(task_type: TaskType = TaskType.JUDGE) -> TaskDefinition:
+def definition(task_type: TaskType = TaskType.JUDGE, task_no: int = 1) -> TaskDefinition:
     return TaskDefinition(
+        task_no=task_no,
         type=task_type,
         title="Check",
         goal="Check the visible state",
@@ -49,6 +50,7 @@ def terminal_task(status: TaskRunStatus) -> TaskRun:
         id=TASK_RUN_ID,
         test_run_id=RUN_ID,
         test_task_id=TASK_ID,
+        sequence=1,
         status=status,
         cycle_count=1,
         result=TaskRunResult(
@@ -65,7 +67,7 @@ def test_generic_plan_content_has_one_task_shape_and_fresh_identity() -> None:
         title="Plan",
         setup_steps=[],
         assumptions=[],
-        tasks=[definition(TaskType.ACT), definition()],
+        tasks=[definition(TaskType.ACT), definition(task_no=2)],
     )
     first = identify_plan_content(draft)
     second = identify_plan_content(draft)
@@ -86,9 +88,10 @@ def test_generic_plan_content_has_one_task_shape_and_fresh_identity() -> None:
 def test_task_result_and_deterministic_verdict_do_not_copy_status_or_cycle() -> None:
     result_fields = set(TaskRunResult.model_fields)
     assert result_fields == {"reason_code", "summary", "memory"}
-    assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.PASSED)]) == RunVerdict.PASS
-    assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.FAILED)]) == RunVerdict.FAIL
-    assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.BLOCKED)]) == RunVerdict.BLOCKED
+    tasks = [PlanTask(test_task_id=TASK_ID, definition=definition())]
+    assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.PASSED)], tasks) == RunVerdict.PASS
+    assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.FAILED)], tasks) == RunVerdict.FAIL
+    assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.BLOCKED)], tasks) == RunVerdict.BLOCKED
     with pytest.raises(ValueError, match="explicit cancellation path"):
         aggregate_test_run_verdict(
             [
@@ -101,8 +104,39 @@ def test_task_result_and_deterministic_verdict_do_not_copy_status_or_cycle() -> 
                         ),
                     }
                 )
-            ]
+            ], tasks,
         )
+
+
+@pytest.mark.parametrize("numbers", [[1, 1], [2, 1], [1, 3]])
+def test_plan_rejects_invalid_task_numbers_without_renumbering(numbers: list[int]) -> None:
+    with pytest.raises(ValidationError, match="task_no"):
+        PlanContent[TaskDefinition](title="Plan", setup_steps=[], assumptions=[],
+                                    tasks=[definition(task_no=number) for number in numbers])
+
+
+@pytest.mark.parametrize("task_type,target", [("goal", None), ("goal", 0), ("goal", 2),
+                                               ("goal", 3), ("act", 1), ("judge", 1)])
+def test_task_rejects_invalid_goal_jump(task_type: str, target: int | None) -> None:
+    with pytest.raises(ValidationError):
+        TaskDefinition.model_validate({"task_no": 2, "type": task_type, "title": "Loop",
+            "goal": "All nodes checked", "success_criteria": ["No pending nodes"],
+            "jump_back_to_task_no": target})
+
+
+def test_goal_failures_are_control_results_but_blocking_takes_precedence() -> None:
+    goal = TaskDefinition.model_validate({"task_no": 2, "type": "goal", "title": "Loop",
+        "goal": "All nodes checked", "success_criteria": ["No pending nodes"], "jump_back_to_task_no": 1})
+    goal_id = "55555555-5555-4555-8555-555555555555"
+    tasks = [PlanTask(test_task_id=TASK_ID, definition=definition()),
+             PlanTask(test_task_id=goal_id, definition=goal)]
+    failed_goal = terminal_task(TaskRunStatus.FAILED).model_copy(update={"test_task_id": goal_id, "sequence": 2})
+    assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.PASSED), failed_goal], tasks) == RunVerdict.PASS
+    assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.FAILED), failed_goal,
+                                      terminal_task(TaskRunStatus.BLOCKED)], tasks) == RunVerdict.BLOCKED
+    exhausted = failed_goal.model_copy(update={"result": TaskRunResult(
+        reason_code=ReasonCode.GOAL_FAILURE_LIMIT, summary="Still pending")})
+    assert aggregate_test_run_verdict([terminal_task(TaskRunStatus.FAILED), exhausted], tasks) == RunVerdict.BLOCKED
 
 
 @pytest.mark.parametrize("memory,expected", [
