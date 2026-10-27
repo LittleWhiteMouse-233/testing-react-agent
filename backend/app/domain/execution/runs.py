@@ -11,9 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.domain.ids import TaskRunId, TestPlanId, TestRunId, TestTaskId
 from app.domain.planning import TestPlan, TestTask, TestTaskType
-from app.domain.resources.llm import LLMProfileSnapshot
-from app.domain.resources.tools import ToolCatalogSnapshot
-from app.domain.resources.static_resources import ResourceCatalogSnapshot
+from app.domain.resources import LLMProfileSnapshot, ResourceCatalogSnapshot, ToolCatalogSnapshot
 
 
 class TestRunStatus(StrEnum):

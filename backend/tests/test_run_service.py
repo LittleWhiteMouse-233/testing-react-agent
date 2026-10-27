@@ -12,8 +12,8 @@ from langchain_core.tools import StructuredTool
 from app.container import Container
 from app.execution.run_service import RunConflict
 from app.domain.errors import describe_exception
-from app.domain.resources.static_resources import ResourceCatalogSnapshot
-from app.mcp import MCPConnectionError
+from app.domain.resources import ResourceCatalogSnapshot
+from app.resources.mcp import MCPConnectionError
 from mcp_support import build_client, create_plan, finish_turn, tool_turn
 
 

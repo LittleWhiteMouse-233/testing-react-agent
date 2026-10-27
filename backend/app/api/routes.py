@@ -27,11 +27,10 @@ from app.container import Container
 from app.domain.execution import Artifact, TestRun, TestRunStatus
 from app.domain.ids import ArtifactId, TestCaseId, TestPlanId, TestRunId
 from app.domain.errors import PlanningUserInputRequired, TestCaseBusy, TestCaseHasActiveRun, TestCasePlanning, TestPlanNotLatest
-from app.domain.planning import TestCase, TestCaseContent, TestPlan
-from app.domain.planning.events import PlanningEvent
+from app.domain.planning import PlanningEvent, TestCase, TestCaseContent, TestPlan
 from app.reporting import TestRunReport
 from app.execution.run_service import RunConflict
-from app.mcp import MCPConnectionError
+from app.resources.mcp import MCPConnectionError
 
 
 API_ERROR_RESPONSE: dict[str, Any] = {"model": ApiError}

@@ -10,8 +10,8 @@ from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import BaseTool
 
 from app.domain.errors import ModelContextBudgetExceeded
-from app.domain.resources.llm import LLMProfileSnapshot
-from app.skill import LOAD_SKILL_TOOL_NAME
+from app.domain.resources import LLMProfileSnapshot
+from app.resources.static_resources import LOAD_SKILL_TOOL_NAME
 
 
 class ModelContextWindow:

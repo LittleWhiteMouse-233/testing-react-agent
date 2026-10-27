@@ -39,15 +39,15 @@ from app.domain.execution import (
     TaskRunResult,
     TaskRunStatus,
 )
-from app.domain.resources.static_resources import ResourceCatalogSnapshot, ResourceDefinitionSnapshot
-from app.skill import top_level_skills
+from app.domain.resources import ResourceCatalogSnapshot, ResourceDefinitionSnapshot
+from app.resources.static_resources import top_level_skills
 from app.domain.ids import ArtifactId, ModelProfileId, TaskRunId
 from app.domain.planning import TestTask, TestTaskType
 from app.execution.model_context import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.artifacts import ArtifactStore
 from app.llm import ChatModelClient, ModelProvider
-from app.prompts import PromptCatalog, PromptDefinition
+from app.resources.prompts import PromptCatalog, PromptDefinition
 
 
 _JSON_VALUE = TypeAdapter(JsonValue)

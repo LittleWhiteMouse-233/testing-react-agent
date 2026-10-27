@@ -13,19 +13,18 @@ from app.llm import (
 from app.config import Settings
 from app.domain.activity import AgentActivity
 from app.event_stream import EventBus, RunEventWriter
-from app.domain.planning.events import PlanningEvent
-from app.domain.planning import TestTaskType
+from app.domain.planning import PlanningEvent, TestTaskType
 from app.execution.executor import RunExecutor
 from app.execution.run_service import RunService
 from app.execution.task_agent import TASK_AGENT_TOOLS, TaskAgentFactory
 from app.persistence.db import build_engine, build_session_factory
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.planning import PlanningGraph, PlanningService
-from app.prompts import PromptCatalog
+from app.resources.prompts import PromptCatalog
 from app.reporting import ReportService
-from app.mcp import MCPClientProvider
-from app.skill import SkillResourceProvider
-from app.tools import ToolProvider
+from app.resources.mcp import MCPClientProvider
+from app.resources.static_resources import SkillResourceProvider
+from app.resources.tools import ToolProvider
 from app.test_case_lock import TestCaseLock
 
 

@@ -17,8 +17,8 @@ from langgraph.graph import END, START, StateGraph
 from langsmith import tracing_context
 
 from app.artifacts import ArtifactStore
-from app.domain.resources.static_resources import ResourceCatalogSnapshot
-from app.domain import planning
+from app.domain.resources import ResourceCatalogSnapshot
+from app.domain.planning import TestTask as PlanTask, TestTaskDefinition as TaskDefinition, TestTaskType as TaskType
 from app.domain.execution import Artifact, ArtifactType, ReasonCode, TaskAgentCompletion, TaskRunResult, TaskRunStatus
 from app.domain.errors import ToolCallError, describe_exception
 from app.execution.model_context import ModelContextWindow, ModelImageWindow
@@ -32,20 +32,20 @@ from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.execution import task_agent
 from app.event_stream.projector import project_run_message
 from app.llm import ModelProvider, ScriptedChatModelClient
-from app.prompts import PromptCatalog
+from app.resources.prompts import PromptCatalog
 from mcp_support import PNG_BASE64, finish_turn, tool_turn
 
 
 @pytest.fixture
 def task_runtime() -> _TaskRuntime:
     model_client = ScriptedChatModelClient()
-    prompt = PromptCatalog().prompt_for_task_type(planning.TestTaskType.ACT)
+    prompt = PromptCatalog().prompt_for_task_type(TaskType.ACT)
     model_tools = (finish_task,)
     task_context = TaskAgentContext(
         task_run_id=str(uuid4()),
-        task=planning.TestTask(test_task_id=str(uuid4()), definition=planning.TestTaskDefinition(
+        task=PlanTask(test_task_id=str(uuid4()), definition=TaskDefinition(
             task_no=1,
-            type=planning.TestTaskType.ACT, title="Observe", goal="Observe the target",
+            type=TaskType.ACT, title="Observe", goal="Observe the target",
             success_criteria=["Expected content is visible"],
         )),
         memory_text="[]", max_cycles=3,
@@ -108,7 +108,7 @@ async def test_message_publication_contract_is_checked_during_build(
 
 
 def test_image_tool_snapshot_contains_only_model_visible_arguments() -> None:
-    from app.tools import snapshot_tools
+    from app.resources.tools import snapshot_tools
 
     snapshots = snapshot_tools(task_agent.TASK_AGENT_TOOLS)
     image_tool = next(entry for entry in snapshots.tools if entry.name == "read_image_artifact")

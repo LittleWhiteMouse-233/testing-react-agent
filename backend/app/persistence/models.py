@@ -19,8 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.domain.execution import ArtifactType
-from app.domain.execution import TaskRunStatus, TestRunStatus, TestRunVerdict
+from app.domain.execution import ArtifactType, TaskRunStatus, TestRunStatus, TestRunVerdict
 from app.domain.planning import TestPlanOrigin, TestTaskType
 from app.persistence.db import Base
 

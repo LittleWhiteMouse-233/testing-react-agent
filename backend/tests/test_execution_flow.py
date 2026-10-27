@@ -25,7 +25,7 @@ from app.event_stream.projector import project_run_message
 from app.execution.task_agent import TaskAgentGraphState, _TaskRuntime
 from app.llm import ScriptedChatModelClient
 from app.llm.test_fake import ScriptedChatModel
-from app.prompts import PromptCatalog
+from app.resources.prompts import PromptCatalog
 from mcp_support import (
     PNG_BASE64, build_client, create_plan, finish_turn, image_block, read_records,
     replay_call, start_run, text_block, tool_turn, wait_for_run,

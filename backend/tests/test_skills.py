@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from langchain_core.tools import ToolException
 
-from app.domain.resources.static_resources import ResourceCatalogSnapshot
-from app.mcp import MCPClientProvider
+from app.domain.resources import ResourceCatalogSnapshot
+from app.resources.mcp import MCPClientProvider
 
 
 def write_nested_skills(root: Path) -> Path:
@@ -34,7 +34,7 @@ def write_nested_skills(root: Path) -> Path:
 
 @pytest.mark.asyncio
 async def test_local_nested_skills_disclose_only_roots_and_list_child_files(tmp_path: Path) -> None:
-    from app.skill import SkillResourceProvider, top_level_skills
+    from app.resources.static_resources import SkillResourceProvider, top_level_skills
 
     root = tmp_path / "skills"
     parent = write_nested_skills(root)
@@ -65,7 +65,7 @@ async def test_local_nested_skills_disclose_only_roots_and_list_child_files(tmp_
 
 @pytest.mark.asyncio
 async def test_relative_reads_are_explicit_dynamic_and_confined(tmp_path: Path) -> None:
-    from app.skill import SkillResourceProvider
+    from app.resources.static_resources import SkillResourceProvider
 
     root = tmp_path / "skills"
     parent = write_nested_skills(root)
@@ -92,7 +92,7 @@ async def test_relative_reads_are_explicit_dynamic_and_confined(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_resource_tools_return_model_visible_read_errors(tmp_path: Path) -> None:
-    from app.skill import SkillResourceProvider
+    from app.resources.static_resources import SkillResourceProvider
 
     provider = SkillResourceProvider(tmp_path, MCPClientProvider(tmp_path / "mcp.json"))
     await provider.discover_resources()
@@ -113,7 +113,7 @@ async def test_resource_tools_return_model_visible_read_errors(tmp_path: Path) -
 @pytest.mark.parametrize("source_id", ["local", "mcp:fixture"])
 async def test_malformed_resource_addresses_are_model_visible_errors(tmp_path: Path, tool_name: str, source_id: str) -> None:
     from mcp_support import load_mcp_client_provider
-    from app.skill import SkillResourceProvider
+    from app.resources.static_resources import SkillResourceProvider
     from mcp_support import write_mcp_config
 
     clients = await load_mcp_client_provider(write_mcp_config(tmp_path, [], tools_enabled=False)) if source_id != "local" else MCPClientProvider(tmp_path / "mcp.json")
@@ -130,7 +130,7 @@ async def test_malformed_resource_addresses_are_model_visible_errors(tmp_path: P
 @pytest.mark.asyncio
 @pytest.mark.parametrize("filename", ["invalid%00.md", "guide:part.md"])
 async def test_invalid_local_file_addresses_are_model_visible_errors(tmp_path: Path, filename: str) -> None:
-    from app.skill import SkillResourceProvider
+    from app.resources.static_resources import SkillResourceProvider
 
     provider = SkillResourceProvider(tmp_path, MCPClientProvider(tmp_path / "mcp.json"))
     result = await provider.build_resource_tools()[1].ainvoke({
@@ -143,8 +143,8 @@ async def test_invalid_local_file_addresses_are_model_visible_errors(tmp_path: P
 @pytest.mark.asyncio
 async def test_mcp_manifest_nested_resources_and_source_bound_reads(tmp_path: Path) -> None:
     from mcp_support import load_mcp_client_provider
-    from app.skill import SkillResourceProvider, top_level_skills
-    from app.tools import ToolProvider
+    from app.resources.static_resources import SkillResourceProvider, top_level_skills
+    from app.resources.tools import ToolProvider
     from mcp_support import PNG_BASE64, read_records, write_mcp_config
 
     meta = {"fastmcp": {"skill": {"name": "Parent", "is_manifest": False}}}
@@ -202,7 +202,7 @@ async def test_mcp_manifest_nested_resources_and_source_bound_reads(tmp_path: Pa
 async def test_resource_connection_failure_propagates_instead_of_becoming_a_read_error(tmp_path: Path, manifest: bool) -> None:
     from mcp import MCPError
     from mcp_support import load_mcp_client_provider
-    from app.skill import SkillResourceProvider
+    from app.resources.static_resources import SkillResourceProvider
     from mcp_support import write_mcp_config
 
     uri = "skill://parent/_manifest" if manifest else "doc://disconnect"
@@ -220,7 +220,7 @@ async def test_resource_connection_failure_propagates_instead_of_becoming_a_read
 @pytest.mark.asyncio
 async def test_mcp_package_templates_use_uri_path_and_preserve_source_boundaries(tmp_path: Path) -> None:
     from mcp_support import load_mcp_client_provider
-    from app.skill import SkillResourceProvider
+    from app.resources.static_resources import SkillResourceProvider
     from mcp_support import write_mcp_config
 
     skill_uri = "skill://parent/SKILL.md?revision=a/b"
@@ -242,7 +242,7 @@ async def test_mcp_package_templates_use_uri_path_and_preserve_source_boundaries
 @pytest.mark.parametrize("blob_text", [False, True])
 async def test_mcp_fallback_reads_only_top_level_and_templates_do_not_invent_files(tmp_path: Path, blob_text: bool) -> None:
     from mcp_support import load_mcp_client_provider
-    from app.skill import SkillResourceProvider, top_level_skills
+    from app.resources.static_resources import SkillResourceProvider, top_level_skills
     from mcp_support import read_records, write_mcp_config
 
     document = "---\nname: Content name\ndescription: Recovered summary\n---\nRoot body"
@@ -268,8 +268,8 @@ async def test_mcp_fallback_reads_only_top_level_and_templates_do_not_invent_fil
 
 
 def test_skill_ancestry_is_scoped_to_its_source() -> None:
-    from app.domain.resources.static_resources import ResourceCatalogSnapshot, ResourceDefinitionSnapshot
-    from app.skill import top_level_skills
+    from app.domain.resources import ResourceCatalogSnapshot, ResourceDefinitionSnapshot
+    from app.resources.static_resources import top_level_skills
 
     catalog = ResourceCatalogSnapshot(resources=[
         ResourceDefinitionSnapshot(source_id="mcp:first", uri="skill://parent/SKILL.md", name="Parent"),
@@ -280,7 +280,7 @@ def test_skill_ancestry_is_scoped_to_its_source() -> None:
 
 @pytest.mark.asyncio
 async def test_known_unsupported_local_mime_does_not_read_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.skill import SkillResourceProvider
+    from app.resources.static_resources import SkillResourceProvider
 
     document = tmp_path / "manual.pdf"
     document.write_bytes(b"binary document")
@@ -299,7 +299,7 @@ async def test_known_unsupported_local_mime_does_not_read_bytes(tmp_path: Path, 
 @pytest.mark.parametrize("advertised", [False, True])
 async def test_unsupported_mcp_mime_stops_at_the_first_known_boundary(tmp_path: Path, advertised: bool) -> None:
     from mcp_support import load_mcp_client_provider
-    from app.skill import SkillResourceProvider
+    from app.resources.static_resources import SkillResourceProvider
     from mcp_support import read_records, write_mcp_config
 
     uri = "doc://manual.pdf"
@@ -318,7 +318,7 @@ async def test_unsupported_mcp_mime_stops_at_the_first_known_boundary(tmp_path: 
 @pytest.mark.parametrize("advertised", [False, True])
 async def test_unsupported_skill_mime_does_not_read_or_parse_its_summary(tmp_path: Path, advertised: bool) -> None:
     from mcp_support import load_mcp_client_provider, read_records, write_mcp_config
-    from app.skill import SkillResourceProvider
+    from app.resources.static_resources import SkillResourceProvider
 
     uri = "skill://binary/SKILL.md"
     config = write_mcp_config(tmp_path, [], tools_enabled=False,
@@ -335,7 +335,7 @@ async def test_unsupported_skill_mime_does_not_read_or_parse_its_summary(tmp_pat
 @pytest.mark.asyncio
 async def test_unsupported_manifest_mime_is_listed_without_reading_it(tmp_path: Path) -> None:
     from mcp_support import load_mcp_client_provider, read_records, write_mcp_config
-    from app.skill import SkillResourceProvider
+    from app.resources.static_resources import SkillResourceProvider
 
     uri = "skill://binary/_manifest"
     config = write_mcp_config(tmp_path, [], tools_enabled=False, resources=[{
@@ -354,7 +354,7 @@ async def test_unsupported_manifest_mime_is_listed_without_reading_it(tmp_path: 
 @pytest.mark.parametrize("mime_type", ["application/json; charset=utf-8", "Text/Plain"])
 async def test_supported_mime_accepts_parameters_and_case_variants(tmp_path: Path, advertised: bool, mime_type: str) -> None:
     from mcp_support import load_mcp_client_provider, read_records, write_mcp_config
-    from app.skill import SkillResourceProvider
+    from app.resources.static_resources import SkillResourceProvider
 
     uri = "doc://observation"
     observed = '{"observation":"target state"}'

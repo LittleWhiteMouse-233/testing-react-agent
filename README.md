@@ -24,15 +24,17 @@ Act failed 或任何任务 blocked 会停止并跳过当前队列后缀；Judge 
 
 ## 结构和边界
 
-- `backend/app/domain/`：用例、计划、运行、工具目录、模型快照和事件的领域事实。
+- `backend/app/domain/`：用例、计划、运行、工具目录、模型快照和事件的领域事实；`planning/test_design.py` 集中定义用例、不可变计划、任务及其校验和转换，`planning/events.py` 定义临时规划进度事件。
 - `backend/app/planning/`：无工具的规划流程，读取原始用例、最新计划与本轮额外输入；`execution/`：Act/Judge 共用执行图。
-- `backend/app/mcp.py`：标准 stdio MCP 配置、工作目录和框架客户端；`tools.py` 统一管理通过官方适配器导入的业务工具与装配层注入的内置工具，`skill.py` 统一管理 Skill 与静态资源。
+- `backend/app/resources/`：Agent 可用能力与内容的接入和加载；`mcp.py` 管理标准 stdio MCP 配置、工作目录和框架客户端，`tools.py` 统一管理通过官方适配器导入的业务工具与装配层注入的内置工具，`static_resources.py` 管理 Skill 与静态资源，`prompts/catalog.py` 管理本地提示词、指纹和选择规则。工具与静态资源平行依赖 MCP，提示词独立加载；领域合同仍由 `domain/resources/` 拥有。
 - `backend/app/event_stream/`：共享有界 EventBus；执行事件经 RunEventWriter 提交后通知，规划事件仅在连接中发送。慢订阅队列溢出会断开，执行流可从数据库补拉，规划流不保留历史。
 - `frontend/`：计划编辑、实时运行、历史和报告。
 - `backend/scripts/` 和 `frontend/scripts/`：开发用契约生成工具。
 - `user_scripts/`：安装、启动和独立能力检测工具，见[用户脚本文档](user_scripts/README.md)。
 - `mcp_servers/`：独立 MCP 服务，使用说明见下方[服务文档](#mcp-服务文档)。
 - `mcp_servers/mcp.json`：宿主连接配置；`data/`：忽略的运行数据库、checkpoint、运行记录和导出。
+
+跨包引用从 `app` 起最多使用三级公开入口，例如 `app.domain.planning`、`app.domain.execution`、`app.domain.resources` 和 `app.resources.prompts`；包通过显式导入和 `__all__` 披露接口，定义、校验与转换保留在具名模块中。包内部直接引用定义模块，不受公开入口层数限制。
 
 宿主及其测试不 import 外部包，不管理设备 ID、状态、探活或配置。第三方工具只需通过 MCP 提供 schema 和结果；不需要实现项目专属的 scopes、manifest 或设备接口。
 
@@ -120,7 +122,7 @@ Act 达成目标，Judge 验证行为，Goal 判断循环结束条件；Judge �
 
 `finish_task` 的文本回执保留结论和摘要，有有效 memory 时追加 `Submitted memory:` 段，保留原文与换行。该回执随 ToolMessage 持久化为事件，事件流、报告和导出直接展示它；结果计算、后续任务记忆和任务结果区域仍读取类型明确的参数及持久化 TaskRun，不解析回执文本，也不从结果补造历史消息。
 
-应用装配直接实例化 `PromptCatalog()`，由初始化方法按 `AgentActivity` 和 `TestTaskType` 的枚举值加载同名 `.txt` 文件，以名称索引提示词定义；`prompt_directory` 参数可指定目录，默认使用提示词模块所在目录。`prompt_for_activity` 选择活动提示词（规划使用 `planning.txt`）；`prompt_for_task_type` 优先选择任务类型专用提示词，缺失时回退到 `execution.txt`，两者不拼接。文件不存在时对应定义为 `None`，消费者使用空文本；文件存在但内容为空时仍有定义，并覆盖通用 execution 提示词。其它读取或编码错误正常报错。`PromptDefinition.fingerprint` 是文件字节内容的 SHA-256 前 12 位十六进制指纹，缺失文件不生成指纹。
+应用装配从 `app.resources.prompts` 的公开入口导入并实例化 `PromptCatalog()`，由初始化方法按 `AgentActivity` 和 `TestTaskType` 的枚举值加载同名 `.txt` 文件，以名称索引提示词定义；`prompt_directory` 参数可指定目录，默认使用 `catalog.py` 所在的 `backend/app/resources/prompts/` 目录。`prompt_for_activity` 选择活动提示词（规划使用 `planning.txt`）；`prompt_for_task_type` 优先选择任务类型专用提示词，缺失时回退到 `execution.txt`，两者不拼接。文件不存在时对应定义为 `None`，消费者使用空文本；文件存在但内容为空时仍有定义，并覆盖通用 execution 提示词。其它读取或编码错误正常报错。`PromptDefinition.fingerprint` 是文件字节内容的 SHA-256 前 12 位十六进制指纹，缺失文件不生成指纹。
 
 `TaskAgentFactory` 和 `RunService` 共用同一个 catalog，分别用于执行和通过 `prompt_fingerprints_by_task_type` 冻结实际选择的指纹；回退时记录 execution 的指纹，最终没有提示词时记录 `null`。`PlanningGraph` 接收 catalog 选出的 planning 提示词，规划快照以 `planning_prompt_fingerprint` 保存其指纹或 `null`。运行期间不热更新 catalog 或替换模型客户端，同源的模型配置和提示词指纹无需在任务构建时重复比较，完整模型快照和提示词指纹继续保存在运行环境中供追溯。
 
@@ -195,7 +197,7 @@ npm.cmd run build
 
 已有环境升级时，先在该 Python 环境执行 `python -m pip uninstall -y langchain-mcp-adapters`，再安装本版依赖，避免旧独立 adapter 的 MCP 1.x 约束残留。
 
-本地 Skill 放在 `skills/base/` 或 `skills/external/`，也可通过 `TEST_AGENT_SKILLS_DIR` 指定根目录；用法见 [Skill 说明](skills/README.md)。`app/mcp.py` 管理配置和客户端，`app/tools.py` 统一集合管理，`app/skill.py` 拥有资源工具的包边界、摘要、列表和读取定义。初始只披露顶层摘要，嵌套 Skill 按需访问。三个目录资源工具是 `load_skill`、`read_resource` 和 `list_resources`；`read_resource` 可用 `base_uri` 解析正文中的相对引用。TaskAgent 的 `read_image_artifact` 重读已保存的运行图片。所有调用计入原有执行限制，新增图片统一存储，重读沿用原 ID，保留消息引用并遵循同一图片窗口。执行协议 v10 的工具快照包含全部可用工具及其模型可见 schema；来源为 MCP 服务器名、`builtin:skill` 或 `builtin:task_agent`。资源快照只保存目录元数据，实际读取内容记录在消息中；当前不兼容旧版本运行快照。
+本地 Skill 放在 `skills/base/` 或 `skills/external/`，也可通过 `TEST_AGENT_SKILLS_DIR` 指定根目录；用法见 [Skill 说明](skills/README.md)。`app/resources/mcp.py` 管理配置和客户端，`app/resources/tools.py` 统一集合管理，`app/resources/static_resources.py` 拥有资源工具的包边界、摘要、列表和读取定义。初始只披露顶层摘要，嵌套 Skill 按需访问。三个目录资源工具是 `load_skill`、`read_resource` 和 `list_resources`；`read_resource` 可用 `base_uri` 解析正文中的相对引用。TaskAgent 的 `read_image_artifact` 重读已保存的运行图片。所有调用计入原有执行限制，新增图片统一存储，重读沿用原 ID，保留消息引用并遵循同一图片窗口。执行协议 v10 的工具快照包含全部可用工具及其模型可见 schema；来源为 MCP 服务器名、`builtin:skill` 或 `builtin:task_agent`。资源快照只保存目录元数据，实际读取内容记录在消息中；当前不兼容旧版本运行快照。
 
 会话和协议取消由适配器与 SDK 管理，宿主不维护请求 ID、会话重连或子进程清理状态。MCP [取消规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/cancellation)允许取消与返回结果竞态；没有收到的结果始终标为未确认。
 

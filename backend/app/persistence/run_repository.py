@@ -7,22 +7,20 @@ from uuid import uuid4
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.domain.execution import ReasonCode
 from app.domain.ids import TaskRunId
 from app.domain.errors import TestCaseHasActiveRun, TestPlanNotLatest
 from app.domain.execution import (
     CycleStartedEvent,
     ExecutionErrorEvent,
+    ReasonCode,
     RunEvent,
     RunLifecycleEvent,
     StoredRunEvent,
     TaskLifecycleEvent,
-    TasksSkippedEvent,
-)
-from app.domain.execution import (
     TaskRun,
     TaskRunResult,
     TaskRunStatus,
+    TasksSkippedEvent,
     TestRun,
     TestRunDetail,
     TestRunEnvironmentSnapshot,
@@ -30,6 +28,8 @@ from app.domain.execution import (
     TestRunVerdict,
 )
 from app.domain.planning import (
+    TestCase,
+    TestCaseContent,
     TestPlan,
     TestPlanContent,
     TestPlanOrigin,
@@ -38,7 +38,6 @@ from app.domain.planning import (
     TestTaskDefinition,
     identify_plan_content,
 )
-from app.domain.planning import TestCase, TestCaseContent
 from app.persistence.adapters import (
     dump_planning_context,
     dump_string_list,

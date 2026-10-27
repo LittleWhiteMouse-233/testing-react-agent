@@ -8,7 +8,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
 from app.config import LLMProfileSettings
-from app.domain.resources.llm import LLMProfileSnapshot
+from app.domain.resources import LLMProfileSnapshot
 
 
 class ChatModelClient(Protocol):

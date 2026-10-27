@@ -4,12 +4,13 @@ from datetime import datetime, timezone
 
 from app.domain.execution import Artifact, StoredRunEvent, TaskRun, TestRun
 from app.domain.planning import (
+    TestCase,
+    TestCaseContent,
     TestPlan,
     TestPlanContent,
     TestTask,
     TestTaskDefinition,
 )
-from app.domain.planning import TestCase, TestCaseContent
 from app.persistence.adapters import (
     load_run_event,
     load_planning_context,

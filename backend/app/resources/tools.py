@@ -9,8 +9,8 @@ from langchain.mcp import as_langchain_tool
 from langchain_core.tools import BaseTool
 from langchain_core.utils.pydantic import model_json_schema
 
-from app.domain.resources.tools import ToolDefinitionSnapshot, ToolCatalogSnapshot, ToolAnnotationsSnapshot
-from app.mcp import MCPClientProvider
+from app.domain.resources import ToolDefinitionSnapshot, ToolCatalogSnapshot, ToolAnnotationsSnapshot
+from app.resources.mcp import MCPClientProvider
 
 
 class ToolProvider:

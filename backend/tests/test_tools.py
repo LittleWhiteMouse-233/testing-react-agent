@@ -5,8 +5,8 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 from langsmith import tracing_context
 
-from app.mcp import MCPClientProvider
-from app.tools import ToolProvider, snapshot_tools
+from app.resources.mcp import MCPClientProvider
+from app.resources.tools import ToolProvider, snapshot_tools
 from mcp_support import image_block, load_mcp_client_provider, read_records, replay_call, text_block, write_mcp_config
 
 

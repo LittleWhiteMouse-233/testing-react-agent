@@ -4,8 +4,7 @@ from typing import Any, cast
 
 from pydantic import TypeAdapter
 
-from app.domain.execution import RUN_EVENT_ADAPTER, RunEvent
-from app.domain.execution import TaskRunResult, TestRunEnvironmentSnapshot
+from app.domain.execution import RUN_EVENT_ADAPTER, RunEvent, TaskRunResult, TestRunEnvironmentSnapshot
 from app.domain.planning import TestPlanPlanningContext
 
 

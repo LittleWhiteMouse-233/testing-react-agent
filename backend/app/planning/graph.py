@@ -21,7 +21,7 @@ from app.domain.planning import (
     TestTaskDefinition,
 )
 from app.llm import ChatModelClient
-from app.prompts import PromptDefinition
+from app.resources.prompts import PromptDefinition
 
 
 PlanDraft = TestPlanContent[TestTaskDefinition]

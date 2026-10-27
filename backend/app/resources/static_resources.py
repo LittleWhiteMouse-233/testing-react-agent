@@ -21,10 +21,10 @@ from pydantic import AnyUrl
 from rfc3986 import uri_reference
 from rfc3986.exceptions import ResolutionError
 
-from app.domain.resources.static_resources import (
+from app.domain.resources import (
     ResourceCatalogSnapshot, ResourceDefinitionSnapshot, ResourceTemplateSnapshot,
 )
-from app.mcp import MCPClientProvider
+from app.resources.mcp import MCPClientProvider
 
 
 ResourceContent = TextContentBlock | ImageContentBlock

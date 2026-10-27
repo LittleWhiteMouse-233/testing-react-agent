@@ -14,10 +14,10 @@ from app.persistence.run_repository import (
     ActiveRunExists,
     SqlAlchemyRunRepository,
 )
-from app.prompts import PromptCatalog
-from app.tools import ToolProvider, snapshot_tools
-from app.mcp import MCPClientProvider, MCPConnectionError
-from app.skill import SkillResourceProvider
+from app.resources.prompts import PromptCatalog
+from app.resources.tools import ToolProvider, snapshot_tools
+from app.resources.mcp import MCPClientProvider, MCPConnectionError
+from app.resources.static_resources import SkillResourceProvider
 from app.test_case_lock import TestCaseLock
 
 

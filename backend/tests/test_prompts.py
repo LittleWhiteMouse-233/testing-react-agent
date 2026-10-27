@@ -4,7 +4,19 @@ import pytest
 
 from app.domain.activity import AgentActivity
 from app.domain.planning import TestTaskType as TaskType
-from app.prompts import PromptCatalog
+from app.resources.prompts import PromptCatalog
+
+
+def test_default_directory_loads_bundled_planning_and_task_prompts() -> None:
+    catalog = PromptCatalog()
+
+    planning_prompt = catalog.prompt_for_activity(AgentActivity.PLANNING)
+    assert planning_prompt is not None
+    assert planning_prompt.name == "planning"
+    for task_type in TaskType:
+        task_prompt = catalog.prompt_for_task_type(task_type)
+        assert task_prompt is not None
+        assert task_prompt.name == task_type.value
 
 
 @pytest.mark.parametrize("task_type", list(TaskType))

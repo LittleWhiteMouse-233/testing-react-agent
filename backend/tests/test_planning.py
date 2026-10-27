@@ -24,7 +24,7 @@ from app.domain.errors import PlanningFailure
 from app.domain.planning import TestCaseContent as CaseContent
 from app.llm import ChatModelClient, RealChatModelClient, ScriptedChatModelClient
 from app.planning.graph import PlanDraft, PlanningGraph
-from app.prompts import PromptCatalog
+from app.resources.prompts import PromptCatalog
 from mcp_support import build_client
 
 

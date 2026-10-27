@@ -16,7 +16,7 @@ from app.config import Settings
 from app.container import Container
 from app.llm import ScriptedChatModelClient
 from app.main import create_app
-from app.mcp import MCPClientProvider
+from app.resources.mcp import MCPClientProvider
 
 
 PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="

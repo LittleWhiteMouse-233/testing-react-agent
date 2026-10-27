@@ -37,9 +37,7 @@ from app.domain.planning import (
     TestTaskDefinition as TaskDefinition,
     TestTaskType as TaskType,
 )
-from app.domain.resources.llm import LLMProfileSnapshot
-from app.domain.resources.tools import ToolCatalogSnapshot
-from app.domain.resources.static_resources import ResourceCatalogSnapshot
+from app.domain.resources import LLMProfileSnapshot, ResourceCatalogSnapshot, ToolCatalogSnapshot
 from app.event_stream import EventBus, RunEventWriter, project_run_message
 from app.execution.task_agent import TaskAgentGraphState
 from app.execution import RunExecutor, RunService, TaskAgentFactory
@@ -476,7 +474,7 @@ async def test_image_reads_resolve_the_calling_tasks_run_and_reject_other_artifa
 
 def test_domain_has_no_framework_or_integration_dependencies() -> None:
     domain_root = Path(__file__).resolve().parents[1] / "app" / "domain"
-    banned = ("fastapi", "sqlalchemy", "langchain", "langgraph", "app.device", "app.llm")
+    banned = ("fastapi", "sqlalchemy", "langchain", "langgraph", "app.device", "app.llm", "app.resources")
     violations: list[str] = []
     for path in domain_root.rglob("*.py"):
         tree = ast.parse(path.read_text("utf-8"))

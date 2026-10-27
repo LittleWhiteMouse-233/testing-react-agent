@@ -9,7 +9,7 @@ from langgraph.graph.message import Messages, add_messages
 from pydantic import Field, create_model
 
 from app.domain.errors import ModelContextBudgetExceeded
-from app.domain.resources.llm import LLMProfileSnapshot
+from app.domain.resources import LLMProfileSnapshot
 from app.execution.model_context import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent import finish_task
 from app.event_stream.projector import project_run_message
