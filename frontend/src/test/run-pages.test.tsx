@@ -95,6 +95,24 @@ function renderPage(path: string, history = false) {
   </Routes></MemoryRouter></QueryClientProvider>);
 }
 
+it.each(["execution", "report"])("shows Goal facts without a failure limit snapshot in the %s page", async (page) => {
+  const goalTaskId = "55555555-5555-4555-8555-555555555555";
+  report.detail.run.verdict = "BLOCKED";
+  report.detail.test_plan.content.tasks.push({ test_task_id: goalTaskId, definition: {
+    task_no: 2, type: "goal", title: "遍历结束", goal: "确认节点已全部检查", success_criteria: ["没有待检查节点"], jump_back_to_task_no: 1
+  } });
+  report.detail.task_runs.push({ ...report.detail.task_runs[0]!, id: goalTaskId, test_task_id: goalTaskId,
+    sequence: 2, status: "failed", result: { reason_code: "goal_failure_limit", summary: "仍有未处理节点", memory: "尚有一个节点" } });
+  renderPage(`/runs/${runId}${page === "report" ? "/report" : ""}`);
+  await screen.findByText("遍历结束");
+  expect(screen.queryAllByText(/累计失败上限/)).toHaveLength(0);
+  expect(screen.getByText(/未满足时回到任务 1/)).toBeInTheDocument();
+  expect(screen.getByText("仍有未处理节点")).toBeInTheDocument();
+  expect(screen.getByText("尚有一个节点")).toBeInTheDocument();
+  if (page === "execution") expect(screen.getByText(/累计失败 1 ·/)).toBeInTheDocument();
+  else expect(screen.getByText(/goal_failure_limit/)).toBeInTheDocument();
+});
+
 it("shows undefined prompt fingerprints without replacing defined fingerprints", () => {
   report.detail.environment.prompt_fingerprints_by_task_type.act = null;
   report.detail.test_plan.planning_context.planning_prompt_fingerprint = null;

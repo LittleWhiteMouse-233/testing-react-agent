@@ -95,7 +95,6 @@ def run_environment_snapshot() -> RunEnvironmentSnapshot:
         resource_catalog=ResourceCatalogSnapshot(),
         execution_model=model_snapshot(),
         max_cycles_by_task_type={TaskType.ACT: 30, TaskType.JUDGE: 10, TaskType.GOAL: 10},
-        goal_max_failures=10,
         prompt_fingerprints_by_task_type={TaskType.ACT: "act-v1", TaskType.JUDGE: "judge-v1", TaskType.GOAL: "goal-v1"},
         app_version="0.1.0",
         execution_protocol_version="10",
@@ -427,8 +426,10 @@ async def test_task_results_persist_observations_without_image_associations(
     result = TaskRunResult(reason_code=reason, summary="Observed target state and compared it with the success criteria",
                            memory="Observed A: model TV-X1\nfirmware V2.3.7")
     await repository.finish_task(task.id, status=status, result=result, cycle_count=1)
-    saved = (await repository.list_task_runs(run.id))[0]
-    assert saved.status == status and saved.result == result
+    saved = await repository.get_task_run(task.id)
+    assert saved.status == status and saved.result == result and saved.cycle_count == 1
+    with pytest.raises(LookupError, match="Task run not found"):
+        await repository.get_task_run(str(uuid4()))
     assert (await api_repository.read_test_run_report(sessions, run.id)).artifacts == []
     await engine.dispose()
 

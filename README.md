@@ -18,7 +18,7 @@
 
 计划使用从 1 连续编号的 `task_no` 作为唯一排序事实，UUID 保留数据库身份。Goal 的 `jump_back_to_task_no` 必须指向同一计划的前序任务；编辑时序号由前端自动维护，删除或重排使引用失效时需确认清空并重新选择，后端独立校验且不重映射。每次回跳重入创建新的 TaskRun，以运行内 `sequence` 保存实际执行顺序。
 
-Act failed 或任何任务 blocked 会停止并跳过当前队列后缀；Judge failed 记录产品失败并继续；Goal failed 按已确认的目标回跳，passed 继续下一任务。`TEST_AGENT_GOAL_MAX_CYCLES` 默认 10，限制一次 Goal 的决策轮；`TEST_AGENT_GOAL_MAX_FAILURES` 默认 10，限制本次 Run 内每个 Goal 独立累计的 failed 次数，passed 不计数也不清零。第 10 次 failed 保留该状态并记录 `goal_failure_limit`，运行结束为 BLOCKED，两种上限均冻结到运行快照。
+Act failed 或任何任务 blocked 会停止并跳过当前队列后缀；Judge failed 记录产品失败并继续；Goal failed 按已确认的目标回跳，passed 继续下一任务。`TEST_AGENT_GOAL_MAX_CYCLES` 默认 10，限制一次 Goal 的决策轮；`TEST_AGENT_GOAL_MAX_FAILURES` 默认 10，限制本次 Run 内每个 Goal 独立累计的 failed 次数，passed 不计数也不清零。默认第 10 次 failed 保留该状态并记录 `goal_failure_limit`，运行结束为 BLOCKED。总轮次上限冻结到运行快照；Goal 累计失败上限在应用启动时注入执行器，不写入运行快照，运行页和报告不展示该上限。
 
 最终结果优先级为：未处理异常 BLOCKED、已响应取消 CANCELLED、任一任务 blocked 或 Goal 额度耗尽 BLOCKED、Act/Judge 存在 failed 时 FAIL、否则 PASS。skipped 不独立决定结论；取消不创建后续 skipped。所有执行历史继续留存，报告与导出展示各次结果，Goal failed 表示“条件未满足”。跨任务记忆以实际执行时间排序，用 `task_no` 和该任务的 `execution_no` 标识来源，由 executor 序列化成 `memory_text`，TaskAgent 只负责文本注入。
 

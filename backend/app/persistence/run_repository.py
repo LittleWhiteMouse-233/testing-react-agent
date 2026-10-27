@@ -8,6 +8,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.execution import ReasonCode
+from app.domain.ids import TaskRunId
 from app.domain.errors import TestCaseHasActiveRun, TestPlanNotLatest
 from app.domain.execution import (
     CycleStartedEvent,
@@ -250,6 +251,11 @@ class SqlAlchemyRunRepository:
         async with read_snapshot(self.sessions) as session:
             return await read_test_run_detail(session, test_run_id)
 
+    async def get_task_run(self, task_run_id: TaskRunId) -> TaskRun:
+        async with self.sessions() as session:
+            row = await self._require_task_run(session, task_run_id)
+        return task_run_from_row(row)
+
     async def start_run(self, test_run_id: str) -> None:
         event = RunLifecycleEvent(
             type="run.started", test_run_id=test_run_id, task_run_id=None
@@ -315,7 +321,7 @@ class SqlAlchemyRunRepository:
         status: TaskRunStatus,
         result: TaskRunResult,
         cycle_count: int,
-    ) -> TaskRun:
+    ) -> None:
         async with self.sessions() as session:
             current = await self._require_task_run(session, task_run_id)
             test_run_id = current.test_run_id
@@ -325,7 +331,7 @@ class SqlAlchemyRunRepository:
             task_run_id=task_run_id,
         )
 
-        async def mutation(session: AsyncSession) -> TaskRunRow:
+        async def mutation(session: AsyncSession) -> None:
             row = await self._require_task_run(session, task_run_id)
             is_user_cancelled = result.reason_code == ReasonCode.USER_CANCELLED
             if (status == TaskRunStatus.CANCELLED) != is_user_cancelled:
@@ -336,14 +342,12 @@ class SqlAlchemyRunRepository:
             row.result_json = dump_task_run_result(result)
             row.cycle_count = cycle_count
             row.finished_at = now()
-            return row
 
-        row, _ = await self.run_event_writer.commit(
+        await self.run_event_writer.commit(
             event,
             mutation,
             dedup_key=f"{test_run_id}:{task_run_id}:task.finished",
         )
-        return task_run_from_row(row)
 
     async def skip_remaining(
         self, test_run_id: str, tasks: Sequence[TestTask]

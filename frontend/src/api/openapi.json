@@ -2057,11 +2057,6 @@
             "title": "Execution Protocol Version",
             "type": "string"
           },
-          "goal_max_failures": {
-            "minimum": 1.0,
-            "title": "Goal Max Failures",
-            "type": "integer"
-          },
           "max_cycles_by_task_type": {
             "additionalProperties": {
               "maximum": 100.0,
@@ -2104,7 +2099,6 @@
           "resource_catalog",
           "execution_model",
           "max_cycles_by_task_type",
-          "goal_max_failures",
           "prompt_fingerprints_by_task_type",
           "app_version",
           "execution_protocol_version"

@@ -763,6 +763,35 @@ def test_failed_model_call_retains_started_cycle(tmp_path: Path, failure_kind: s
         assert sum(event["type"] == "execution.error" for event in events) == 1
 
 
+def test_task_finish_publication_failure_preserves_the_committed_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    summary = "Observed the target satisfying the confirmed criteria"
+    memory = "The target state was confirmed before publication failed"
+    with build_client(tmp_path, turns=[{"status": "passed", "summary": summary, "memory": memory}]) as client:
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        original_publish = container.run_event_bus.publish
+
+        async def publish(test_run_id: str, sequence: int) -> None:
+            events = await api_repository.list_events(container.sessions, test_run_id)
+            if events[-1].event.type == "task.finished":
+                raise OSError("Task completion publication failed")
+            await original_publish(test_run_id, sequence)
+
+        monkeypatch.setattr(container.run_event_bus, "publish", publish)
+        run_id = start_run(client, create_plan(client, task_count=2))
+        detail = wait_for_run(client, run_id)
+        assert detail["run"]["verdict"] == "BLOCKED"
+        assert len(detail["task_runs"]) == 1
+        task_run = detail["task_runs"][0]
+        assert task_run["status"] == "passed" and task_run["cycle_count"] == 1
+        assert task_run["result"] == {"reason_code": "completed", "summary": summary, "memory": memory}
+        events = client.get(f"/api/runs/{run_id}").json()["events"]
+        assert sum(entry["event"]["type"] == "task.finished" for entry in events) == 1
+        errors = [entry["event"] for entry in events if entry["event"]["type"] == "execution.error"]
+        assert len(errors) == 1 and "Task completion publication failed" in errors[0]["message"]
+
+
 def test_cancellation_during_cycle_publication_prevents_model_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     with build_client(tmp_path) as client:
         plan = create_plan(client)

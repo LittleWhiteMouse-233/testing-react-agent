@@ -87,7 +87,6 @@ class TestRunEnvironmentSnapshot(BaseModel):
     resource_catalog: ResourceCatalogSnapshot
     execution_model: LLMProfileSnapshot
     max_cycles_by_task_type: dict[TestTaskType, Annotated[int, Field(ge=1, le=100)]]
-    goal_max_failures: int = Field(ge=1)
     prompt_fingerprints_by_task_type: dict[TestTaskType, Annotated[str, Field(min_length=1)] | None]
     app_version: str = Field(min_length=1)
     execution_protocol_version: Literal["10"]

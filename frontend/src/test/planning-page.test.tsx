@@ -593,6 +593,7 @@ it.each(["delete", "move"])("confirms and clears an invalidated Goal reference o
   const action = operation === "delete" ? "删除任务 1" : "下移任务 1";
   fireEvent.click(screen.getByRole("button", { name: action }));
   await screen.findByText("跳转目标失效");
+  await waitFor(() => expect(screen.getByText("任务 2 · 遍历结束")).toBeVisible());
   expect(document.querySelectorAll(".task-editor")).toHaveLength(2);
   fireEvent.click(screen.getByRole("button", { name: /取\s*消/ }));
   await waitFor(() => expect(screen.getByText("跳转目标失效")).not.toBeVisible());
@@ -679,7 +680,7 @@ it("shows the saved planning input in the online report", async () => {
       created_at: plan.created_at, started_at: plan.created_at, finished_at: plan.created_at
     }, environment: { execution_model: plan.planning_context.planning_model, tool_catalog: { tools: [] },
       resource_catalog: { local_root: null, resources: [], templates: [] },
-      prompt_fingerprints_by_task_type: { act: "act-v1", judge: "judge-v1", goal: "goal-v1" }, goal_max_failures: 10, app_version: "0.1.0", execution_protocol_version: "10", max_cycles_by_task_type: { act: 30, judge: 10, goal: 10 }
+      prompt_fingerprints_by_task_type: { act: "act-v1", judge: "judge-v1", goal: "goal-v1" }, app_version: "0.1.0", execution_protocol_version: "10", max_cycles_by_task_type: { act: 30, judge: 10, goal: 10 }
     }, task_runs: [] },
     artifacts: [], events: []
   };

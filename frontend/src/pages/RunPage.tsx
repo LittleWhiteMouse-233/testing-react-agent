@@ -62,7 +62,7 @@ function RunExecution({ runId }: { runId: string }) {
           return <article key={task.test_task_id} className={"queue-task " + (taskRun?.status === "running" ? "active" : "")}>
             <span className={"task-number " + task.definition.type}>{task.definition.task_no}</span><div><div className="task-title"><h3>{task.definition.title}</h3><TaskStatusBadge task={task.definition} taskRun={taskRun} finished={finished} /></div>
               <small>{task.definition.type.toUpperCase()} · 已执行 {startedCount} 次</small><p>{task.definition.goal}</p>
-              {task.definition.type === "goal" && <p className="muted">累计失败 {failureCount} / {report.data.detail.environment.goal_max_failures} · 未满足时回到任务 {task.definition.jump_back_to_task_no}</p>}
+              {task.definition.type === "goal" && <p className="muted">累计失败 {failureCount} · 未满足时回到任务 {task.definition.jump_back_to_task_no}</p>}
               <details><summary>成功标准</summary><ul>{task.definition.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul></details>
               <div className="task-runtime"><span>{taskRun ? taskCycleCount(taskRun, report.events) : "—"} / {taskMaxCycles(task.definition.type, report.data.detail.environment)} 轮</span><ElapsedTime startedAt={taskRun?.started_at ?? null} finishedAt={taskRun?.finished_at ?? null} active={taskRun?.status === "running"} /></div>
               {taskRun?.result && <p className="task-result">{taskRun.result.summary}</p>}

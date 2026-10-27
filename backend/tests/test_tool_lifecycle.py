@@ -148,7 +148,7 @@ async def test_executor_captures_completion_independently_and_waits_for_stream_e
     checkpointer = InMemorySaver()
     factory.build.return_value = (graph.compile(checkpointer=checkpointer), initial, task_runtime.runtime_context)
     repository = create_autospec(SqlAlchemyRunRepository, instance=True)
-    executor = RunExecutor(repository=repository, agent_factory=factory, checkpoint_path="unused")
+    executor = RunExecutor(repository=repository, agent_factory=factory, checkpoint_path="unused", goal_max_failures=10)
     with tracing_context(enabled=False):
         actual = await executor._execute_task(
             test_run_id=str(uuid4()),

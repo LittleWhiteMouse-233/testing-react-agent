@@ -68,9 +68,9 @@ export function RunReportContent({ runId }: { runId: string }) {
           <TaskStatusBadge task={task.definition} taskRun={taskRun} finished={finished} /><ElapsedTime startedAt={taskRun.started_at} finishedAt={taskRun.finished_at} active={taskRun.status === "running"} />
         </summary>
         <div className="timeline-task-body"><p><strong>目标：</strong>{task.definition.goal}</p><strong>成功标准</strong><ul>{task.definition.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul>
-          {task.definition.type === "goal" && <p>未满足时回到任务 {task.definition.jump_back_to_task_no} · 累计失败上限 {detail.environment.goal_max_failures}</p>}
-          {taskRun?.result && <div className="result-note"><p>{taskRun.result.summary}</p><small>{taskRun.result.reason_code} · {taskRun.cycle_count} / {taskMaxCycles(task.definition.type, detail.environment)} 轮</small></div>}
-          {taskRun?.result?.memory && <div className="task-memory"><strong>跨任务记忆</strong><p>{taskRun.result.memory}</p></div>}
+          {task.definition.type === "goal" && <p>未满足时回到任务 {task.definition.jump_back_to_task_no}</p>}
+          {taskRun.result && <div className="result-note"><p>{taskRun.result.summary}</p><small>{taskRun.result.reason_code} · {taskRun.cycle_count} / {taskMaxCycles(task.definition.type, detail.environment)} 轮</small></div>}
+          {taskRun.result?.memory && <div className="task-memory"><strong>跨任务记忆</strong><p>{taskRun.result.memory}</p></div>}
           {events.length ? <EventTimeline events={events} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有任务事件" />}
           {taskImages.length > 0 && <Image.PreviewGroup><div className="image-grid">{taskImages.map((artifact) => <figure key={artifact.id}><Image src={artifactUrl(artifact.id)} alt={"图片 " + artifact.id} />
             <figcaption>{formatTime(artifact.created_at)}</figcaption></figure>)}</div></Image.PreviewGroup>}

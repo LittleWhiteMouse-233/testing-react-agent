@@ -26,12 +26,12 @@ from app.domain.execution import (
     ReasonCode,
     RunEvent,
     TaskAgentCompletion,
-    TaskRun,
     TaskRunResult,
     TaskRunStatus,
     TestRunVerdict,
     aggregate_test_run_verdict,
 )
+from app.domain.ids import TaskRunId
 from app.domain.planning import TestTask, TestTaskType
 from app.execution.task_agent import MESSAGE_PUBLISHING_NODES, TaskAgentContext, TaskAgentFactory, TaskAgentInput
 from app.execution.task_agent_events import TaskAgentEventRecorder
@@ -64,10 +64,12 @@ class RunExecutor:
         repository: SqlAlchemyRunRepository,
         agent_factory: TaskAgentFactory,
         checkpoint_path: str,
+        goal_max_failures: int,
     ) -> None:
         self.repository = repository
         self.agent_factory = agent_factory
         self.checkpoint_path = checkpoint_path
+        self.goal_max_failures = goal_max_failures
 
     async def run(
         self,
@@ -75,7 +77,7 @@ class RunExecutor:
         run_cancellation_event: asyncio.Event,
         tools: tuple[BaseTool, ...],
     ) -> None:
-        active_task: TaskRun | None = None
+        active_task_run_id: TaskRunId | None = None
         remaining_after_active_task: list[TestTask] = []
         cancellation_completed = False
         try:
@@ -95,14 +97,14 @@ class RunExecutor:
                             cancellation_completed = True
                             break
                         test_task = test_tasks[task_index]
-                        active_task = await self.repository.start_task(
+                        active_task_run_id = (await self.repository.start_task(
                             test_run_id, test_task
-                        )
+                        )).id
                         execution_counts[test_task.test_task_id] += 1
                         remaining_after_active_task = test_tasks[task_index + 1 :]
                         task_input = TaskAgentInput(
                             task_context=TaskAgentContext(
-                                task_run_id=active_task.id,
+                                task_run_id=active_task_run_id,
                                 task=test_task,
                                 memory_text=serialize_task_memories(task_memories),
                                 max_cycles=detail.environment.max_cycles_by_task_type[test_task.definition.type],
@@ -121,21 +123,21 @@ class RunExecutor:
                                        and completion.status == TaskRunStatus.FAILED)
                         if is_goal_failure:
                             goal_failure_counts[test_task.test_task_id] += 1
-                        if is_goal_failure and goal_failure_counts[test_task.test_task_id] >= detail.environment.goal_max_failures:
+                        if is_goal_failure and goal_failure_counts[test_task.test_task_id] >= self.goal_max_failures:
                             completion = completion.model_copy(update={"result": completion.result.model_copy(
                                 update={"reason_code": ReasonCode.GOAL_FAILURE_LIMIT},
                             )})
-                        active_task = await self.repository.finish_task(
-                            active_task.id,
+                        await self.repository.finish_task(
+                            active_task_run_id,
                             status=completion.status,
                             result=completion.result,
                             cycle_count=completion.cycle_count,
                         )
-                        if active_task.result is not None and active_task.result.memory is not None:
+                        if completion.result.memory is not None:
                             task_memories.append(TaskRunMemory(
                                 task_no=test_task.definition.task_no,
                                 execution_no=execution_counts[test_task.test_task_id],
-                                memory=active_task.result.memory,
+                                memory=completion.result.memory,
                             ))
                         if completion.result.reason_code == ReasonCode.USER_CANCELLED or run_cancellation_event.is_set():
                             cancellation_completed = True
@@ -155,18 +157,15 @@ class RunExecutor:
                             task_index = jump_target - 1
                         else:
                             task_index += 1
-                        active_task = None
+                        active_task_run_id = None
             task_runs = await self.repository.list_task_runs(test_run_id)
             verdict = (TestRunVerdict.CANCELLED if cancellation_completed
                        else aggregate_test_run_verdict(task_runs, test_tasks))
         except Exception as exc:
             reason = self._reason_for_exception(exc)
             summary = describe_exception(exc, phase="Task agent failed")
-            if active_task is not None:
-                latest = await self.repository.list_task_runs(test_run_id)
-                current = next(
-                    (task for task in latest if task.id == active_task.id), active_task
-                )
+            if active_task_run_id is not None:
+                current = await self.repository.get_task_run(active_task_run_id)
                 if current.status == TaskRunStatus.RUNNING:
                     await self.repository.finish_task(
                         current.id,

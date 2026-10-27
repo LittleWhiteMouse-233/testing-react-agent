@@ -33,6 +33,16 @@ export function updateTaskOrder(tasks: TestTaskDefinition[]): TestTaskDefinition
   });
 }
 
+export function getGoalsWithInvalidatedJumpTargets(
+  tasksBeforeRenumbering: TestTaskDefinition[],
+  tasksAfterRenumbering: TestTaskDefinition[]
+): TestTaskDefinition[] {
+  return tasksBeforeRenumbering.filter((task, index) =>
+    task.type === "goal" && task.jump_back_to_task_no != null &&
+    tasksAfterRenumbering[index]!.jump_back_to_task_no == null
+  );
+}
+
 export function isPlanDraftValid(plan: TestPlanDraft | null): boolean {
   return !!plan &&
     plan.title.trim().length > 0 &&
@@ -41,7 +51,7 @@ export function isPlanDraftValid(plan: TestPlanDraft | null): boolean {
     plan.tasks.length > 0 &&
     plan.tasks.every(
       (task, index) =>
-        Number.isInteger(task.task_no) && task.task_no === index + 1 &&
+        task.task_no === index + 1 &&
         (task.type === "goal"
           ? task.jump_back_to_task_no != null && Number.isInteger(task.jump_back_to_task_no) &&
             task.jump_back_to_task_no >= 1 && task.jump_back_to_task_no < task.task_no

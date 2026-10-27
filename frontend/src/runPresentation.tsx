@@ -148,7 +148,6 @@ export function RunResources({ report }: { report: TestRunReport }) {
     <section className="resource-card"><h3>模型与提示词</h3><dl>
       <dt>执行模型</dt><dd>{environment.execution_model.model}</dd>
       <dt>配置</dt><dd>{environment.execution_model.profile_id}</dd>
-      <dt>Goal 累计失败上限</dt><dd>{environment.goal_max_failures}</dd>
       {Object.entries(environment.prompt_fingerprints_by_task_type).map(([taskType, fingerprint]) => <Fragment key={taskType}>
         <dt>{taskType.charAt(0).toUpperCase() + taskType.slice(1)}</dt><dd>{fingerprint ?? "未定义"}</dd>
       </Fragment>)}

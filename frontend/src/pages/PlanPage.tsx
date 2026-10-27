@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { Link, useBlocker, useNavigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage } from "../api/client";
 import type { TestCaseContent, TestPlan, TestPlanDraft, TestTaskDefinition } from "../api/contracts";
-import { emptyTask, isPlanDraftValid, toPlanDraft, updateTaskOrder } from "../planDraft";
+import { emptyTask, getGoalsWithInvalidatedJumpTargets, isPlanDraftValid, toPlanDraft, updateTaskOrder } from "../planDraft";
 import { formatTime, runSummary, StatusBadge } from "../runPresentation";
 import { usePlanningProgress } from "../api/usePlanningProgress";
 import PlanningProgressDialog from "./PlanningProgressDialog";
@@ -115,7 +115,7 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   const applyTaskOrder = (tasks: TestTaskDefinition[]) => {
     if (!draft) return;
     const ordered = updateTaskOrder(tasks);
-    if (tasks.some((task, index) => task.type === "goal" && task.jump_back_to_task_no != null && ordered[index]!.jump_back_to_task_no == null)) {
+    if (getGoalsWithInvalidatedJumpTargets(tasks, ordered).length > 0) {
       setPendingTaskOrder(tasks);
     } else {
       updateDraft({ ...draft, tasks: ordered });
@@ -223,7 +223,7 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
         setPendingTaskOrder(null);
       }}>
       <p>此次操作会使以下 Goal 的跳转目标失效，继续后将清空引用，重新选择有效目标前不能保存。</p>
-      <ul>{pendingTaskOrder?.filter((task, index) => task.type === "goal" && task.jump_back_to_task_no != null && pendingOrderedTasks[index]!.jump_back_to_task_no == null)
+      <ul>{pendingTaskOrder && getGoalsWithInvalidatedJumpTargets(pendingTaskOrder, pendingOrderedTasks)
         .map((task) => <li key={task.task_no}>任务 {task.task_no} · {task.title}</li>)}</ul>
     </Modal>
   </>;

@@ -24,7 +24,6 @@
     <p>规划额外输入：</p>
     <pre>{{ report.detail.test_plan.planning_context.user_input or '无' }}</pre>
     <p>执行模型：{{ report.detail.environment.execution_model.profile_id }}</p>
-    <p>Goal 累计失败上限：{{ report.detail.environment.goal_max_failures }}（各 Goal 独立计数，passed 不计数也不清零）</p>
     <h3>确认的任务计划</h3>
     <ol>{% for task in report.detail.test_plan.content.tasks %}
       <li><strong>任务 {{ task.definition.task_no }} · {{ task.definition.title }}</strong>（{{ task.definition.type }}）

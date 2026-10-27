@@ -46,7 +46,7 @@ def test_goal_tenth_failure_blocks_but_tenth_visit_can_pass(tmp_path: Path, fail
         goals = [entry for entry in executions if entry["test_task_id"] == plan["content"]["tasks"][2]["test_task_id"]]
         assert len(goals) == 10
         assert [entry["status"] for entry in goals] == ["failed"] * failures + (["passed"] if verdict == "PASS" else [])
-        assert detail["environment"]["goal_max_failures"] == 10
+        assert "goal_max_failures" not in detail["environment"]
         if verdict == "BLOCKED":
             assert goals[-1]["result"]["reason_code"] == "goal_failure_limit"
             assert executions[-1]["status"] == "skipped"
@@ -131,6 +131,7 @@ def test_repeated_images_and_exports_keep_all_execution_origins(tmp_path: Path) 
             if export_format == "json":
                 assert downloaded.json()["detail"] == detail
             else:
+                assert "Goal 累计失败上限" not in downloaded.text
                 assert "第 2 次执行" in downloaded.text
                 assert "条件未满足" in downloaded.text
                 assert "First node image" in downloaded.text and "Second node image" in downloaded.text

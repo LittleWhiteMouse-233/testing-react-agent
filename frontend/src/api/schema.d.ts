@@ -1020,8 +1020,6 @@ export interface components {
              * @constant
              */
             execution_protocol_version: "10";
-            /** Goal Max Failures */
-            goal_max_failures: number;
             /** Max Cycles By Task Type */
             max_cycles_by_task_type: {
                 [key: string]: number;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TestPlan } from "../api/contracts";
-import { isPlanDraftValid, toPlanDraft, updateTaskOrder } from "../planDraft";
+import { getGoalsWithInvalidatedJumpTargets, isPlanDraftValid, toPlanDraft, updateTaskOrder } from "../planDraft";
 import type { TestTaskDefinition } from "../api/contracts";
 
 const plan: TestPlan = {
@@ -79,16 +79,20 @@ function traversalTasks(): TestTaskDefinition[] {
 describe("goal references in editable drafts", () => {
   it("preserves the referenced task when reordering and renumbering", () => {
     const tasks = traversalTasks();
-    const reordered = updateTaskOrder([tasks[1]!, tasks[0]!, tasks[2]!]);
+    const candidate = [tasks[1]!, tasks[0]!, tasks[2]!];
+    const reordered = updateTaskOrder(candidate);
     expect(reordered.map((task) => [task.task_no, task.title])).toEqual([[1, "Next node"], [2, "Root"], [3, "Complete?"]]);
     expect(reordered[2]!.jump_back_to_task_no).toBe(1);
     expect(tasks[2]!.jump_back_to_task_no).toBe(2);
+    expect(getGoalsWithInvalidatedJumpTargets(candidate, reordered)).toEqual([]);
   });
 
   it("clears a deleted target and prevents saving until a new target is selected", () => {
     const tasks = traversalTasks();
-    const remaining = updateTaskOrder([tasks[0]!, tasks[2]!]);
+    const candidate = [tasks[0]!, tasks[2]!];
+    const remaining = updateTaskOrder(candidate);
     expect(remaining[1]!.jump_back_to_task_no).toBeNull();
+    expect(getGoalsWithInvalidatedJumpTargets(candidate, remaining)).toEqual([tasks[2]]);
     const draft = { ...toPlanDraft(plan), tasks: remaining };
     expect(isPlanDraftValid(draft)).toBe(false);
     draft.tasks[1]!.jump_back_to_task_no = 1;
@@ -97,8 +101,20 @@ describe("goal references in editable drafts", () => {
 
   it("clears a target moved after its Goal", () => {
     const tasks = traversalTasks();
-    const reordered = updateTaskOrder([tasks[0]!, tasks[2]!, tasks[1]!]);
+    const candidate = [tasks[0]!, tasks[2]!, tasks[1]!];
+    const reordered = updateTaskOrder(candidate);
     expect(reordered[1]!.jump_back_to_task_no).toBeNull();
+    expect(getGoalsWithInvalidatedJumpTargets(candidate, reordered)).toEqual([tasks[2]]);
+  });
+
+  it("lists only newly invalidated Goals using their original task numbers", () => {
+    const tasks = traversalTasks();
+    const candidate = [tasks[0]!, tasks[2]!,
+      { ...tasks[2]!, task_no: 4, title: "Still valid", jump_back_to_task_no: 1 },
+      { ...tasks[2]!, task_no: 5, title: "Already unset", jump_back_to_task_no: null }];
+    const reordered = updateTaskOrder(candidate);
+    expect(getGoalsWithInvalidatedJumpTargets(candidate, reordered)).toEqual([tasks[2]]);
+    expect(tasks[2]!.task_no).toBe(3);
   });
 
   it("adjusts the target when an earlier unrelated task is removed", () => {

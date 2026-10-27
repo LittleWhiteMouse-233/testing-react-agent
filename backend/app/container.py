@@ -86,6 +86,7 @@ class Container:
             repository=self.repository,
             agent_factory=self.agent_factory,
             checkpoint_path=str(settings.checkpoints),
+            goal_max_failures=settings.goal_max_failures,
         )
         self.run_service = RunService(
             test_case_lock=self.test_case_lock,
@@ -103,6 +104,5 @@ class Container:
                 TestTaskType.JUDGE: settings.judge_max_cycles,
                 TestTaskType.GOAL: settings.goal_max_cycles,
             },
-            goal_max_failures=settings.goal_max_failures,
         )
         self.reports = ReportService(partial(read_test_run_report, self.sessions), self.artifacts)
