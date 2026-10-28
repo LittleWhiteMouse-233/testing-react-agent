@@ -1,204 +1,273 @@
-# Subjective testing agent
+# TestPilot：Android TV 主观测试 Agent
 
-自然语言用例 → 人工确认的不可变计划 → MCP 工具驱动的自适应执行与观察 → 确定性结果和报告。
+TestPilot 面向内部 Android TV 测试人员。输入自然语言测试用例，检查并确认生成的计划后，Agent 根据实际观察选择操作、验证要求，最终提供可追溯的运行结果和报告。
 
-## 用例编辑与归档
+典型流程：**录入用例 → 生成并确认计划 → 执行测试 → 复核运行记录 → 导出报告**。
 
-规划页“编辑用例”同时修改名称和描述，一次保存，编号不变；两者不可为空，名称最多 200 字符。保存不会修改已有计划或报告，需重新确认计划后才能启动；重新规划读取最新用例内容。右侧“任务序列”提供计划版本选择，历史版本只读，不能修订、重新规划或执行。
+应用提供用例管理、计划修订、实时执行与取消、历史检索和统计。电视操作、截图等能力由独立的 MCP 服务提供；MCP 是应用连接外部工具的协议。当前采用单运行串行模式，同一时刻只接受一次运行的准备与执行。
 
-用例卡片的橙黄色收纳图标用于归档。归档后规划页及直接规划 API 不再提供该用例，历史运行、筛选、统计、截图和报告导出仍然保留。历史列表显示当前用例名称，报告原始用例来自运行绑定计划的快照；归档用例不能重跑，本次不提供恢复入口。
+## 快速开始
 
-生成计划期间不能修改或归档用例。点击运行、请求被服务端接受后即占用用例，连接 MCP、执行及资源释放期间均不能归档；启动失败并安全清理后解除占用。有运行时仍可修改用例内容，不影响该运行的冻结计划。
+首次使用按以下顺序准备；已有环境可以从尚未完成的步骤继续：
 
-`backend/app/test_case_lock.py` 是单 worker 下的统一用例同步边界。归档在数据库写入前立即占用用例，期间其他直接访问、编辑、规划和运行请求返回 `409 test_case_busy`；完成、失败或取消后释放。归档提交后由数据库标志阻止规划访问，历史查询始终可用。
+1. 按[安装应用](user_scripts/README.md#安装应用)准备 Windows、Python 和 Node.js 环境，并安装应用依赖。
+2. 按下方[配置应用](#配置应用)准备本地配置，填入真实模型服务信息。
+3. 使用电视时，按 [ATV MCP 文档](mcp_servers/atv_mcp/README.md#准备环境与设备)准备服务依赖和设备配置；需要可控协议回放时使用 [Fake MCP](mcp_servers/fake_mcp/README.md)。在[外部工具连接](#外部工具连接)中只启用此次测试需要的服务。
+4. 按[启动与停止](user_scripts/README.md#启动与停止)启动应用、打开页面，然后完成下面的首次测试。
 
-新增接口：`PATCH /api/test-cases/{id}` 接收 `{name, source_text}`；`POST /api/test-cases/{id}/archive` 执行归档；`GET /api/runs/test-cases` 提供包含已归档用例的历史筛选。主用例列表始终只查询未归档记录。
+安装与诊断命令由[用户脚本文档](user_scripts/README.md)统一维护。Skill 和参考资料的接入见[技能资料与静态资源](skills/README.md)。
 
-开发阶段使用新的数据库初始化定义，不迁移旧运行数据。清空 `data` 由开发者自行执行，应用不会主动删除历史数据。
+## 完成第一次测试
 
-计划使用从 1 连续编号的 `task_no` 作为唯一排序事实，UUID 保留数据库身份。Goal 的 `jump_back_to_task_no` 必须指向同一计划的前序任务；编辑时序号由前端自动维护，删除或重排使引用失效时需确认清空并重新选择，后端独立校验且不重映射。每次回跳重入创建新的 TaskRun，以运行内 `sequence` 保存实际执行顺序。
+### 1. 创建用例
 
-Act failed 或任何任务 blocked 会停止并跳过当前队列后缀；Judge failed 记录产品失败并继续；Goal failed 按已确认的目标回跳，passed 继续下一任务。`TEST_AGENT_GOAL_MAX_CYCLES` 默认 10，限制一次 Goal 的决策轮；`TEST_AGENT_GOAL_MAX_FAILURES` 默认 10，限制本次 Run 内每个 Goal 独立累计的 failed 次数，passed 不计数也不清零。默认第 10 次 failed 保留该状态并记录 `goal_failure_limit`，运行结束为 BLOCKED。总轮次上限冻结到运行快照；Goal 累计失败上限在应用启动时注入执行器，不写入运行快照，运行页和报告不展示该上限。
+在“规划”页选择“新建用例”，填写名称和自然语言正文。例如：
 
-最终结果优先级为：未处理异常 BLOCKED、已响应取消 CANCELLED、任一任务 blocked 或 Goal 额度耗尽 BLOCKED、Act/Judge 存在 failed 时 FAIL、否则 PASS。skipped 不独立决定结论；取消不创建后续 skipped。所有执行历史继续留存，报告与导出展示各次结果，Goal failed 表示“条件未满足”。跨任务记忆以实际执行时间排序，用 `task_no` 和该任务的 `execution_no` 标识来源，由 executor 序列化成 `memory_text`，TaskAgent 只负责文本注入。
+> 名称：关于页面版本号显示
+>
+> 正文：进入电视设置的关于页面，检查固件版本号。要求版本号非空、文字完整可辨，且没有被截断或遮挡。
 
-## 结构和边界
+名称和正文都必须包含非空白内容，名称最多 200 个字符。正文应写清目标、适用前提和可观察的预期，主观描述尽量具体。
 
-- `backend/app/domain/`：用例、计划、运行、工具目录、模型快照和事件的领域事实；`planning/test_design.py` 集中定义用例、不可变计划、任务及其校验和转换，`planning/events.py` 定义临时规划进度事件。
-- `backend/app/planning/`：无工具的规划流程，读取原始用例、最新计划与本轮额外输入；`execution/`：Act/Judge 共用执行图。
-- `backend/app/resources/`：Agent 可用能力与内容的接入和加载；`mcp.py` 管理标准 stdio MCP 配置、工作目录和框架客户端，`tools.py` 统一管理通过官方适配器导入的业务工具与装配层注入的内置工具，`static_resources.py` 管理 Skill 与静态资源，`prompts/catalog.py` 管理本地提示词、指纹和选择规则。工具与静态资源平行依赖 MCP，提示词独立加载；领域合同仍由 `domain/resources/` 拥有。
-- `backend/app/event_stream/`：共享有界 EventBus；执行事件经 RunEventWriter 提交后通知，规划事件仅在连接中发送。慢订阅队列溢出会断开，执行流可从数据库补拉，规划流不保留历史。
-- `frontend/`：计划编辑、实时运行、历史和报告。
-- `backend/scripts/` 和 `frontend/scripts/`：开发用契约生成工具。
-- `user_scripts/`：安装、启动和独立能力检测工具，见[用户脚本文档](user_scripts/README.md)。
-- `mcp_servers/`：独立 MCP 服务，使用说明见下方[服务文档](#mcp-服务文档)。
-- `mcp_servers/mcp.json`：宿主连接配置；`data/`：忽略的运行数据库、checkpoint、运行记录和导出。
+### 2. 生成并检查计划
 
-跨包引用从 `app` 起最多使用三级公开入口，例如 `app.domain.planning`、`app.domain.execution`、`app.domain.resources` 和 `app.resources.prompts`；包通过显式导入和 `__all__` 披露接口，定义、校验与转换保留在具名模块中。包内部直接引用定义模块，不受公开入口层数限制。
+首次点击“生成计划”前，可以补充本次规划的要求。等待进度弹窗显示保存完成后，检查准备步骤、前置假设和每个任务的目标、成功标准。
 
-宿主及其测试不 import 外部包，不管理设备 ID、状态、探活或配置。第三方工具只需通过 MCP 提供 schema 和结果；不需要实现项目专属的 scopes、manifest 或设备接口。
+| 任务类型 | 含义 |
+|---|---|
+| Act：达成目标 | 根据当前状态选择操作，达到指定业务状态 |
+| Judge：验证要求 | 实际验证待测行为与成功标准，可以为验证准备条件和触发交互 |
+| Goal：判断结束条件 | 判断重复工作是否结束；条件未满足时回到预先指定的前序任务 |
 
-MCP 服务独立管理运行环境、依赖和配置；应用仅负责协议接入。安装和使用方式见各服务文档。
+计划表达语义目标，执行时再决定具体动作。Judge 的交互必须服务于待测行为，不能绕过它或改变成功标准。
 
-## 启动应用
+需要调整时选择“编辑计划”，修改后“保存新版本”。准备步骤是给用户的提示；需要让 Agent 执行时，可将其转为任务，补全目标和成功标准后保存。Goal 的回跳目标必须在同一计划中且位于它之前；删除或重排任务使目标失效时，按页面提示重新选择。
 
-完成依赖安装和[宿主配置](#宿主配置)，并激活目标 Python 环境后，在仓库根目录运行统一启动入口：
+### 3. 确认并执行
+
+完成准备，检查最新计划，勾选确认前置假设、任务目标和成功标准，然后启动。只有最新的已保存计划可以启动；未保存的修改必须先保存或放弃。
+
+进入“执行”页后，可以查看任务队列、最新图片、运行资源和消息时间线。轮次表示决策预算使用量，观察、操作、纠错、读取资料和提交结论都会消耗轮次，不能据此推算完成百分比。
+
+需要终止时点击“终止”，等待服务端确认结果。具体取消和结果含义见[执行与结果](#执行与结果)。
+
+### 4. 复核与导出
+
+运行结束后选择“查看执行记录”，检查实际观察、各次任务执行的判断说明及最终结论。查看和下载方式见[历史与报告](#历史与报告)。
+
+## 日常管理
+
+- **修改用例**：“编辑用例”同时保存名称和正文，保留用例编号。已有计划和运行保持原样；保存后需检查计划并重新确认，重新规划会读取最新用例内容。
+- **重新规划**：填写本轮调整要求，以最新已保存计划为基础生成新版本。存在未保存修改时，先保存或放弃。规划失败保留既有计划；请求结果未确认时，先检查最新版本，再决定是否重试。
+- **查看版本**：右侧“任务序列”可切换版本。历史版本只读；修订和重新规划均创建新版本，不覆盖旧版本。新版本不改变已经开始的运行。
+- **归档用例**：用例卡片的收纳图标用于归档。确认后从规划页移除，历史运行和报告仍保留。归档是单向操作，归档用例不能继续规划或重跑。
+
+同一用例的保存和规划操作会限制冲突入口。生成计划期间不能修改或归档该用例；运行准备及执行期间不能归档。已有运行允许另行修改用例或计划，该运行仍依据启动时确认的版本执行。
+
+## 执行与结果
+
+每次启动都会创建独立运行，固定使用已确认的计划、模型和工具目录。回跳重入同一任务时会产生新的任务执行记录，先前记录继续保留。
+
+任务通过后继续下一项；不同类型未通过时的处理如下：
+
+| 情况 | 后续处理 |
+|---|---|
+| Act 失败 | 停止，跳过当前任务之后的队列后缀 |
+| Judge 失败 | 保留失败并继续后续任务 |
+| Goal 条件未满足 | 在该 Goal 的累计失败额度内回到已确认目标；额度耗尽后停止并跳过后缀 |
+| 任意任务阻塞 | 停止并跳过后缀 |
+| 响应人工取消 | 停止，不为尚未开始的后续任务新增执行或跳过记录 |
+
+后续任务需要前序观察时，应在计划中明确采集内容、保留要求和使用来源。任务结果中的“跨任务记忆”可保留实际观察值、单位和图片引用，供同一运行后续任务使用；新运行从空记忆开始。
+
+整个运行的最终结论由程序汇总，含义如下：
+
+| 结论 | 含义 |
+|---|---|
+| PASS：通过 | 正常结束，没有导致失败或阻塞的情况 |
+| FAIL：失败 | 存在 Act 或 Judge 失败，且没有优先级更高的阻塞或取消情况 |
+| BLOCKED：阻塞 | 无法完成判断或继续执行，例如观察不足、预算耗尽、外部调用或存储故障 |
+| CANCELLED：取消 | 已在安全边界响应人工取消，且没有未处理的执行故障 |
+
+聚合时，未处理执行故障优先于取消，其次是任务阻塞或 Goal 失败额度耗尽，再考虑 Act/Judge 失败。Goal 历史上的“条件未满足”和跳过记录本身不独立决定 FAIL。
+
+取消请求会等待当前模型或工具调用完成或达到超时，再阻止下一次调用；已经收到的图片仍需保存。页面显示“取消请求已提交”时，运行尚未必结束，应等待已保存终态。异常退出后，应用重启会将遗留的未结束运行标记为进程中断导致的 BLOCKED；再次执行需重新确认计划并创建新运行。
+
+模型给出的任务摘要应说明观察、判断依据及其与成功标准的关系。文字和图片都可以作为观察，参考图和历史图保留各自来源与时点。截图数量不决定通过或失败；应复核实际记录是否足以支持结论。
+
+## 配置应用
+
+### 本地配置文件
+
+首次配置时，在仓库根目录执行；已有本地文件时直接编辑，保留原配置：
 
 ```powershell
-.\start.cmd
+Copy-Item .env.example .env
+Copy-Item models.example.toml models.toml
 ```
 
-启动后打开 http://localhost:5173 使用应用。环境准备、安装与依赖自检、其他启动方式、停止与排障，以及 MCP/LLM 诊断工具的详细说明见[用户脚本文档](user_scripts/README.md)。
+- `models.toml`：模型连接、密钥、生成参数和信息容量。
+- `.env`：选择规划与执行模型，指定外部连接、数据和资料目录，设置执行预算。
+- `mcp_servers/mcp.json`：默认外部工具连接文件，格式见[外部工具连接](#外部工具连接)。
 
-## 宿主配置
+应用配置中的目录和配置文件相对路径从仓库根目录解析。模型和应用级参数在后端启动时加载，修改后重启，对新规划和新运行生效。
 
-首次使用时，复制 `.env.example` 为 `.env`，并复制 `models.example.toml` 为 `models.toml`。在 `models.toml` 中配置各模型的连接、API key 和参数，在 `.env` 中选择规划与执行模型并配置 MCP。模型配置变更后需重启。
+### 模型服务
 
-默认 scripted 模型只用于测试；没有显式执行场景时返回 blocked，不会猜测工具名称或伪造截图。
+真实使用需要兼容 OpenAI Chat Completions 的模型服务。规划模型需支持 JSON 模式；执行模型需支持工具调用，以及测试实际使用的文字和图片输入。Act、Judge 和 Goal 共用一个执行模型。
 
-| 配置 | 默认值 / 作用 |
+模板中的默认 profile 是 `scripted` 测试模型，没有显式执行场景时会阻塞，不能用它验证真实电视。可将 `models.toml` 替换为以下单模型配置，并将占位值和容量改为服务实际支持的值：
+
+```toml
+[[profiles]]
+id = "tv-model"
+mode = "real"
+base_url = "https://provider.example/v1"
+api_key = "replace-with-your-key"
+model = "replace-with-your-model"
+context_window_tokens = 32768
+max_output_tokens = 2048
+```
+
+`base_url` 填写服务的 OpenAI 兼容 API 基地址。上例仅说明文件格式，不表示任意服务都支持该容量。
+
+多模型时添加多个 `[[profiles]]`，每份配置使用唯一 `id`。在 `.env` 中通过 `TEST_AGENT_PLANNING_MODEL_ID` 和 `TEST_AGENT_EXECUTION_MODEL_ID` 选择对应 ID；任一路由未填写时使用第一份 profile。
+
+每份 profile 支持的参数如下：
+
+| 参数 | 默认值或填写要求 |
 |---|---|
-| `TEST_AGENT_MODEL_CONFIG_PATH` | 默认 `./models.toml`；模型配置文件，相对路径从仓库根目录解析 |
-| `TEST_AGENT_PLANNING_MODEL_ID` | 规划模型 ID，未设或留空时使用首个 profile |
-| `TEST_AGENT_EXECUTION_MODEL_ID` | Act/Judge 共用模型 ID，未设或留空时使用首个 profile |
-| `TEST_AGENT_MCP_CONFIG_PATH` | 默认 `mcp_servers/mcp.json`，相对路径从仓库根目录解析 |
-| `TEST_AGENT_TOOL_CALL_TIMEOUT_SECONDS` | 120 秒，完整运行准备过程（加载 MCP、发现工具、发现资源）及每次工具节点执行的超时；节点执行包含会话创建、调用与退出，图片保存不计入 |
-| `TEST_AGENT_IMAGE_HISTORY_ROUNDS` | 3，State 保留原图 base64 的最近有图片决策轮数；过期图片替换为 artifact 引用 |
-| `TEST_AGENT_EXECUTION_MODEL_CALL_MAX_ATTEMPTS` | 3，执行阶段模型传输错误有限重试 |
-| `TEST_AGENT_EXECUTION_MODEL_RESPONSE_MAX_ATTEMPTS` | 3，执行阶段连续无效响应/工具错误上限 |
-| `TEST_AGENT_ACT_MAX_CYCLES` | 30，act 任务总决策轮次上限，范围 1～100 |
-| `TEST_AGENT_JUDGE_MAX_CYCLES` | 10，judge 任务总决策轮次上限，范围 1～100 |
+| `id` | 必填，唯一、非空 |
+| `mode` | 默认 `scripted`；真实服务填写 `real` |
+| `base_url`、`api_key` | `real` 模式必填 |
+| `model` | 填写真实模型名称；测试模式默认 `deterministic` |
+| `temperature` | `0` |
+| `timeout_seconds` | `60` 秒，必须大于零 |
+| `context_window_tokens` | `32768`，至少 `2048` |
+| `max_output_tokens` | `2048`，必须大于零 |
+| `characters_per_token` | `1.5`，文字容量估算，必须大于零 |
+| `tokens_per_image` | `1024`，单图容量估算，必须大于零 |
+| `context_safety_margin_tokens` | `1024`，安全余量，可为零 |
 
-模型参数统一放在 `models.toml` 的有序 `[[profiles]]` 中，每个 profile 独立填写 `api_key`、`base_url`、`model`、`mode` 和所需预算参数；省略的参数采用代码默认值，完整示例见 `models.example.toml`。真实模型必须设置 `mode = "real"`，并按服务实际能力填写上下文窗口与输出上限。
+输出预留与安全余量之和必须小于上下文总容量。必需的任务、观察或技能资料装不下时，运行会因容量不足阻塞。文件缺失、格式错误、空 profile 列表、重复 ID、未知字段或无效选择会阻止启动。
 
-规划模型需支持 JSON 模式（`response_format.type = "json_object"`）。宿主通过 LangChain `json_mode` 请求 JSON，在系统提示中提供计划 schema，并由 Pydantic 校验结果；不要求服务支持原生 `json_schema` 严格输出。无效计划仍最多尝试三次，持续无效时不保存计划版本。
+模型适配性可用[独立模型检测](user_scripts/README.md#检查模型服务)排查；该检测支持的协议范围与应用实际使用的协议分别定义。
 
-`.env` 不再使用 `LLM_PROFILES`，模型选择示例：
+### 系统指导文本
 
-```dotenv
-TEST_AGENT_MODEL_CONFIG_PATH=./models.toml
-TEST_AGENT_PLANNING_MODEL_ID=planner
-TEST_AGENT_EXECUTION_MODEL_ID=vision
-```
+需要调整 Agent 的规划或执行指导时，编辑 [backend/app/resources/prompts/](backend/app/resources/prompts/) 中的文本文件，然后重启后端。`planning.txt` 用于规划，`act.txt`、`judge.txt`、`goal.txt` 分别用于对应任务。
 
-两个 ID 必须存在于模型文件中；Act/Judge 共用 execution 模型。配置在启动时读取，修改后重启后端。文件缺失、TOML 格式错误、空列表、重复 ID、未知字段或无效预算会阻止启动。`models.toml` 已加入 Git 忽略；真实密钥只写入本地文件，提交示例文件时保留占位符。
+执行优先使用任务类型专用文件；文件缺失时使用可选的 `execution.txt`，两者不拼接。显式空文件会覆盖通用指导，最终都缺失时采用空指导。计划和运行记录实际选用文本的内容指纹，供复核版本。
 
-旧的 `ADB_*`、Act/Judge 模型路由和设备操作参数已移除。模型上下文预算仍由 profile 的 context window、输出保留、图片 token 估计和安全余量共同决定。
+### 外部工具连接
 
-`mcp_servers/mcp.json` 使用 `mcpServers`，每个连接支持 `command`、`args`、`env`、`cwd`，首版仅 stdio。`cwd` 相对于配置文件解析；命令直接启动，不经过 shell。MCP SDK 继承其标准进程环境，再应用显式 `env`。不同服务的工具加服务名前缀。
+应用通过标准输入输出（stdio）启动独立 MCP 进程。`TEST_AGENT_MCP_CONFIG_PATH` 指定连接文件，默认配置见 [mcp_servers/mcp.json](mcp_servers/mcp.json)。
 
-按服务文档设置启动命令和工作目录。`command: "python"` 使用启动进程 PATH 中的 Python；通过 `start.cmd` 启动时继承终端已激活或 `conda run` 为本次启动选择的环境。服务使用独立 Python 环境时，将 `command` 设为该环境解释器的绝对路径。
+连接文件的顶层字段为 `mcpServers`，其下每个非空服务名对应一份配置：
 
-宿主通过官方适配器发现工具，适配器和 MCP SDK 为每次工具调用创建、关闭会话；stdio 服务会随调用重新启动，因此服务不应依赖跨调用的进程内状态。运行开始冻结连接配置和实际工具目录，运行中不热加载。Planning 和历史查询不连接 MCP；配置/连接/发现失败时创建运行接口返回 502。只启用此次运行需要的服务。
+| 字段 | 用途 |
+|---|---|
+| `command` | 必填，直接执行的程序，不经 shell |
+| `args` | 命令参数列表，默认空列表 |
+| `cwd` | 工作目录；省略时使用连接文件所在目录，相对路径也以该目录为基准 |
+| `env` | 显式环境变量，应用于协议客户端继承的启动环境 |
+| `transport` | 当前仅支持 `stdio`，可省略 |
 
-## MCP 服务文档
+`command: "python"` 使用启动环境 PATH 中的解释器；服务有独立环境时填写它的解释器绝对路径。
 
-- [ATV MCP](mcp_servers/atv_mcp/README.md)
-- [Fake MCP](mcp_servers/fake_mcp/README.md)
+仓库默认连接 ATV 服务，其设备设置及启动参数由 [ATV MCP 文档](mcp_servers/atv_mcp/README.md)维护。回放服务的参数和场景格式由 [Fake MCP 文档](mcp_servers/fake_mcp/README.md)维护。
 
-## 执行、运行记录和历史
+连接配置在每次运行准备时重新读取，运行中保持该次能力集合。每次工具调用独立建立和结束会话，stdio 进程可能重新启动；服务需自行保持跨调用所需的业务连续性。规划和历史查看不会连接这些服务。
 
-执行协议版本为 10。用户取消通过运行取消标志在节点安全边界生效：等待当前调用返回或达到框架超时，保存已收到的图片后结束为 CANCELLED，不再请求模型或执行下一次工具调用。调用机制、结果处理或图片保存的未处理故障仍为 BLOCKED，不被取消标志覆盖。应用关闭请求同样的安全边界停止，并等待当前运行结束。
+### 执行参数与目录
 
-工具参数错误和 MCP 正常返回的业务错误通过框架错误消息交给模型；原生工具节点超时由公开错误处理器转换为关联原调用 ID 的错误消息，提示操作可能部分执行、结果未确认。随后沿用纠错预算，由模型决定重新观察、继续或结束；工具不自动重放。会话退出交由框架与 SDK 处理，宿主不额外等待独立清理流程；迟到结果不进入 State、事件或运行记录。模型传输错误仍有限重试，不另计决策轮。未处理异常向上传播到 executor，记录执行错误并结束为 BLOCKED。运行工作任务结束后释放占用，不设置永久入口锁定；已保存的终态不被后续取消改写。
+以下参数在 `.env` 中设置，完整示例见 [.env.example](.env.example)。
 
-Act 达成目标，Judge 验证行为，Goal 判断循环结束条件；Judge 和 Goal 可主动准备条件和触发交互，但不得绕过待验证行为或修改成功标准。三者共用模型、工具和执行图。
+| 参数 | 默认值与作用 |
+|---|---|
+| `TEST_AGENT_MODEL_CONFIG_PATH` | `./models.toml`，模型配置文件 |
+| `TEST_AGENT_MCP_CONFIG_PATH` | `./mcp_servers/mcp.json`，外部连接文件 |
+| `TEST_AGENT_SKILLS_DIR` | `./skills`，本地技能资料和静态资源根目录 |
+| `TEST_AGENT_DATA_DIR` | `./data`，默认运行数据根目录 |
+| `TEST_AGENT_ACT_MAX_CYCLES` | `30`，每次 Act 的决策轮次上限 |
+| `TEST_AGENT_JUDGE_MAX_CYCLES` | `10`，每次 Judge 的决策轮次上限 |
+| `TEST_AGENT_GOAL_MAX_CYCLES` | `10`，每次 Goal 的决策轮次上限 |
+| `TEST_AGENT_GOAL_MAX_FAILURES` | `10`，同一运行中每个 Goal 独立累计的失败次数上限 |
+| `TEST_AGENT_TOOL_CALL_TIMEOUT_SECONDS` | `120` 秒，完整运行准备过程及每次工具交互各自的超时，不包含图片保存 |
+| `TEST_AGENT_IMAGE_HISTORY_ROUNDS` | `3`，执行上下文保留原图的最近有图片决策轮数，同轮多图全部保留 |
+| `TEST_AGENT_EXECUTION_MODEL_CALL_MAX_ATTEMPTS` | `3`，每轮模型传输的最多尝试次数，包含首次 |
+| `TEST_AGENT_EXECUTION_MODEL_RESPONSE_MAX_ATTEMPTS` | `3`，连续无效响应、工具参数或业务错误及工具超时共用的尝试额度，成功调用后清零 |
+| `TEST_AGENT_CORS_ORIGINS` | `http://localhost:5173`，允许的浏览器来源，多个值以逗号分隔 |
+| `TEST_AGENT_DEBUG` | `false`，应用调试设置 |
 
-图没有固定截图节点。逻辑决策轮开始即消耗一轮，包括能力查询、截图、纠错和结束请求；首次模型请求前在同一事务中保存任务轮数与 `cycle.started`。传输重试不另计，请求最终失败仍保留已开始的轮次。开始前取消或已到轮次上限不增加轮次；开始事件提交期间取消则保留已提交轮次，不再请求模型。开始事件写入失败立即阻塞，不调用模型。每轮只允许一个工具调用，终态使用宿主的 `finish_task(status, summary, memory=None)`。
+各类任务的轮次上限范围为 1～100，两类模型尝试次数范围为 1～10，Goal 累计失败上限和图片保留轮数必须为正整数，工具超时必须大于零。
 
-`memory` 可保留供同 Run 后续任务使用的实际观察值、对象和位置、字段单位及图片用途和 artifact ID；缺省、null、空字符串和纯空白统一为无记忆，其余内容保留原文。规划在采集任务目标和成功标准中明确保留要求，在消费任务中明确来源、比较字段与一致性规则。执行器按实际执行顺序将已保存且含记忆的 TaskRun 投影为 `task_no`、`execution_no` 和 `memory`，统一序列化为 `memory_text`，TaskAgent 只注入文本，不提取 TaskRun 字段或传入完整历史消息。新 Run 从空记忆开始；必要观察不足时由 Agent 结束为 BLOCKED。
+每次任务执行独立计算轮次；各类轮次上限随运行固定。Goal 失败次数在同一运行内按 Goal 累计，通过不清零；该上限由启动配置提供。图片窗口只影响模型上下文，历史原图继续保留，后续可在同一运行内按图片标识重读。
 
-每张工具图片之前会插入 `[Image artifact <artifact_id>]` 文字，供模型记忆和调用内置 `read_image_artifact(artifact_id)`。读取工具根据当前 TaskRun 查询所属 Run，仅允许读取同 Run 的图片原文件；业务检查失败交给模型纠正，数据库或文件故障沿用执行异常路径。成功重读保留原 ID 和 TaskRun 归属、不重复保存，其余处理与普通图片相同。重读是历史图片，参考图仍是参考图，不等同于当前目标的新观察。窗口过期后仍可按 ID 重读，所有调用沿用轮次和 token 预算。
+需要改变浏览器请求的后端地址时，按 [frontend/.env.example](frontend/.env.example)配置 `VITE_API_ORIGIN`，填写不含 `/api` 的后端 Origin。默认留空，使用前端同源请求及本地开发代理；修改后重启前端，构建产物需重新构建。
 
-运行页、在线报告和 HTML 导出在来源任务结果中展示“跨任务记忆”，保留原文换行并转义；JSON 保存完整结果。运行页沿用 `task.finished` SSE 通知触发详情查询，从 `detail.task_runs[].result.memory` 更新内容；`events_after` 只限制事件，不限制任务结果。
+## 历史与报告
 
-工具内容顺序保留。图片先解码保存原图，原 base64 连同 Artifact ID 进入 ToolMessage，不重新编码。工具完成后，在 `after_tools` 阶段选取最近 3 个有图片的已完成决策轮，同轮多图全部保留，无图轮不占窗口。窗口外图片在 State 原内容位置替换为带artifact 引用的占位文本；仅复制变化的消息，通过公开 `add_messages` reducer 按相同 message ID 替换，不直接修改输入 State。该产品边界只实现图片轮数策略，消息合并及 checkpoint 序列化仍由框架负责。模型请求基于回收后的 State 执行 token 预算与必要上下文检查；token 裁剪不删除 State 历史，窗口限制轮数而非图片字节总量，也不保证所有图片都能装入预算。
+“历史记录”支持按用例、关键字、创建日期和结果筛选，默认查看最近 30 个上海自然日。列表和统计使用相同基础筛选范围，点击结果标签进一步筛选列表；关闭详情后保留原筛选和页码。
 
-`TaskAgentContext` 仅包含当前任务、TaskRun ID、前序含记忆的 TaskRun 和运行快照中的轮次上限。`TaskAgentInput` 嵌套该上下文，另外携带当前 Run 的完整工具集合、运行快照中的完整资源目录及模型 profile ID。装配层将 Skill 提供方的 BaseTool 与 `TASK_AGENT_TOOLS` 注入 `ToolProvider`；每次发现返回 MCP 工具和内置工具的完整元组，并按实际工具名检查重名。RunService 使用该元组冻结目录并传给执行器；Factory 不再追加工具，只按模型 ID 取得客户端、通过 `top_level_skills` 筛选初始 Skill。模型绑定、ToolNode 和模型上下文预算使用同一工具集合。
+报告保留运行所绑定计划的原始用例、全部实际任务执行、观察、判断说明和运行环境。列表展示当前用例名称，报告中的原始用例来自当次计划，因此编辑用例后两者可能不同。Goal 回跳产生的多次执行均可追溯。
 
-`TaskAgentRuntimeContext` 是每个任务的框架注入边界，组合已有任务上下文和 `ArtifactStore`。Factory 返回编译图、初始 State 和运行时上下文；executor 显式通过 `astream(..., context=...)` 传入，由 ToolNode 将 `ToolRuntime` 注入模块级 `read_image_artifact`。模型只提供 artifact ID，服务依赖不进入模型 schema、Graph State、运行快照或导出。节点运行对象组合相同上下文，复用同一份任务事实与图片服务。
+运行结束后可下载：
 
-`task_agent.py` 只导出一个消息发布节点名称集合 `MESSAGE_PUBLISHING_NODES`，在组装结束时与框架实际注册的业务节点减去 `tools` 严格比较；工具注册前后的节点差集用于识别框架附加的错误处理节点。这是应用发布边界的约束，框架本身不验证该清单。executor 的 `_execute_task` 独立提取和校验完成结果，等待流自然结束再返回；`_publish_message_updates` 仅投影和保存消息，原始 tools 更新仍由 after_tools 处理后发布。
+- **JSON**：完整结构化报告、事件历史与附件清单。
+- **HTML**：可离线查看的报告，包含已保存图片。
 
-`finish_task` 的文本回执保留结论和摘要，有有效 memory 时追加 `Submitted memory:` 段，保留原文与换行。该回执随 ToolMessage 持久化为事件，事件流、报告和导出直接展示它；结果计算、后续任务记忆和任务结果区域仍读取类型明确的参数及持久化 TaskRun，不解析回执文本，也不从结果补造历史消息。
+每次导出产生独立文件，不覆盖之前的导出。重新执行会返回该用例的最新计划确认页，再创建新运行。
 
-应用装配从 `app.resources.prompts` 的公开入口导入并实例化 `PromptCatalog()`，由初始化方法按 `AgentActivity` 和 `TestTaskType` 的枚举值加载同名 `.txt` 文件，以名称索引提示词定义；`prompt_directory` 参数可指定目录，默认使用 `catalog.py` 所在的 `backend/app/resources/prompts/` 目录。`prompt_for_activity` 选择活动提示词（规划使用 `planning.txt`）；`prompt_for_task_type` 优先选择任务类型专用提示词，缺失时回退到 `execution.txt`，两者不拼接。文件不存在时对应定义为 `None`，消费者使用空文本；文件存在但内容为空时仍有定义，并覆盖通用 execution 提示词。其它读取或编码错误正常报错。`PromptDefinition.fingerprint` 是文件字节内容的 SHA-256 前 12 位十六进制指纹，缺失文件不生成指纹。
+默认本地数据如下；改变数据根目录后，这些默认位置随之变化：
 
-`TaskAgentFactory` 和 `RunService` 共用同一个 catalog，分别用于执行和通过 `prompt_fingerprints_by_task_type` 冻结实际选择的指纹；回退时记录 execution 的指纹，最终没有提示词时记录 `null`。`PlanningGraph` 接收 catalog 选出的 planning 提示词，规划快照以 `planning_prompt_fingerprint` 保存其指纹或 `null`。运行期间不热更新 catalog 或替换模型客户端，同源的模型配置和提示词指纹无需在任务构建时重复比较，完整模型快照和提示词指纹继续保存在运行环境中供追溯。
+| 位置 | 内容 |
+|---|---|
+| `data/app.db` | 用例、计划、运行、事件和附件记录 |
+| `data/checkpoints.db` | 执行图保存记录 |
+| `data/artifacts/` | 原始图片和生成的导出文件 |
 
-`backend/app/execution/model_context.py` 并列提供 `ModelContextWindow` 和 `ModelImageWindow`。`TaskAgentFactory` 为每个任务分别构造并注入运行时；两个对象仅绑定各自的策略参数，每次接收当前消息计算结果，不保存消息历史。`ModelImageWindow` 的图片窗口轮数由应用配置在装配 Factory 时注入，不进入任务输入或运行环境快照；它在 `after_tools` 中生成过期图片的同 ID 替换消息，State 合并仍由 reducer 负责。`ModelContextWindow` 绑定所选客户端的模型快照及与模型和 ToolNode 共用的完整工具集合（含 `finish_task`），在请求模型前负责 token 估算、输入预算判断与消息选择。输入预算为模型窗口减去输出预留与安全余量；必要任务、Skill、最后一条消息或工具调用配对无法保留时抛出预算异常，由执行器按既有规则结束为 BLOCKED。普通历史图片可随 token 预算从模型请求中裁掉，不额外强制保留最后一条含图消息；请求裁剪不修改 State、已保存原图和历史记录。
+部署时也可通过 `TEST_AGENT_DATABASE_URL` 与 `TEST_AGENT_CHECKPOINT_PATH` 分别指定数据库连接和执行图保存位置。应用不会主动删除历史数据；备份应在停止应用后同时保留数据库、执行图保存文件和附件。
 
-State 与 checkpoint 保留消息身份、顺序、文字和工具调用关系，只保留图片窗口内图片的 base64，终止时不额外清空窗口。执行沿用 `durability="exit"`，图退出时保存回收后的 State；进程突然崩溃时不保证中间 checkpoint 恢复。图片回收前后公开消息均投影为相同 Artifact ID，现有消息去重保证 SSE/历史事件不重复追加；持久事件、历史原图与 JSON/HTML 导出保持完整。内存与最终快照的图片载荷随窗口内图片体积变化，文字历史仍随任务累积。
+密钥、设备配置、运行数据和诊断记录保留在本地，不提交到源代码仓库。运行内容会按任务需要发送给配置的模型服务。当前开发阶段的数据格式可能随版本变化，升级时不提供旧运行数据和快照的兼容保证。
 
-开发调试重建约定：过期图片使用 `type="text"`、固定文本 `[Image was saved; image is outside the image history window.]` 和 `extras.artifact_id`，占据原图片内容块位置。通过该 ID 调用 `ArtifactStore.load_content(artifact_id)` 获取 `(content, mime_type)`，以 `base64.b64encode(content).decode("ascii")` 重建 `{"type": "image", "id": artifact_id, "mime_type": mime_type, "base64": encoded}` 内容块。消息 ID、内容块顺序及持久事件提供历史定位；原图丢失时应报告缺失，不伪造内容。重建仅用于开发人员调试，不自动回填运行 State，也不提供独立调试命令。
+## 文档与开发入口
 
-任务总轮次仅由 `.env` 中的 `TEST_AGENT_ACT_MAX_CYCLES`、`TEST_AGENT_JUDGE_MAX_CYCLES` 和 `TEST_AGENT_GOAL_MAX_CYCLES` 按类型统一提供；规划生成和人工编辑均不提供轮次设置。修改配置后重启后端，对新运行生效。创建运行时冻结上限到运行环境快照，执行、运行页和报告均使用该快照。
+| 需要完成的事 | 文档或入口 |
+|---|---|
+| 安装、启停、依赖排查和独立模型/MCP 诊断 | [用户脚本](user_scripts/README.md) |
+| 配置电视连接、操作队列或使用 Python 控制器 | [ATV MCP](mcp_servers/atv_mcp/README.md) |
+| 编写工具和资源回放场景 | [Fake MCP](mcp_servers/fake_mcp/README.md) |
+| 编写 Skill、组织附件和接入 MCP 静态资源 | [技能资料与静态资源](skills/README.md) |
+| 查看产品定义、业务规则和验收要求 | [产品需求文档](PRD.v2.md) |
+| 查看后端、前端依赖和可用开发命令 | [backend/pyproject.toml](backend/pyproject.toml)、[frontend/package.json](frontend/package.json) |
 
-图片和文本均为普通运行数据，结束任务不要求截图或关联图片。模型主动调用 `finish_task(status, summary, memory=None)` 时，无论 passed、failed 或 blocked，摘要都须说明支持该结论的观察内容、判断依据及其与成功标准的关系；提示词要求观察尽可能来自真实截图、日志和待测物状态，参考示例不能当作实际观察。程序验证状态及非空摘要，不根据图片数量决定结论。总轮次或连续纠错预算耗尽统一 BLOCKED。连续尝试默认 3 次（包含首次），参数错误、模型响应校验错误、工具业务错误和超时共用预算，成功调用后清零；同时耗尽采用 cycle_limit。按任务类型的终止策略、取消和最终 PASS/FAIL/BLOCKED/CANCELLED 聚合由程序决定。
-
-工具执行使用单层 LangGraph 和默认 `ToolNode`；节点 `timeout` 覆盖适配器连接、调用和会话退出，仅处理 `NodeTimeoutError` 的公开 `error_handler` 提供超时反馈。工具自身抛出的 `TimeoutError` 等未处理异常仍作为执行失败阻塞。图片保存与结果投影位于独立的 `after_tools` 节点，不计入调用超时；该节点统一保存运行记录、整理结构化内容、回收历史图片，然后才发布本轮工具消息。图片处理失败立即向 executor 传播，已保存原图不回滚，失败消息不作为可纠错 ToolMessage 发布。
-
-执行器仅消费图的 `updates` 流，投影并持久化公开 Message。executor 每次构建 TaskAgent 时注入独立的 `TaskAgentEventRecorder`，由节点等待其记录轮次开始、模型校验失败与工具开始事件。记录对象统一绑定运行和任务归属，复用既有事件事务、去重及提交后广播，不修改框架内部实现。
-
-RunExecutor 在执行结束时确定并持久化唯一运行终态，正常返回即表示 TestRun 已完成。最终提交位于执行异常处理之外，写入失败直接传播，不再次报告或重试提交。MCP 正常返回的业务错误及参数错误通过工具消息传给模型和前端；executor 生命周期内的调用机制和图片处理故障通过 ExecutionErrorEvent 传到前端，并进入历史、报告和导出；异常文本不包含调用栈或局部变量。应用日志还用于 HTTP 通用 500 的服务端诊断，以及后台事件/终态写入失败或外部取消的最终兜底。若持久化通道失败，不伪造完成事件，后续启动沿用既有孤立运行恢复机制。
-
-调用超时计入连续纠错预算。总决策轮数耗尽统一 BLOCKED / CYCLE_LIMIT，并在两种预算同时耗尽时优先采用该原因；仅工具连续纠错预算耗尽为 BLOCKED / TOOL_FAILED。断连等未处理通信异常和图片处理失败直接阻塞；取消不能覆盖实际执行或图片存储故障。
-
-RunService 用一个工作状态管理准备与执行阶段；准备阶段尚无运行 ID。容器级 MCPClientProvider 每次运行重新加载配置和客户端，工具 Provider 与资源 Provider 平行依赖它；RunService 在一次整体超时内依次加载 MCP、发现工具和发现资源，按失败阶段统一报告错误，再合并执行工具。运行期间保持这批客户端不变，会话仍由 SDK 管理。取消核对当前运行 ID，关闭则禁止新启动并等待活动工作结束。工作任务结束后释放运行槽和用例占用。数据库创建已提交但启动调用方取消时，仍交给执行器生成取消终态。
-
-当前不支持运行中暂停、恢复或 drain。逃逸出根图的异常由 executor 报告并结束为 BLOCKED；根图中断后缺少任务完成结果也按同一路径处理。
-
-## API 与数据升级
-
-- 执行协议为 `10`：工具快照覆盖完整 TaskAgent 工具集合，结果包含可选 `memory`，普通图片类型为 `image`，图片统计字段为 `image_count`；图片窗口配置使用 `TEST_AGENT_IMAGE_HISTORY_ROUNDS`，资源相对引用参数为 `base_uri`。开发期直接使用新的建库定义，不兼容旧运行数据。
-- 运行环境按任务类型保存 `max_cycles_by_task_type` 和 `prompt_fingerprints_by_task_type`；两个映射的键都必须完整覆盖 `TestTaskType`，轮次范围为 1～100，指纹为非空字符串或 `null`。`null` 表示没有提示词，显式空文件则记录空内容的指纹；报告将 `null` 展示为“未定义”。执行与报告按任务类型索引快照；轮次环境变量仍为 `TEST_AGENT_ACT_MAX_CYCLES`、`TEST_AGENT_JUDGE_MAX_CYCLES` 和 `TEST_AGENT_GOAL_MAX_CYCLES`，在应用装配时转换为映射。
-- `POST /api/test-cases/{id}/plans` 接受请求体 `{"planning_request_id":"客户端生成的 UUID","user_input":"本轮补充或修改要求"}`。关联 ID 必填且不持久化；首次规划的额外输入可不填写，已有计划时必须提供非空白输入，基于最新已保存计划（含人工修订）重新规划。缺少额外输入返回 `422 / planning_user_input_required`；生成期间参考版本变化返回 `409 / test_plan_not_latest`，不保存结果或自动重试。规划不读取设备信息。
-- `GET /api/test-cases/{id}/planning/stream` 订阅临时规划进度。后端注册后发送命名 `ready` 控制事件，前端收到后才 POST；后续 data 为 OpenAPI 的 PlanningEvent，按 case 路由、按 planning_request_id 筛选。Graph 使用公开 custom stream 提供模型尝试进度，服务补充请求归属、准备输入及保存阶段；校验通过不等于保存成功。
-- 规划进度在中栏粘滞弹窗中按日志追加，连接及请求期间禁止关闭、冲突操作和应用内导航；失败可查看并关闭，成功更新计划后自动清空。日志只在组件内存，关闭、离开或刷新后丢弃。初次订阅 10 秒未就绪不会提交规划；断线重连不补拉，POST 网络错误显示结果未确认，不自动重提。SSE 断线不取消规划。同 case 操作互斥，不同 case 独立。
-- `POST /api/runs` 接收 `test_plan_id` 和 `assumptions_confirmed: true`。
-- 设备查询 API 和 device 字段已删除；运行保存一个 `execution_model` 和实际工具目录。
-- 计划修订创建新版本，只允许 latest 启动；相同运行的事件只追加，重复导出创建新文件。
-- `GET /api/runs/{id}` 统一返回 `TestRunReport`（`detail`、`events`、`artifacts`），供执行页和历史详情使用。独立 `/report` 和 `/events` 查询已删除；`/stream` 从 `after` 或 `Last-Event-ID` 游标重放同源持久事件，`/api/artifacts/{id}` 读取运行记录与导出文件。
-- 运行详情支持非负整数 `events_after`（默认 `0`）：只返回序号大于该值的事件，按序号升序；无新增事件返回空数组，详情和附件仍完整且来自同一次读取快照。页面首次全量读取，后续使用已成功缓存的 HTTP 历史末尾序号补齐增量，不以 SSE 最大序号推进游标。JSON／HTML 导出始终包含完整事件历史。
-- `GET /api/test-cases` 支持 `search`、`limit`、`offset`；返回最新计划版本或 `null`。搜索按 ID、名称、正文作字面子串匹配。
-- `GET /api/runs` 支持 `search`、`test_case_id`、重复的 `status` 参数、`verdict`、`created_from`、`created_before`、`limit`、`offset`，返回关联用例、计划任务数、任务状态计数及去重图片数。`GET /api/runs/statistics` 使用同一筛选字段，返回分页前的运行数、结果分布、平均时长与每日趋势。
-- 时间参数必须携带时区，区间左闭右开；每日统计采用 `Asia/Shanghai`，平均时长只计算有开始和结束时间的已结束运行。没有有效耗时样本返回 `null`。查询只读取现有事实，不连接 MCP、不写库；原领域模型、业务命令及 JSON／HTML 导出内容不变。
-- 执行协议为 `10`，统一工具组装并保存完整工具快照，完成回执包含有效记忆。支持跨任务记忆和同 Run 图片重读，沿用 Skill 渐进式读取、资源目录快照、任务内正文保留、框架管理会话和节点边界取消语义。HTTP 契约与前端生成类型同步更新；开发阶段不为旧运行快照或 checkpoint 增加兼容处理与数据迁移，也不主动删除本地数据。
-
-## TestPilot 界面
-
-- **规划**：左侧用例库、中间原始用例与规划输入、右侧语义任务及最近五次运行。计划编辑保存新版本；历史版本只读。确认前置假设后才可启动最新计划，重新规划必须填写本轮输入。
-- **执行**：任务队列、最新图片、运行冻结的工具／模型／提示词版本，以及按保存顺序展示的消息时间线。循环计数是预算使用量，不代表完成百分比。取消提交后等待服务端终态。
-- **历史**：默认最近 30 个上海自然日；筛选及分页保存在 URL。结果标签计数使用基础筛选范围，选中标签仅筛选列表。每日时长曲线采用独立刻度，悬停查看实际时长。
-- **详情**：从列表打开弹窗，关闭后保留原筛选及页码；`/runs/{id}/report` 是可刷新、可直接打开的前端路由。详情展示原计划、结果原因、消息及全部图片，展示支持结束结论的观察与判断说明。重新执行回到该用例的最新计划确认页。
-- 仅展示已有生产者提供的信息：资源面板包含 Skill 与静态资源的冻结目录；不提供设备／节点激活状态、预计耗时、虚构断言结果、重连统计、用例导入或设置入口。导出保留 JSON 和 HTML 报告及资源元数据。
-
-## 测试和静态检查
-
-应用集成测试通过独立 stdio 进程验证 MCP 接入，测试服务的使用说明见[服务文档](#mcp-服务文档)。
+开发检查使用现有 Conda 环境。以下两组命令分别从仓库根目录开始，按改动影响选择相应测试：
 
 ```powershell
 $env:PYTHONUTF8 = "1"
 cd backend
-python -m pytest -q
-python -m pyright
-python scripts/export_openapi.py ../frontend/src/api/openapi.json
-cd ../frontend
-npm.cmd run generate:api
-npm.cmd test
-npm.cmd run typecheck
-npm.cmd run check:api
-npm.cmd run build
+conda run --no-capture-output -n llm-dev python -m pytest -q tests/test_api_flow.py
+conda run --no-capture-output -n llm-dev python -m pyright
 ```
 
-上述应用检查应在已安装应用开发依赖的 Python 环境中执行。自动化不使用网络、真实模型密钥或电视。核心验证包括通用工具闭环、取消/超时、图片窗口、事件顺序、图片归属、计划版本、并发限制和导出。
+```powershell
+cd frontend
+npm.cmd test
+npm.cmd run typecheck
+```
 
-应用固定使用 `langchain[mcp]==1.4.6`、FastMCP 4.1.1 和 MCP SDK 2.3.0，通过[官方 langchain.mcp 接口](https://docs.langchain.com/oss/python/migrate/langchain-mcp-adapters)适配业务工具，并使用 `bind_tools()`、默认 `ToolNode`、公开节点 `timeout` / `error_handler`、消息 reducer 和 checkpointer API。`langchain.mcp` 当前标记为 beta，因此固定依赖版本。产品代码补充超时反馈、运行记录存储、轮数预算、必需任务/Skill 上下文和图片窗口；不读取私有 checkpoint 表、不复制消息协议。结构化返回值保留为消息文本，并清除嵌套的重复图片字节。
+修改 API 契约后，在已完成应用配置的环境中先导出，再重新生成并检查前端契约：
 
-已有环境升级时，先在该 Python 环境执行 `python -m pip uninstall -y langchain-mcp-adapters`，再安装本版依赖，避免旧独立 adapter 的 MCP 1.x 约束残留。
+```powershell
+$env:PYTHONUTF8 = "1"
+cd backend
+conda run --no-capture-output -n llm-dev python scripts/export_openapi.py ../frontend/src/api/openapi.json
+cd ../frontend
+npm.cmd run generate:api
+npm.cmd run check:api
+```
 
-本地 Skill 放在 `skills/base/` 或 `skills/external/`，也可通过 `TEST_AGENT_SKILLS_DIR` 指定根目录；用法见 [Skill 说明](skills/README.md)。`app/resources/mcp.py` 管理配置和客户端，`app/resources/tools.py` 统一集合管理，`app/resources/static_resources.py` 拥有资源工具的包边界、摘要、列表和读取定义。初始只披露顶层摘要，嵌套 Skill 按需访问。三个目录资源工具是 `load_skill`、`read_resource` 和 `list_resources`；`read_resource` 可用 `base_uri` 解析正文中的相对引用。TaskAgent 的 `read_image_artifact` 重读已保存的运行图片。所有调用计入原有执行限制，新增图片统一存储，重读沿用原 ID，保留消息引用并遵循同一图片窗口。执行协议 v10 的工具快照包含全部可用工具及其模型可见 schema；来源为 MCP 服务器名、`builtin:skill` 或 `builtin:task_agent`。资源快照只保存目录元数据，实际读取内容记录在消息中；当前不兼容旧版本运行快照。
+应用回归测试使用独立 Fake MCP 进程和脚本化模型，不需要网络、真实模型凭据或电视。
 
-会话和协议取消由适配器与 SDK 管理，宿主不维护请求 ID、会话重连或子进程清理状态。MCP [取消规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/cancellation)允许取消与返回结果竞态；没有收到的结果始终标为未确认。
-
-Uvicorn 保持一个 worker，因为 RunService 的当前工作状态与 EventBus 是进程内对象。不要提交模型密钥、设备凭据、运行数据库、截图或导出。
+项目采用 [Apache License 2.0](LICENSE)。

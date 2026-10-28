@@ -1,306 +1,246 @@
-# 用户脚本
+# 安装、启停与诊断
 
-安装、启动和人工诊断工具集中在本目录。开发时使用的 API 契约生成工具留在后端和前端各自的 `scripts/` 中。
+本目录提供 TestPilot 的 Windows 安装和启动入口，以及独立的 MCP、模型服务诊断工具。产品操作和应用配置见[项目 README](../README.md)。
 
-| 入口 | 用途 |
+除明确切换目录的命令外，本文示例均从仓库根目录开始。批处理使用当前 PATH 中的 Python，不创建或自动切换环境。直接调用 Python 的示例使用已有 Conda 环境 `llm-dev`；使用其他环境时替换该名称。
+
+## 安装应用
+
+### 准备运行环境
+
+| 环境 | 要求 |
 |---|---|
-| [根目录 start.cmd](../start.cmd) | 基础自检后统一启动应用 |
-| [install.cmd](install.cmd) | 增量安装前后端依赖并执行基础自检 |
-| [check-dependencies.cmd](check-dependencies.cmd) | 离线、只读的基础依赖自检 |
-| [start_app.py](start_app.py) | 管理数据库迁移、前后端进程和关闭流程 |
-| [inspect-mcp.cmd](inspect-mcp.cmd) | 使用 MCP Inspector 手动检查配置中的服务和工具 |
-| [check_llm_capabilities.py](check_llm_capabilities.py) | 独立检测模型的文字、图片、工具和结构化输出能力 |
+| 操作系统 | Windows，统一安装与启动入口依赖 Windows 终端 |
+| Python | 3.12 或 3.13，准备并选择好应用使用的环境 |
+| Node.js | 20 系列至少 20.19.0，或版本不低于 22.12.0；使 `node` 和 `npm.cmd` 在 PATH 中可用 |
+| 安装网络 | Python 和 npm 包源可访问；运行模型、工具时另需对应服务可达 |
 
-命令示例从仓库根目录开始；明确写出 `cd` 的后续命令按切换后的目录执行。
-工具使用当前选定的 Python 环境，不会自动选择或切换环境。批处理入口和应用启动器用于 Windows。
-LLM 检测依赖随应用一并安装；各 MCP 服务的依赖仍由服务自行准备。
+PowerShell 中使用 `npm.cmd` 可以避开 `npm.ps1` 的脚本执行策略限制。
 
-## 安装和启动
+### 安装依赖
 
-以下示例均从仓库根目录开始，使用当前环境的 `python`，不要求特定环境名称。
-
-### 1. 环境准备
-
-#### 运行环境
-
-- Python 3.12 或 3.13：使用自己选择的环境管理方式创建和激活 Python 环境；若终端已自动激活目标环境，无需重复激活。
-- 应用配置：按[宿主配置说明](../README.md#宿主配置)准备模型和 MCP 连接配置。
-- Node.js/npm：当前锁定的 Vite 要求 Node.js `^20.19.0 || >=22.12.0`，确保 `node` 和 `npm.cmd` 在 PATH 中可用。
-
-#### 依赖安装与快捷脚本
-
-快捷安装（PowerShell 示例）：
+已激活应用 Python 环境时运行：
 
 ```powershell
 .\user_scripts\install.cmd
 ```
 
-也可直接执行安装命令：
+脚本依次检查 Python、Node.js 和 npm，增量安装后端及其开发依赖、前端及其开发依赖，并在各阶段完成基础检查。安装失败会标出阶段并保留包管理器诊断；补齐问题后可以重新运行，不需要先清空环境或 `node_modules`。
+
+需要明确指定 Conda 环境时，可通过 `conda run` 安装，无需先在 PowerShell 激活：
 
 ```powershell
 $env:PYTHONUTF8 = "1"
-python -m pip install -e "./backend[dev]"
+conda run --no-capture-output -n llm-dev .\user_scripts\install.cmd
+```
+
+安装只准备应用依赖。接下来完成[应用配置](../README.md#配置应用)，并按所选 [ATV](../mcp_servers/atv_mcp/README.md) 或 [Fake MCP](../mcp_servers/fake_mcp/README.md) 文档准备服务自身的环境。
+
+需要逐条安装、排查包管理器输出时，可以使用安装脚本对应的命令：
+
+```powershell
+$env:PYTHONUTF8 = "1"
+conda run --no-capture-output -n llm-dev python -m pip install -e "./backend[dev]"
 npm.cmd --prefix frontend install --include=dev
 ```
 
-后端安装开发依赖，前端包含 Vite 等开发依赖。PowerShell 示例使用 `npm.cmd`，避免 `npm.ps1` 的执行策略限制。
-
-安装脚本先检查当前 Python 和 Node/npm，再始终执行两端增量安装，由包管理器判断需要更新的依赖；每端安装后复用基础自检。不清空环境或 `node_modules`，安装中止后可重新运行；editable 注册可能重新生成。失败时保留包管理器诊断并指出阶段。
-
-`install.cmd` 仅安装应用依赖；MCP 服务请按[各 MCP 服务文档](../README.md#mcp-服务文档)单独准备。
-
-#### 基础自检与依赖排查
+### 基础依赖检查
 
 ```powershell
 .\user_scripts\check-dependencies.cmd
-# 也可只检查一端
-.\user_scripts\check-dependencies.cmd backend
-.\user_scripts\check-dependencies.cmd frontend
 ```
 
-`check-dependencies.cmd` 只做离线、只读的基础自检：检查基础工具、后端项目安装记录与 Alembic/Uvicorn 导入、前端直接依赖与 Vite 入口。无参数检查两端并汇总，也支持 `backend` 或 `frontend`；退出码 0 为通过、1 为失败、2 为参数错误。它不加载应用，不验证模型配置、凭据、数据库、端口、MCP、电视或完整依赖文件，不承担保证应用可用的责任。启动检查失败不会自动安装，按提示补齐前置工具或运行 `user_scripts/install.cmd`。
+只检查一端时，追加 `backend` 或 `frontend`，例如：
 
-需要排查当前 Python 环境的依赖冲突时，可单独运行：
+```powershell
+.\user_scripts\check-dependencies.cmd backend
+```
+
+检查离线、只读，覆盖基础工具、后端安装记录和 Alembic/Uvicorn 导入、前端直接依赖与 Vite 入口。退出码为：`0` 通过、`1` 失败、`2` 参数错误。
+
+通过只说明基础依赖可用。模型配置、凭据、数据库、端口、MCP 和电视需分别验证；检查不会加载应用或自动安装缺失包。排查当前 Python 环境的包冲突时，可另行执行：
 
 ```powershell
 $env:PYTHONUTF8 = "1"
-python -m pip check
+conda run --no-capture-output -n llm-dev python -m pip check
 ```
 
-此检查不作为应用启动门槛。安装和基础自检是短时批处理，手动中断它们时可能出现 Windows 的批处理确认。
+## 启动与停止
 
-### 2. 启动应用
+### 统一启动
 
-完成依赖安装并激活目标 Python 环境后，在仓库根目录运行：
+完成依赖与应用配置，选择正确的 Python 环境后运行：
 
 ```powershell
 .\start.cmd
 ```
 
-`start.cmd` 不受 PowerShell 脚本执行策略限制，也不会初始化 Conda 或切换环境，使用当前 PATH 中的 `python`。
-
-在 CMD 或 Miniconda/Anaconda Prompt 中使用 Conda 的示例：
-
-```cmd
-conda activate llm-dev
-start.cmd
-```
-
-#### Conda 无法激活环境
-
-PowerShell 中能运行 `conda` 不代表能使用 `conda activate`：激活环境需要加载 Conda 的 PowerShell 初始化代码。未执行过 `conda init powershell`、未加载终端配置，或执行策略禁止加载 `Conda.psm1` 时，激活可能失败；仅能找到 `conda.bat` 也不代表当前 PowerShell 已切换环境。可用以下命令检查实际使用的 Python 路径：
-
-```powershell
-python -c "import sys; print(sys.executable)"
-```
-
-无需修改 PowerShell 执行策略或在当前终端激活环境，只要能识别 `conda`，即可在 PowerShell 中执行：
+PowerShell 无法使用 `conda activate`，或需要为本次启动明确选择环境时，改用：
 
 ```powershell
 $env:PYTHONUTF8 = "1"
 conda run --no-capture-output -n llm-dev .\start.cmd
 ```
 
-`conda run` 为本次启动选择环境，无需在当前 PowerShell 中执行 `conda activate`；`start.cmd` 仍会完成依赖自检并调用 Python 启动器。`llm-dev` 只是环境名示例，请替换成已安装项目依赖的环境。直接运行 `start.cmd` 本身不会自动切换到 `llm-dev`。
+入口设置 Python UTF-8 输出，先运行基础检查，再执行数据库迁移，最后启动前后端。检查或迁移失败时不会继续启动服务。
 
-#### 启动后会执行的操作与停止方式
+| 服务 | 地址 |
+|---|---|
+| 应用页面 | http://localhost:5173 |
+| 后端 | http://127.0.0.1:8000 |
+| 后端健康检查 | http://127.0.0.1:8000/health |
 
-入口自动设置 Python UTF-8，沿用终端已经激活的 Python 环境，并依次执行：
+启动日志用 `backend`、`frontend` 区分输出。应在日志显示两端已就绪后打开页面；启动器打印访问地址本身不等于服务已经可用。端口冲突会直接报错，不自动换端口；任一服务意外退出时，启动器也会停止配套服务。
 
-1. 运行基础依赖自检，失败则停止，不自动安装依赖。
-2. 调用 Python 启动器执行数据库迁移，迁移失败不会启动服务。
-3. 启动后端和前端。打开 http://localhost:5173 使用应用，后端监听 `127.0.0.1:8000`（单 worker）。
+保持一个应用实例，Uvicorn 使用一个 worker；活动运行和实时事件状态由该进程统一管理。
 
-日志以 `backend` / `frontend` 区分；任一服务意外退出时另一个也会停止。端口被占用时直接报错，不会自动切换端口。
+### 正常停止与强制停止
 
-首次 Ctrl+C 立即显示停止提示，停止 Vite 并请求后端正常关闭；服务关闭流程不需要等待 Y/N 确认。后端最多等待三秒让已有 HTTP 请求结束，随后中断仍打开的 SSE，进入应用关闭流程，取消运行、保存终态并清理 MCP。三秒不包含业务收尾时间，正常运行的 SSE 不受影响。
+在启动终端第一次按 **Ctrl+C**，启动器立即提示停止，关闭前端并请求后端正常退出。后端最多等待 3 秒让已有 HTTP 请求结束，之后中断仍保持的实时连接，进入运行取消和保存流程。3 秒不包含业务收尾时间，应继续等待。
 
-关闭时页面可能收不到最终取消事件，重启后可查询持久化结果；取消收尾故障仍按现有规则记录为 BLOCKED，已经完成的运行不会被改写。再次 Ctrl+C 会明确提示并强制结束本次启动的进程树，结果可能未保存。
+关闭时页面可能收不到最终通知，重启后以保存的运行记录为准。业务取消与故障的结果含义见[执行与结果](../README.md#执行与结果)。
 
-启动器收到停止信号后，会在退出、控制权返回 CMD 前解释批处理确认。若随后出现“终止批处理操作吗(Y/N)?”，建议输入 `N` 并回车，让脚本完成目录恢复和退出码传递；`Y` 会跳过剩余脚本收尾。两者都不会重新启动服务，也不会改变此前的关闭结果。此询问来自 CMD，不代表应用清理成功，应以前面的关闭日志为准；`Services stopped.` 只表示启动器已等待服务进程退出。第二次 Ctrl+C 强制退出后也会显示选项说明，但不打印正常停止提示。依赖自检失败时启动器尚未运行，不显示此说明。
+再次按 Ctrl+C 会强制结束本次启动的进程树，结果可能尚未保存。`Services stopped.` 仅表示服务进程已退出，应结合前面的日志判断业务收尾是否成功。
 
-### 3. 直接调用 Python 启动器
+通过 CMD 批处理启动时，控制权返回后可能出现“终止批处理操作吗(Y/N)?”。建议输入 `N` 并回车，使脚本完成目录恢复与退出码传递；`Y` 会跳过剩余批处理收尾。这个终端提示不表示应用清理成功，也不会重新启动服务。安装和基础检查被手动中断时也可能出现批处理确认。
 
-在依赖已准备好的 Windows 环境中，也可直接运行应用级启动器：
+### 其他启动方式
+
+依赖已经准备好时，可以直接使用 Python 启动器：
 
 ```powershell
 $env:PYTHONUTF8 = "1"
-python user_scripts/start_app.py
+conda run --no-capture-output -n llm-dev python user_scripts/start_app.py
 ```
 
-它执行数据库迁移、启动两端，并提供相同的日志转发和 Ctrl+C 关闭流程。
-基础依赖自检由 `start.cmd` 调用；需要自检时先运行 `user_scripts/check-dependencies.cmd`。
-`--cmd-entry` 用于根目录 CMD 入口的中断确认说明，直接运行 Python 时无需填写。
+它执行迁移、启动两端并管理关闭，但不调用基础依赖检查。`--cmd-entry` 供根目录批处理使用，直接调用时无需填写。
 
-### 4. 前后端分别用命令行启动
-
-完成上述环境准备后，也可直接启动各服务。后端终端先激活自己准备的应用 Python 环境；以下两个终端均从仓库根目录开始：
+调试前后端时也可以分别启动。以下两个终端均从仓库根目录开始，停止时分别按 Ctrl+C：
 
 ```powershell
-# 后端终端
+# 后端终端：先完成数据库迁移
 $env:PYTHONUTF8 = "1"
 cd backend
-python -m alembic upgrade head
-python -m uvicorn app.main:app --port 8000
+conda run --no-capture-output -n llm-dev python -m alembic upgrade head
+conda run --no-capture-output -n llm-dev python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --timeout-graceful-shutdown 3 --log-config logging.json
 ```
 
 ```powershell
 # 前端终端
 cd frontend
-npm.cmd run dev
+npm.cmd run dev -- --host localhost --port 5173 --strictPort
 ```
 
-分别启动时需自行执行数据库迁移，并在两个终端分别停止服务。
+## 排查安装与启动
 
-## MCP 服务调试
+| 现象 | 检查与处理 |
+|---|---|
+| 找不到 Python，或提示后端未安装 | 确认实际选中的环境，在该环境重新运行安装入口 |
+| PowerShell 能运行 Conda，但激活失败 | 使用上面的 `conda run` 方式；能找到 Conda 不等于当前环境已切换 |
+| 前端依赖检查失败 | 查看 npm 输出与 Node.js 版本，重新运行安装入口 |
+| 迁移失败或配置校验失败 | 查看终端中最先报告的错误，检查[本地配置](../README.md#配置应用)和实际使用的数据位置 |
+| 端口被占用 | 停止占用相应端口的旧服务，再启动应用 |
+| 基础检查通过，但创建运行失败 | 检查错误指向的准备阶段，并使用下面的 MCP 或模型诊断工具 |
 
-在仓库根目录运行：
-
-```powershell
-conda activate llm-dev
-.\user_scripts\inspect-mcp.cmd
-```
-
-已经在 `user_scripts/` 目录时，运行 `.\inspect-mcp.cmd` 即可。先安装满足 MCP Inspector 当前要求的 Node.js；脚本通过 `npx.cmd` 启动 `@modelcontextprotocol/inspector@latest`，跟随 npm 的 latest 发布版本，首次运行或更新时需要联网下载。
-
-脚本只读加载仓库中的 `mcp_servers/mcp.json`，在 Inspector 网页中选择服务并连接，再调用工具查看输入和返回结果。添加或修改服务入口仍然编辑 `mcp.json`，无需每次在网页中重新配置。修改后重启 Inspector。
-
-脚本将工作目录切换到 `mcp_servers/`，使配置中的相对 `cwd`（例如 `atv_mcp`）从这里解析，退出后恢复调用目录。脚本设置 `PYTHONUTF8=1` 并继承终端环境；`command: "python"` 使用当前 PATH 中的 Python。服务依赖需提前安装在所选环境中；使用独立环境的服务可在 `mcp.json` 中指定解释器绝对路径。
-
-Inspector 会建立自己的 MCP 会话；它用于手动调试，不显示 Agent 已有会话的调用。结束调试时在终端按 Ctrl+C。
-
-配置参数说明见 [Inspector 官方文档](https://github.com/modelcontextprotocol/inspector/blob/main/docs/mcp-server-configuration.md)。
-
-## LLM 供应商能力检测
-
-`check_llm_capabilities.py` 是独立的供应商适配性检测工具，不加载应用配置或业务代码，
-不调用 MCP 或真实设备。真实检测会产生供应商调用费用。
-
-### 安装与运行
-
-依赖统一由 `backend/pyproject.toml` 声明，包含 LangChain OpenAI/Anthropic 集成和 LangGraph，
-不再需要单独的 requirements 文件。以下命令从仓库根目录运行：
+需要确认 Conda 环境中的解释器时：
 
 ```powershell
 $env:PYTHONUTF8 = "1"
-conda run --no-capture-output -n llm-dev python -m pip install -e "./backend[dev]"
+conda run --no-capture-output -n llm-dev python -c "import sys; print(sys.executable)"
+```
+
+## 检查 MCP 服务
+
+选好服务使用的 Python 环境，在仓库根目录运行：
+
+```powershell
+.\user_scripts\inspect-mcp.cmd
+```
+
+该入口通过 `npx.cmd` 启动 `@modelcontextprotocol/inspector@latest`，首次使用或版本更新时可能联网下载。在 Inspector 网页中选择服务、连接，再查看工具输入并手动调用。结束时在终端按 Ctrl+C。
+
+脚本固定读取 [mcp_servers/mcp.json](../mcp_servers/mcp.json)，并将工作目录切换到 `mcp_servers/`，不会改读 `.env` 中自定义的连接文件。它继承终端环境并设置 Python UTF-8；连接文件的通用参数规则见[外部工具连接](../README.md#外部工具连接)。修改文件后重启 Inspector。
+
+Inspector 建立独立会话，不展示 Agent 已有会话中的调用。手动执行的工具会作用于该服务的真实目标，操作前检查设备与参数。
+
+## 检查模型服务
+
+[check_llm_capabilities.py](check_llm_capabilities.py) 独立检测服务的图片、JSON 和工具能力，不读取应用配置，不调用 MCP 或电视。实际检测会向供应商发送请求并可能产生调用费用；只列出检测项不会发送请求。
+
+### 运行与筛选
+
+依赖随应用安装。先查看可用检测项：
+
+```powershell
+$env:PYTHONUTF8 = "1"
 conda run --no-capture-output -n llm-dev python user_scripts/check_llm_capabilities.py --list
+```
+
+执行检测时，模型名、公共根地址和 API Key 未通过参数提供的部分会逐项询问，密钥隐藏输入：
+
+```powershell
+$env:PYTHONUTF8 = "1"
 conda run --no-capture-output -n llm-dev python user_scripts/check_llm_capabilities.py
 ```
 
-未提供的模型名称、公共根地址、API Key 会逐项提示输入；API Key 隐藏输入。
-也可使用 `--model`、`--base-url`、`--api-key` 提供参数。检测不读取应用的模型配置。
-`--list` 仅列出协议和 case，不要求凭据、不发起请求。
+也可以选择部分协议和检测项：
 
 ```powershell
 $env:PYTHONUTF8 = "1"
 conda run --no-capture-output -n llm-dev python user_scripts/check_llm_capabilities.py --base-url https://provider.example --model your-model --protocol chat responses --case case2.2 case4.2 --timeout 60
 ```
 
-`--protocol` 和 `--case` 均接受列表，也可重复提供；去重后按规格顺序执行。
-不指定筛选时运行全部三个协议和 11 个 case。旧 `--scenario` 已替换为 `--case`。
-
-`--base-url` 是公共根地址，不包含 `/v1`、具体接口路径、凭据或查询参数；
-网关公共前缀可以保留，例如 `https://provider.example/gateway`。
-三个协议使用同一模型和令牌，分别访问根地址下的 `/v1/chat/completions`、
-`/v1/responses`、`/v1/messages`，认证由各 LangChain 集成处理。
-
-默认每次模型调用超时 60 秒、最多 2048 个输出 token，`max_retries=0`。
-初始化、绑定、调用中的 `UserWarning` 直接作为异常记录，不重试、不降级。
-Responses 关闭远端存储和自动历史 ID 关联；脚本关闭 LangSmith tracing。
-
-### 预制素材与 case
-
-脚本顶部集中定义数字序列 `NUMBERS = [12, 7, 25]`、显示这些数字的 PNG Base64、
-识别要求和处理要求。识别要求明确回复必须包含文本，并先简短说明收到的内容，
-即便本轮需要调用工具，也要先完成说明再调用工具。
-可以修改 `IMAGE_BASE64`、`IMAGE_MIME_TYPE`，Base64 可换行，
-但不能带 `data:` 前缀。支持 PNG、JPEG、WebP、GIF 的 MIME。
-
-素材按 case 需要校验。空序列、非数字或非有限数字、空或非法 Base64 等配置错误记为 ERROR，
-不发送模型请求，继续检测其他 case。本地校验 Base64 编码及非空内容，图像解码和识别能力由供应商检测。
-工具 A/B 分别返回数字之和加一、减一，模型可见工具描述不透露算法。
-
-| Case ID | 检测内容 |
+| 参数 | 含义 |
 |---|---|
-| `case1` | 图片识别；自动检查正文非空，内容正确性人工核验 |
-| `case1a` | 图片替换成占位文字后，保留真实 AI 回复并询问数字总数 |
-| `case2.1` | 系统提示词要求 JSON |
-| `case2.2` | 系统格式提示词 + 原生 json_mode |
-| `case2.3` | 原生 json_schema |
-| `case3` | 要求工具 B |
-| `case3a` | 要求同时进行 A、B 处理 |
+| `--base-url` | 公共根地址，不含 `/v1`、具体接口路径、凭据或查询参数；可保留网关前缀 |
+| `--model` | 待检测的模型名 |
+| `--api-key` | 显式提供密钥；也可省略并使用隐藏交互输入 |
+| `--protocol` | `chat`、`responses`、`messages`，支持多值及重复参数 |
+| `--case` | 下表中的检测项，支持多值及重复参数 |
+| `--timeout` | 每次模型调用超时，默认 60 秒，必须为正的有限值 |
+| `--list` | 只列出协议与检测项 |
+
+未筛选时按固定顺序运行三个协议、每个协议 11 项。三个协议使用相同模型与密钥，分别访问根地址下的 `/v1/chat/completions`、`/v1/responses`、`/v1/messages`。检测地址的填写方式与[应用模型配置](../README.md#模型服务)的 API 基地址不同。
+
+每次调用输出上限为 2048 token，不自动重试或降级；客户端 `UserWarning` 按异常记录。Responses 关闭远端存储和自动历史 ID 关联，检测过程关闭 LangSmith tracing。
+
+### 检测内容
+
+| 检测项 | 内容 |
+|---|---|
+| `case1` | 图片识别，自动检查非空正文，内容人工复核 |
+| `case1a` | 用占位文字替换图片后，保留真实历史回复并继续询问 |
+| `case2.1` | 用提示词要求 JSON |
+| `case2.2` | 原生 JSON 模式 |
+| `case2.3` | 原生 JSON Schema |
+| `case3` | 请求工具 B |
+| `case3a` | 请求同次回复调用工具 A、B |
 | `case4.1` | 同次回复包含 JSON 正文和工具 B，格式由提示词要求 |
-| `case4.2` | 同次回复包含 JSON 正文和工具 B，使用 json_mode |
-| `case4.3` | 同次回复包含 JSON 正文和工具 B，使用 json_schema |
-| `case5` | 以预制 AI 消息结尾；观察 AI Tail 行为，只作人工检查 |
+| `case4.2` | 同次回复包含 JSON 正文和工具 B，使用 JSON 模式 |
+| `case4.3` | 同次回复包含 JSON 正文和工具 B，使用 JSON Schema |
+| `case5` | 以预制 AI 回复结尾，观察续接行为，人工判断 |
 
-JSON 结构为 `{"description":"内容说明","num":[12,7,25],"sum":44}`。
-结构校验仅检查结构与类型，不评分数字识别或求和是否正确。框架解析通过后，另外检查整段正文是否为纯 JSON：
-两端空白不影响 PASS；前后说明、Markdown 代码围栏等非纯 JSON 输出记为 WARNING。
-结构或工具校验失败仍为 FAIL，格式提醒与结构失败统一保存在 JSON 校验项中。Case2.1/2.2/4.1/4.2 使用
-`PydanticOutputParser.get_format_instructions()` 生成系统格式要求，与应用 planning 相同。
-解析沿用框架行为，不自行修复或重写原始正文。
+默认素材为显示 `[12, 7, 25]` 的图片，JSON 结构包含 `description`、`num` 和 `sum`。自动检查不评分数字识别或计算是否正确，应查看原始回复人工核验。需要更换素材时，修改脚本顶部的数字序列、图片 Base64 和 MIME；支持 PNG、JPEG、WebP、GIF，Base64 不带 `data:` 前缀。
 
-工具用例绑定 A、B，不限制调用数量、不强制工具选择；用真实 ToolNode 检查参数与工具执行结果。
-工具结果只写记录，不再回传模型。Case4 系列分别记录 JSON、工具的校验结果；
-仅有工具调用而没有 JSON 正文时，JSON 校验失败。
+JSON 同时检查结构和完整正文：结构合格但附带说明或 Markdown 围栏时记为 WARNING；结构不合格仍为 FAIL。工具项检查调用及执行结果，结果只写记录，不再传回模型。
 
-每个普通 case 只调用模型一次。Case1a 在同一协议内有成功 Case1 记录时复用对话，
-替换图片并新增一次调用；没有 Case1 记录时自行完成两次调用，全部属于 Case1a，
-不会补选或生成 Case1 结果。原 Case1 记录保持不变。
+普通检测项只请求模型一次。`case1a` 复用同协议中成功的 `case1` 对话，再新增一次调用；未选择 `case1` 时自行完成所需的两次调用。同一轮检测、同协议中已有 `case1` 失败记录时跳过 `case1a`；已有 `case3` 失败记录时跳过 `case3a` 和 `case4` 系列。未选择前序项时，所选项独立执行。
 
-已有 Case1 失败记录时 Case1a 为 NA；已有 Case3 失败记录时 Case3a/Case4 系列为 NA。
-未选择 Case3 时，Case3a/Case4 系列独立执行。记录只在本次运行、同一协议内生效，不读取旧报告。
+### 读取结果
 
-当前 Anthropic 集成的 json_mode 会发出降级警告，Case2.2/4.2 因而直接记录 ERROR，
-不会向供应商发送这个请求或替换为 Schema 模式。OpenAI Case4.2 使用工具绑定与 json_object 组合，
-其中 Chat Completions 按 SDK 解析要求启用 strict 工具；Case4.3 使用原生 Schema 与工具的公开绑定接口。
-
-### 输出与结果
-
-终端显示每个 case 的开始状态与简述、结束状态、记录文件位置，以及结束时的总览。
-失败项会附上校验项、错误类别与异常类型，例如 `FAIL [json: validation/OutputParserException]`；
-HTTP 错误同时显示实际状态码，例如 `ERROR [http/BadRequestError (HTTP 400)]`。
-完整错误原文仍保存在 JSON 中。
-格式提醒会显示为 `WARNING [json: WARNING validation/JSONDecodeError]`。
-
-| 状态 | 含义 |
+| 状态 | 解释 |
 |---|---|
-| PASS | 通过该 case 的自动检查，不表示所有内容正确或供应商永久支持该能力 |
-| WARNING | JSON 可通过框架结构校验，但正文不是纯 JSON，包含额外文本或格式标记 |
-| FAIL | 模型输出未通过结构、非空正文或工具调用校验 |
-| ERROR | 素材配置、客户端、HTTP、连接、超时或工具执行异常 |
-| NA | 被同协议中已有的失败 case 记录跳过 |
-| MANUAL | Case5 已返回，需查看原始记录人工判断 |
+| PASS | 通过该项自动检查，内容正确性仍需相应复核 |
+| WARNING | JSON 结构合格，但正文含额外文本或格式标记 |
+| FAIL | 正文、结构或工具调用不符合该项要求 |
+| ERROR | 配置、客户端、网络、HTTP、超时或工具执行异常 |
+| NA | 被同协议中已有的失败前序项跳过 |
+| MANUAL | 已获得回复，需要人工判断 |
 
-每次运行在脚本目录下生成一个 `<安全化模型名>_llm_check_<微秒时间戳>/` 目录，
-按 `<protocol>/<case_id>.json` 保存各 case，包含失败和跳过的 case。
-整个运行目录已加入 Git 忽略规则，可按运行集中查看或删除。
+终端显示检测项简述、状态、诊断摘要和文件位置，最后输出总览。每次检测在本目录生成独立的 `<安全化模型名>_llm_check_<微秒时间戳>/`，按 `<protocol>/<case_id>.json` 保存输入、原始回复、调用、工具结果、校验和错误，包括失败与跳过项。
 
-记录包含 case ID 与简述（`case_description`）、调用输入、原始 AIMessage、工具调用、
-ToolNode 结果、校验结果、耗时和原始错误。简述来自注册表，作为本次运行的说明快照保存。
-每次调用输入分别快照保存，因此 Case1a 的图片替换可复核。绑定失败时也会保留准备好的输入，
-这不代表已经发送了 HTTP 请求。框架返回 AIMessage 前发生错误时，不伪造缺失的模型回复。
+记录不序列化 API Key 参数或认证头。框架未返回的模型回复保持缺失；准备好的输入不等于请求已经发出。HTTP、解析和连接错误分别记录，不根据错误文案推断服务能力。
 
-`checks` 中某项的空诊断列表表示该项通过，缺少该项表示未检查；最终状态从记录推导。
-每条诊断使用 `ProbeDiagnostic` 保存，`severity` 为 `error` 或 `warning`，默认是 `error`。
-JSON 结构校验和全文检查统一由 `validate_json_response` 完成，格式提醒写入 `checks["json"]`，
-保留全文解码异常的类型与原文；异常和校验失败优先于 WARNING。
-异常按类型与 HTTP 状态分类，保留异常类型、原文和实际状态码，不根据文案猜测供应商能力，
-也不把输出解析错误写成 HTTP 拒绝。记录不序列化客户端、API Key 参数或认证头。
+检测正常完成的退出码为 `0`，即使存在 FAIL、ERROR 或 WARNING；参数错误为 `2`，人工中断为 `130`，记录写入或隐藏输入等本地 I/O 失败为 `1`。记录写入失败会停止后续检测。运行记录默认由 Git 忽略，可按整次检测目录整理或删除。
 
-检测正常结束退出码为 0，即使有部分 FAIL/ERROR/WARNING；参数错误为 2，Ctrl+C/输入中断为 130。
-记录文件写入失败时展示原始错误并以 1 退出，停止后续检测。
-
-### 无网络验证
-
-```powershell
-$env:PYTHONUTF8 = "1"
-conda run --no-capture-output -n llm-dev python -m pytest -q backend/tests/test_llm_capabilities.py
-conda run --no-capture-output -n llm-dev python -m pyright user_scripts/check_llm_capabilities.py backend/tests/test_llm_capabilities.py
-```
-
-测试按上述 case 契约设计，使用真实 LangChain 客户端、Pydantic 解析器与 ToolNode，
-仅在 HTTP 传输边界提供模拟响应，不访问供应商、凭据、MCP 或真实设备。
-消息断言检查角色、内容块类型和历史保留关系，不依赖提示词或图片占位符的具体文案。
+诊断覆盖的能力应结合[应用实际模型要求](../README.md#模型服务)理解；通过额外协议或组合检测，不代表应用使用了该协议或调用组合。
