@@ -107,7 +107,7 @@ class AppLauncher:
                 print("[launcher] FAIL: Database migration failed; services were not started.", flush=True)
                 return 1
             self.start("backend", [
-                sys.executable, "-m", "uvicorn", "app.main:app",
+                sys.executable, "-m", "uvicorn", "app.main:create_app", "--factory",
                 "--host", "127.0.0.1", "--port", "8000", "--workers", "1",
                 "--timeout-graceful-shutdown", "3",
                 "--log-config", str(PROJECT_ROOT / "backend/logging.json"),

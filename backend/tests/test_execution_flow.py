@@ -106,7 +106,7 @@ def test_memory_image_reads_preserve_original_identity_window_and_exports(tmp_pa
             "name": "read_image_artifact", "args": {"artifact_id": artifact_id}, "id": f"read-{read_count}",
         }])
 
-    with build_client(tmp_path, image_history_rounds=1, calls=[replay_call(), replay_call()],
+    with build_client(tmp_path, execution={"image_history_rounds": 1}, calls=[replay_call(), replay_call()],
                       turns=[tool_turn(1), remember_image, read_baseline, tool_turn(4), read_baseline, finish_turn(6)]) as client:
         run_id = start_run(client, create_plan(client, task_count=2))
         detail = wait_for_run(client, run_id)
@@ -224,7 +224,7 @@ def test_required_context_over_budget_blocks_without_calling_model(tmp_path: Pat
 def test_configured_cycle_limits_by_task_type(
     tmp_path: Path, act_limit: int, judge_limit: int, counts: list[int],
 ) -> None:
-    with build_client(tmp_path, act_max_cycles=act_limit, judge_max_cycles=judge_limit) as client:
+    with build_client(tmp_path, execution={"max_cycles_by_task_type": {"act": act_limit, "judge": judge_limit, "goal": 10}}) as client:
         plan = create_plan(client, task_count=2)
         assert all("max_cycles" not in task["definition"] for task in plan["content"]["tasks"])
         invalid_tasks = [dict(task["definition"], max_cycles=99) for task in plan["content"]["tasks"]]
@@ -385,7 +385,8 @@ def test_unsupported_graph_exit_is_blocked_and_releases_run_entry(
 @pytest.mark.parametrize("with_image,verdict,reason", [(True, "BLOCKED", "cycle_limit"), (False, "BLOCKED", "cycle_limit")])
 def test_round_limit_with_or_without_images(tmp_path: Path, with_image: bool, verdict: str, reason: str) -> None:
     content = [image_block()] if with_image else [text_block()]
-    with build_client(tmp_path, calls=[replay_call(content=content)], turns=[tool_turn(1)], act_max_cycles=1) as client:
+    with build_client(tmp_path, calls=[replay_call(content=content)], turns=[tool_turn(1)],
+                      execution={"max_cycles_by_task_type": {"act": 1, "judge": 10, "goal": 10}}) as client:
         detail = wait_for_run(client, start_run(client, create_plan(client)))
         assert detail["run"]["verdict"] == verdict
         assert detail["task_runs"][0]["result"]["reason_code"] == reason
@@ -432,7 +433,7 @@ def test_tool_errors_keep_partial_images_and_are_not_automatically_replayed(tmp_
 
 def test_disconnect_stops_without_retry(tmp_path: Path) -> None:
     with build_client(tmp_path, calls=[replay_call(disconnect=True)], turns=[tool_turn(1)],
-                      tool_call_timeout_seconds=5) as client:
+                      execution={"tool_call_timeout_seconds": 5}) as client:
         detail = wait_for_run(client, start_run(client, create_plan(client)))
         assert detail["run"]["verdict"] == "BLOCKED"
         assert detail["task_runs"][0]["result"]["reason_code"] == "tool_failed", detail["task_runs"][0]["result"]
@@ -444,7 +445,7 @@ def test_timeout_returns_to_model_and_late_images_are_unconfirmed(tmp_path: Path
     delayed = {**replay_call(delay=10), "cooperative_cancellation": cooperative}
     with build_client(tmp_path, calls=[replay_call(), delayed, replay_call()],
                       turns=[tool_turn(1), tool_turn(2), finish_turn(3), tool_turn(4), finish_turn(5)],
-                      tool_call_timeout_seconds=5) as client:
+                      execution={"tool_call_timeout_seconds": 5}) as client:
         run_id = start_run(client, create_plan(client, task_count=2))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "PASS", detail["task_runs"]
@@ -472,7 +473,8 @@ def test_timeout_returns_to_model_and_late_images_are_unconfirmed(tmp_path: Path
 def test_timeout_budget_priority_without_replaying_call(tmp_path: Path, with_image: bool, max_cycles: int) -> None:
     initial = replay_call(content=[image_block()] if with_image else [text_block()])
     with build_client(tmp_path, calls=[initial, replay_call(delay=10)], turns=[tool_turn(1), tool_turn(2)],
-                      tool_call_timeout_seconds=5, execution_model_response_max_attempts=1, act_max_cycles=max_cycles) as client:
+                      execution={"tool_call_timeout_seconds": 5, "model_response_max_attempts": 1,
+                                 "max_cycles_by_task_type": {"act": max_cycles, "judge": 10, "goal": 10}}) as client:
         detail = wait_for_run(client, start_run(client, create_plan(client)))
         reason = "cycle_limit" if max_cycles == 2 else "tool_failed"
         assert detail["task_runs"][0]["result"]["reason_code"] == reason
@@ -483,7 +485,7 @@ def test_timeout_budget_priority_without_replaying_call(tmp_path: Path, with_ima
 
 def test_call_failure_after_timeout_blocks_without_replay(tmp_path: Path) -> None:
     with build_client(tmp_path, calls=[replay_call(delay=10), replay_call(disconnect=True)],
-                      turns=[tool_turn(1), tool_turn(2)], tool_call_timeout_seconds=5) as client:
+                      turns=[tool_turn(1), tool_turn(2)], execution={"tool_call_timeout_seconds": 5}) as client:
         detail = wait_for_run(client, start_run(client, create_plan(client)))
         assert detail["task_runs"][0]["result"]["reason_code"] == "tool_failed"
         assert detail["task_runs"][0]["cycle_count"] == 2
@@ -498,7 +500,7 @@ def test_model_can_correct_tool_parameters(tmp_path: Path, failure_kind: str) ->
     calls = ([{**replay_call(delay=10), "arguments": {"wait_seconds": 10}}] if failure_kind == "timeout" else [])
     calls.append({**replay_call(), "arguments": {"wait_seconds": 0}})
     with build_client(tmp_path, calls=calls, turns=[first, corrected, finish_turn(3)],
-                      tool_call_timeout_seconds=5) as client:
+                      execution={"tool_call_timeout_seconds": 5}) as client:
         scenario_path = tmp_path / "scenario.json"
         scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
         scenario["tools"][0]["inputSchema"] = {
@@ -524,7 +526,7 @@ def test_model_can_correct_tool_parameters(tmp_path: Path, failure_kind: str) ->
 @pytest.mark.parametrize("delay", [0.5, 10])
 def test_cancel_waits_for_call_or_timeout_and_never_executes_next_call(tmp_path: Path, delay: float) -> None:
     with build_client(tmp_path, calls=[replay_call(delay=delay), replay_call()],
-                      turns=[tool_turn(1), tool_turn(2)], tool_call_timeout_seconds=5) as client:
+                      turns=[tool_turn(1), tool_turn(2)], execution={"tool_call_timeout_seconds": 5}) as client:
         plan = create_plan(client)
         run_id = start_run(client, plan)
         for _ in range(300):
@@ -582,7 +584,7 @@ def test_image_history_preserves_order_text_events_and_artifacts(tmp_path: Path)
         ]))
         image_offset += 2
     with build_client(tmp_path, calls=calls, turns=[*[tool_turn(i) for i in range(1, 6)], finish_turn(6)],
-                      image_history_rounds=3) as client:
+                      execution={"image_history_rounds": 3}) as client:
         run_id = start_run(client, create_plan(client))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "PASS"
@@ -663,7 +665,8 @@ def test_image_retention_reaches_state_and_terminal_checkpoint(
     monkeypatch.setattr(_TaskRuntime, "after_tools", observe_after_tools)
     with build_client(tmp_path, calls=[replay_call(), replay_call(error=exit_kind == "tool_error")],
                       turns=[tool_turn(1), tool_turn(2), finish_turn(3)],
-                      image_history_rounds=1, execution_model_response_max_attempts=1, act_max_cycles=2 if exit_kind == "cycle_limit" else 3) as client:
+                      execution={"image_history_rounds": 1, "model_response_max_attempts": 1,
+                                 "max_cycles_by_task_type": {"act": 2 if exit_kind == "cycle_limit" else 3, "judge": 10, "goal": 10}}) as client:
         run_id = start_run(client, create_plan(client))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == {
@@ -873,7 +876,9 @@ def test_run_tools_ignore_config_changes_and_hold_the_single_run_slot(tmp_path: 
 def test_exhaustion_during_repair_is_always_blocked(tmp_path: Path, with_image: bool) -> None:
     content = [image_block()] if with_image else [text_block()]
     with build_client(tmp_path, calls=[replay_call(content=content)],
-                      turns=[tool_turn(1), AIMessage(content="invalid")], execution_model_response_max_attempts=1, act_max_cycles=2) as client:
+                      turns=[tool_turn(1), AIMessage(content="invalid")],
+                      execution={"model_response_max_attempts": 1,
+                                 "max_cycles_by_task_type": {"act": 2, "judge": 10, "goal": 10}}) as client:
         detail = wait_for_run(client, start_run(client, create_plan(client)))
         assert detail["run"]["verdict"] == "BLOCKED"
         assert detail["task_runs"][0]["result"]["reason_code"] == "cycle_limit"
@@ -966,7 +971,7 @@ def test_slow_image_save_is_outside_tool_timeout_and_precedes_publication(
     observed_unsaved_events: list[dict[str, Any]] = []
 
     with build_client(tmp_path, calls=[replay_call()], turns=[tool_turn(1), finish_turn(2)],
-                      tool_call_timeout_seconds=5) as client:
+                      execution={"tool_call_timeout_seconds": 5}) as client:
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
         original_append = container.repository.append_events
 
@@ -1045,7 +1050,7 @@ def test_tool_correction_budget_is_shared_and_success_resets_it(tmp_path: Path, 
     else:
         calls = [replay_call(error=True), replay_call(delay=10)]
         turns = [invalid, tool_turn(2), tool_turn(3), finish_turn(4)]
-    with build_client(tmp_path, calls=calls, turns=turns, tool_call_timeout_seconds=5) as client:
+    with build_client(tmp_path, calls=calls, turns=turns, execution={"tool_call_timeout_seconds": 5}) as client:
         run_id = start_run(client, create_plan(client))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == ("PASS" if recover else "BLOCKED")

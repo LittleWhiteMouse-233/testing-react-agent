@@ -167,23 +167,15 @@ class ScriptedChatModelClient:
 
     def __init__(
         self,
-        settings: LLMProfileSettings | None = None,
+        settings: LLMProfileSettings,
         *,
-        model_id: str = "default",
-        timeout_seconds: float = 60,
         plans: list[PlanDraft | dict[str, Any] | Exception] | None = None,
         turns: list[ScriptedTurn] | None = None,
     ) -> None:
-        profile = settings or LLMProfileSettings(
-            id=model_id,
-            mode="scripted",
-            model="deterministic",
-            timeout_seconds=timeout_seconds,
-        )
-        self.model_id = profile.id
-        self.timeout_seconds = profile.timeout_seconds
+        self.model_id = settings.id
+        self.timeout_seconds = settings.timeout_seconds
         self._model = ScriptedChatModel(plans=plans, turns=turns)
-        self.profile_snapshot = profile_snapshot_from_settings(profile)
+        self.profile_snapshot = profile_snapshot_from_settings(settings)
 
     def create_model(self) -> BaseChatModel:
         return self._model

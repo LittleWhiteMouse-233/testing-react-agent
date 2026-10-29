@@ -13,7 +13,7 @@ from app.llm import (
 from app.config import Settings
 from app.domain.activity import AgentActivity
 from app.event_stream import EventBus, RunEventWriter
-from app.domain.planning import PlanningEvent, TestTaskType
+from app.domain.planning import PlanningEvent
 from app.execution.executor import RunExecutor
 from app.execution.run_service import RunService
 from app.execution.task_agent import TASK_AGENT_TOOLS, TaskAgentFactory
@@ -47,7 +47,7 @@ class Container:
         )
         prompt_catalog = PromptCatalog()
         model_clients_by_id: dict[str, ChatModelClient] = {}
-        for profile in settings.llm_profiles:
+        for profile in settings.llm.profiles:
             if profile.mode == "real":
                 model_client: ChatModelClient = RealChatModelClient(profile)
             elif profile.mode == "scripted":
@@ -59,8 +59,8 @@ class Container:
             model_clients_by_id[profile.id] = model_client
         self.model_provider = ModelProvider(
             model_clients_by_id,
-            planning_model_id=settings.planning_model_id,
-            execution_model_id=settings.execution_model_id,
+            planning_model_id=settings.llm.planning_model_id,
+            execution_model_id=settings.llm.execution_model_id,
         )
         self.planning_graph = PlanningGraph(prompt_catalog.prompt_for_activity(AgentActivity.PLANNING))
         self.repository = SqlAlchemyRunRepository(self.sessions, self.run_event_writer)
@@ -76,16 +76,16 @@ class Container:
             artifacts=self.artifacts,
             model_provider=self.model_provider,
             prompt_catalog=prompt_catalog,
-            tool_call_timeout_seconds=settings.tool_call_timeout_seconds,
-            model_call_max_attempts=settings.execution_model_call_max_attempts,
-            model_response_max_attempts=settings.execution_model_response_max_attempts,
-            image_history_rounds=settings.image_history_rounds,
+            tool_call_timeout_seconds=settings.execution.tool_call_timeout_seconds,
+            model_call_max_attempts=settings.execution.model_call_max_attempts,
+            model_response_max_attempts=settings.execution.model_response_max_attempts,
+            image_history_rounds=settings.execution.image_history_rounds,
         )
         self.executor = RunExecutor(
             repository=self.repository,
             agent_factory=self.agent_factory,
             checkpoint_path=str(settings.checkpoints),
-            goal_max_failures=settings.goal_max_failures,
+            goal_max_failures=settings.execution.goal_max_failures,
         )
         self.run_service = RunService(
             test_case_lock=self.test_case_lock,
@@ -97,11 +97,7 @@ class Container:
             mcp_clients=self.mcp_clients,
             tools=self.tools,
             skills=self.skills,
-            discovery_timeout_seconds=settings.tool_call_timeout_seconds,
-            max_cycles_by_task_type={
-                TestTaskType.ACT: settings.act_max_cycles,
-                TestTaskType.JUDGE: settings.judge_max_cycles,
-                TestTaskType.GOAL: settings.goal_max_cycles,
-            },
+            discovery_timeout_seconds=settings.execution.tool_call_timeout_seconds,
+            max_cycles_by_task_type=settings.execution.max_cycles_by_task_type,
         )
         self.reports = ReportService(partial(read_test_run_report, self.sessions), self.artifacts)

@@ -122,7 +122,7 @@ conda run --no-capture-output -n llm-dev python user_scripts/start_app.py
 $env:PYTHONUTF8 = "1"
 cd backend
 conda run --no-capture-output -n llm-dev python -m alembic upgrade head
-conda run --no-capture-output -n llm-dev python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --timeout-graceful-shutdown 3 --log-config logging.json
+conda run --no-capture-output -n llm-dev python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 --workers 1 --timeout-graceful-shutdown 3 --log-config logging.json
 ```
 
 ```powershell
@@ -159,7 +159,7 @@ conda run --no-capture-output -n llm-dev python -c "import sys; print(sys.execut
 
 该入口通过 `npx.cmd` 启动 `@modelcontextprotocol/inspector@latest`，首次使用或版本更新时可能联网下载。在 Inspector 网页中选择服务、连接，再查看工具输入并手动调用。结束时在终端按 Ctrl+C。
 
-脚本固定读取 [mcp_servers/mcp.json](../mcp_servers/mcp.json)，并将工作目录切换到 `mcp_servers/`，不会改读 `.env` 中自定义的连接文件。它继承终端环境并设置 Python UTF-8；连接文件的通用参数规则见[外部工具连接](../README.md#外部工具连接)。修改文件后重启 Inspector。
+脚本固定读取 [mcp_servers/mcp.json](../mcp_servers/mcp.json)，并将工作目录切换到 `mcp_servers/`，不会读取宿主应用配置中的 `mcp_config_path`。它继承终端环境并设置 Python UTF-8；连接文件的通用参数规则见[外部工具连接](../README.md#外部工具连接)。修改文件后重启 Inspector。
 
 Inspector 建立独立会话，不展示 Agent 已有会话中的调用。手动执行的工具会作用于该服务的真实目标，操作前检查设备与参数。
 

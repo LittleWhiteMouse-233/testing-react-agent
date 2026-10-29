@@ -150,9 +150,9 @@ class TaskAgentFactory:
     def __init__(
         self, *, artifacts: ArtifactStore, model_provider: ModelProvider,
         prompt_catalog: PromptCatalog,
-        tool_call_timeout_seconds: float = 120,
-        model_call_max_attempts: int = 3, model_response_max_attempts: int = 3,
-        image_history_rounds: int = 3,
+        tool_call_timeout_seconds: float,
+        model_call_max_attempts: int, model_response_max_attempts: int,
+        image_history_rounds: int,
     ) -> None:
         self.artifacts = artifacts
         self.model_provider = model_provider

@@ -34,11 +34,12 @@ from app.event_stream.projector import project_run_message
 from app.llm import ModelProvider, ScriptedChatModelClient
 from app.resources.prompts import PromptCatalog
 from mcp_support import PNG_BASE64, finish_turn, tool_turn
+from config_support import build_model_profile
 
 
 @pytest.fixture
 def task_runtime() -> _TaskRuntime:
-    model_client = ScriptedChatModelClient()
+    model_client = ScriptedChatModelClient(build_model_profile())
     prompt = PromptCatalog().prompt_for_task_type(TaskType.ACT)
     model_tools = (finish_task,)
     task_context = TaskAgentContext(
@@ -90,10 +91,12 @@ async def test_message_publication_contract_is_checked_during_build(
     declared_nodes = (declared_nodes - {"initialize"} if declaration_change == "missing"
                       else declared_nodes | {"unexpected"})
     monkeypatch.setattr(task_agent, "MESSAGE_PUBLISHING_NODES", declared_nodes, raising=False)
-    model = ScriptedChatModelClient()
+    model = ScriptedChatModelClient(build_model_profile())
     factory = TaskAgentFactory(
         artifacts=task_runtime.runtime_context.artifacts, model_provider=ModelProvider({model.model_id: model}),
         prompt_catalog=PromptCatalog(),
+        tool_call_timeout_seconds=120, model_call_max_attempts=3,
+        model_response_max_attempts=3, image_history_rounds=3,
     )
     expected_difference = r"missing=\['initialize'\]" if declaration_change == "missing" else r"extra=\['unexpected'\]"
     with pytest.raises(ValueError, match=expected_difference):
@@ -202,12 +205,13 @@ async def test_cancellation_at_model_or_event_boundary_prevents_further_calls(
     else:
         event_recorder.record_tool_started.side_effect = request_cancel
 
-    model = ScriptedChatModelClient(turns=[
+    model = ScriptedChatModelClient(build_model_profile(), turns=[
         AIMessage(content="invalid") if boundary == "invalid_response" else tool_turn(1, "observe"),
     ])
     factory = TaskAgentFactory(
         artifacts=task_runtime.runtime_context.artifacts, model_provider=ModelProvider({model.model_id: model}),
         prompt_catalog=PromptCatalog(),
+        tool_call_timeout_seconds=120, model_call_max_attempts=3,
         model_response_max_attempts=1, image_history_rounds=1,
     )
     graph, initial, runtime_context = await factory.build(
@@ -248,10 +252,11 @@ async def test_native_timeout_returns_to_model_without_waiting_for_late_result(t
             finished.set()
         raise AssertionError("Observation cannot finish before cancellation")
 
-    model = ScriptedChatModelClient(turns=[tool_turn(1, "observe"), finish_turn(2, "blocked")])
+    model = ScriptedChatModelClient(build_model_profile(), turns=[tool_turn(1, "observe"), finish_turn(2, "blocked")])
     factory = TaskAgentFactory(
         artifacts=task_runtime.runtime_context.artifacts, model_provider=ModelProvider({model.model_id: model}),
         prompt_catalog=PromptCatalog(),
+        model_call_max_attempts=3, model_response_max_attempts=3,
         tool_call_timeout_seconds=0.05, image_history_rounds=1,
     )
     graph, initial, runtime_context = await factory.build(

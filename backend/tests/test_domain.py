@@ -6,7 +6,6 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import ValidationError
 
-from app.config import LLMProfileSettings
 from app.domain.activity import AgentActivity
 from app.domain.execution import (
     Artifact,
@@ -26,6 +25,7 @@ from app.domain.planning import (
     identify_plan_content,
 )
 from app.llm import ModelProvider, ScriptedChatModelClient, profile_snapshot_from_settings
+from config_support import build_model_profile
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
@@ -151,7 +151,7 @@ def test_task_memory_normalizes_only_blank_content(memory: str | None, expected:
 
 @pytest.mark.asyncio
 async def test_scripted_terminal_turn_preserves_memory() -> None:
-    client = ScriptedChatModelClient(turns=[{"status": "passed", "summary": "Observed A", "memory": "A: V2.3.7"}])
+    client = ScriptedChatModelClient(build_model_profile(), turns=[{"status": "passed", "summary": "Observed A", "memory": "A: V2.3.7"}])
     reply = await client.create_model().bind_tools([]).ainvoke([HumanMessage(content="Read A")])
     assert reply.tool_calls[0]["args"]["memory"] == "A: V2.3.7"
 
@@ -161,7 +161,7 @@ async def test_scripted_turn_callback_receives_actual_messages() -> None:
     def remember(messages: list[BaseMessage]) -> AIMessage:
         return AIMessage(content=messages[-1].text)
 
-    client = ScriptedChatModelClient(turns=[remember])
+    client = ScriptedChatModelClient(build_model_profile(), turns=[remember])
     messages = [HumanMessage(content="Actual image artifact ID")]
     reply = await client.create_model().bind_tools([]).ainvoke(messages)
     assert reply.content == messages[0].content
@@ -194,7 +194,7 @@ def test_artifact_owner_is_direct_and_exclusive() -> None:
 
 
 def test_settings_to_snapshot_is_a_single_secret_free_projection() -> None:
-    settings = LLMProfileSettings(
+    settings = build_model_profile(
         id="audited",
         mode="real",
         base_url="https://example.invalid/v1",
@@ -207,8 +207,8 @@ def test_settings_to_snapshot_is_a_single_secret_free_projection() -> None:
 
 
 def test_activity_conversion_and_model_provider_routes_are_explicit() -> None:
-    first = ScriptedChatModelClient(model_id="first")
-    second = ScriptedChatModelClient(model_id="second")
+    first = ScriptedChatModelClient(build_model_profile(id="first"))
+    second = ScriptedChatModelClient(build_model_profile(id="second"))
     provider = ModelProvider(
         {"first": first, "second": second},
         planning_model_id="second",
@@ -221,8 +221,8 @@ def test_activity_conversion_and_model_provider_routes_are_explicit() -> None:
 
 
 def test_model_provider_uses_ordered_default_and_one_profile_for_two_routes() -> None:
-    first = ScriptedChatModelClient(model_id="first")
-    second = ScriptedChatModelClient(model_id="second")
+    first = ScriptedChatModelClient(build_model_profile(id="first"))
+    second = ScriptedChatModelClient(build_model_profile(id="second"))
     provider = ModelProvider(
         {"first": first, "second": second},
         execution_model_id="second",

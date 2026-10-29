@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes import router
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.container import Container
 from app.persistence.db import init_database
 
@@ -17,8 +17,8 @@ from app.persistence.db import init_database
 logger = logging.getLogger(__name__)
 
 
-def create_app(settings_override=None) -> FastAPI:
-    settings = settings_override or get_settings()
+def create_app(settings_override: Settings | None = None) -> FastAPI:
+    settings = get_settings() if settings_override is None else settings_override
 
     @asynccontextmanager
     async def lifespan(instance: FastAPI):
@@ -40,7 +40,7 @@ def create_app(settings_override=None) -> FastAPI:
     )
     instance.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.allowed_origins,
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -84,6 +84,3 @@ def create_app(settings_override=None) -> FastAPI:
         return {"status": "ok", "version": settings.app_version}
 
     return instance
-
-
-app = create_app()

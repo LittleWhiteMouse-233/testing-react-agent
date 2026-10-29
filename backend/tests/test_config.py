@@ -1,153 +1,202 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from collections.abc import Callable
+import json
+import os
 from pathlib import Path
-from typing import cast
+import subprocess
+import sys
 
 import pytest
 from pydantic import ValidationError
 
-from app.config import LLMProfileSettings, PROJECT_ROOT, Settings
+from app import config
+from config_support import app_config_values, write_app_config
 
 
-settings_factory = cast(Callable[..., Settings], Settings)
-
-
-def test_task_cycle_limits_defaults_and_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("TEST_AGENT_ACT_MAX_CYCLES", raising=False)
-    monkeypatch.delenv("TEST_AGENT_JUDGE_MAX_CYCLES", raising=False)
-    monkeypatch.delenv("TEST_AGENT_IMAGE_HISTORY_ROUNDS", raising=False)
-    settings = settings_factory(_env_file=None, model_config_path=PROJECT_ROOT / "models.example.toml")
-    assert (settings.act_max_cycles, settings.judge_max_cycles) == (30, 10)
-    assert settings.image_history_rounds == 3
-    monkeypatch.setenv("TEST_AGENT_ACT_MAX_CYCLES", "40")
-    monkeypatch.setenv("TEST_AGENT_JUDGE_MAX_CYCLES", "15")
-    monkeypatch.setenv("TEST_AGENT_IMAGE_HISTORY_ROUNDS", "2")
-    settings = settings_factory(_env_file=None, model_config_path=PROJECT_ROOT / "models.example.toml")
-    assert (settings.act_max_cycles, settings.judge_max_cycles) == (40, 15)
-    assert settings.image_history_rounds == 2
-
-
-@pytest.mark.parametrize("setting", ["act_max_cycles", "judge_max_cycles"])
-@pytest.mark.parametrize("limit", [0, 101])
-def test_task_cycle_limits_reject_out_of_range(setting: str, limit: int) -> None:
-    with pytest.raises(ValidationError, match=setting):
-        settings_factory(_env_file=None, model_config_path=PROJECT_ROOT / "models.example.toml",
-                         **{setting: limit})
-
-
-def test_settings_load_model_parameters_from_toml_and_routes_from_env(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+def test_load_complete_toml_without_legacy_environment_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    model_config_path = tmp_path / "models.toml"
-    model_config_path.write_text('''
-[[profiles]]
-id = "planner"
-mode = "real"
-base_url = "https://planner.invalid/v1"
-api_key = "planner-secret"
-model = "planning-model"
-context_window_tokens = 16384
-max_output_tokens = 1024
-
-[[profiles]]
-id = "vision"
-mode = "real"
-base_url = "https://vision.invalid/v1"
-api_key = "vision-secret"
-model = "vision-model"
-context_window_tokens = 32768
-max_output_tokens = 4096
-characters_per_token = 2.0
-tokens_per_image = 1500
-context_safety_margin_tokens = 2048
-temperature = 0.5
-timeout_seconds = 90
-''', encoding="utf-8")
-    monkeypatch.setenv("DEBUG", "release")
-    monkeypatch.setenv("TEST_AGENT_DEBUG", "true")
-    monkeypatch.setenv("TEST_AGENT_DATA_DIR", "./config-test-data")
-    monkeypatch.setenv("TEST_AGENT_MODEL_CONFIG_PATH", str(model_config_path))
-    monkeypatch.setenv("TEST_AGENT_PLANNING_MODEL_ID", "planner")
-    monkeypatch.setenv("TEST_AGENT_EXECUTION_MODEL_ID", "vision")
-    settings = settings_factory(_env_file=None)
+    config_path = write_app_config(tmp_path, app_config_values(
+        tmp_path, debug=True, cors_origins=["http://localhost:5173", "http://localhost:8000"],
+        execution={"max_cycles_by_task_type": {"act": 40, "judge": 15, "goal": 20}},
+    ))
+    monkeypatch.setenv("TEST_AGENT_DEBUG", "false")
+    monkeypatch.setenv("TEST_AGENT_ACT_MAX_CYCLES", "99")
+    monkeypatch.setenv("TEST_AGENT_MODEL_CONFIG_PATH", str(tmp_path / "missing-models.toml"))
+    settings = config.load_settings(config_path)
     assert settings.debug is True
-    assert settings.data_dir == PROJECT_ROOT / "config-test-data"
-    assert settings.planning_model_id == "planner"
-    assert settings.execution_model_id == "vision"
-    planner, vision = settings.llm_profiles
-    assert planner == LLMProfileSettings(
-        id="planner", mode="real", base_url="https://planner.invalid/v1",
-        api_key="planner-secret", model="planning-model",
-        context_window_tokens=16384, max_output_tokens=1024,
-    )
-    assert vision == LLMProfileSettings(
-        id="vision", mode="real", base_url="https://vision.invalid/v1",
-        api_key="vision-secret", model="vision-model",
-        context_window_tokens=32768, max_output_tokens=4096,
-        characters_per_token=2.0, tokens_per_image=1500,
-        context_safety_margin_tokens=2048, temperature=0.5, timeout_seconds=90,
-    )
+    assert settings.cors_origins == ["http://localhost:5173", "http://localhost:8000"]
+    assert settings.execution.max_cycles_by_task_type == {"act": 40, "judge": 15, "goal": 20}
+    assert settings.llm.profiles[0].model == "deterministic"
 
 
-def test_example_env_loads_relative_model_file_with_empty_routes(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+@pytest.mark.parametrize("path_variable", [None, "", "chosen/config.toml"])
+def test_file_selection_and_relative_paths_are_independent_of_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path_variable: str | None,
 ) -> None:
-    # Resolve model paths from the repository even when launched elsewhere.
+    project_root = tmp_path / "project"
+    config_root = project_root / "chosen" if path_variable else project_root
+    write_app_config(config_root, app_config_values(
+        Path("runtime"), mcp_config_path="services/mcp.json", skills_dir="resources",
+        checkpoint_path="checkpoints/graph.db",
+    ))
+    monkeypatch.setattr(config, "PROJECT_ROOT", project_root)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("TEST_AGENT_PLANNING_MODEL_ID", raising=False)
-    monkeypatch.delenv("TEST_AGENT_EXECUTION_MODEL_ID", raising=False)
-    settings = settings_factory(
-        _env_file=PROJECT_ROOT / ".env.example",
-        model_config_path=Path("models.example.toml"),
-    )
-    assert settings.model_config_path == PROJECT_ROOT / "models.example.toml"
-    assert settings.planning_model_id is None
-    assert settings.execution_model_id is None
-    assert settings.llm_profiles == [LLMProfileSettings(id="default")]
+    if path_variable is None:
+        monkeypatch.delenv("TEST_AGENT_CONFIG_PATH", raising=False)
+    else:
+        monkeypatch.setenv("TEST_AGENT_CONFIG_PATH", path_variable)
+    settings = config.load_settings()
+    assert settings.data_dir == project_root / "runtime"
+    assert settings.mcp_config_path == project_root / "services/mcp.json"
+    assert settings.skills_dir == project_root / "resources"
+    assert settings.checkpoints == project_root / "checkpoints/graph.db"
 
 
-@pytest.mark.parametrize("model_document, message", [
-    ('profiles = []', "at least 1"),
-    ('[[profiles]]\nid = "same"\n[[profiles]]\nid = "same"', "unique"),
-    ('[[profiles]]\nid = "bad"\ncontext_window_tokens = 2048', "smaller than"),
-    ('[[profiles]]\nid = "bad"\nunknown = 1', "Extra inputs"),
-    ('planning_model_id = "default"\n[[profiles]]\nid = "default"', "Extra inputs"),
-    ('', "Field required"),
-    ('[[profiles]', "Expected"),
-])
-def test_invalid_model_file_prevents_startup(
-    tmp_path: Path, model_document: str, message: str,
+def test_explicit_file_wins_over_environment_and_optional_paths_are_derived(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    model_config_path = tmp_path / "models.toml"
-    model_config_path.write_text(model_document, encoding="utf-8")
-    with pytest.raises(ValidationError, match=message):
-        settings_factory(_env_file=None, model_config_path=model_config_path)
+    monkeypatch.setenv("TEST_AGENT_CONFIG_PATH", str(tmp_path / "missing.toml"))
+    settings = config.load_settings(write_app_config(tmp_path))
+    assert settings.db_url == f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}"
+    assert settings.checkpoints == tmp_path / "checkpoints.db"
+    assert settings.artifacts_dir == tmp_path / "artifacts"
+    assert settings.llm.planning_model_id is None
+    assert settings.llm.execution_model_id is None
+    assert not (tmp_path / "artifacts").exists()
 
 
-def test_missing_model_file_prevents_startup(tmp_path: Path) -> None:
+def test_get_settings_caches_and_prepares_only_the_selected_data_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = write_app_config(tmp_path)
+    monkeypatch.setenv("TEST_AGENT_CONFIG_PATH", str(config_path))
+    config.get_settings.cache_clear()
+    try:
+        first = config.get_settings()
+        config_path.unlink()
+        assert config.get_settings() is first
+        assert (tmp_path / "artifacts").is_dir()
+    finally:
+        config.get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("explicit_selection", [False, True])
+def test_missing_actual_file_never_uses_sample_or_legacy_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_selection: bool,
+) -> None:
+    write_app_config(tmp_path).rename(tmp_path / "config.example.toml")
+    (tmp_path / ".env").write_text("TEST_AGENT_DEBUG=true\n", encoding="utf-8")
+    (tmp_path / "models.toml").write_text('[[profiles]]\nid = "old"\n', encoding="utf-8")
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("TEST_AGENT_CONFIG_PATH", raising=False)
+    if explicit_selection:
+        monkeypatch.setenv("TEST_AGENT_CONFIG_PATH", "missing.toml")
     with pytest.raises(FileNotFoundError):
-        settings_factory(_env_file=None, model_config_path=tmp_path / "missing.toml")
+        config.load_settings()
+
+
+@pytest.mark.parametrize("missing_field", ["debug", "execution", "llm"])
+def test_necessary_parameters_have_no_python_defaults(tmp_path: Path, missing_field: str) -> None:
+    configuration = app_config_values(tmp_path)
+    configuration.pop(missing_field)
+    with pytest.raises(ValidationError):
+        config.load_settings(write_app_config(tmp_path, configuration))
+
+
+@pytest.mark.parametrize("cycle_limits", [
+    {}, {"act": 30, "judge": 10}, {"act": 30, "judge": 10, "other": 10},
+    {"act": 0, "judge": 10, "goal": 10}, {"act": 30, "judge": 101, "goal": 10},
+])
+def test_cycle_limits_are_complete_and_bounded(tmp_path: Path, cycle_limits: dict[str, int]) -> None:
+    configuration = app_config_values(tmp_path, execution={"max_cycles_by_task_type": cycle_limits})
+    with pytest.raises(ValidationError, match="max_cycles_by_task_type"):
+        config.load_settings(write_app_config(tmp_path, configuration))
+
+
+@pytest.mark.parametrize("parameter, value", [
+    ("goal_max_failures", 0), ("image_history_rounds", 0),
+    ("tool_call_timeout_seconds", 0), ("model_call_max_attempts", 0),
+    ("model_response_max_attempts", 11),
+])
+def test_execution_parameters_reject_invalid_values(tmp_path: Path, parameter: str, value: int) -> None:
+    configuration = app_config_values(tmp_path, execution={parameter: value})
+    with pytest.raises(ValidationError, match=parameter):
+        config.load_settings(write_app_config(tmp_path, configuration))
 
 
 @pytest.mark.parametrize("route", ["planning_model_id", "execution_model_id"])
-def test_model_routes_reject_unknown_ids(route: str) -> None:
+def test_model_routes_use_ids_from_the_same_file(tmp_path: Path, route: str) -> None:
+    configuration = app_config_values(tmp_path, llm={route: "default"})
+    assert getattr(config.load_settings(write_app_config(tmp_path, configuration)).llm, route) == "default"
+    configuration["llm"][route] = "missing"
     with pytest.raises(ValidationError, match="unknown model"):
-        settings_factory(
-            _env_file=None, model_config_path=PROJECT_ROOT / "models.example.toml",
-            **{route: "missing"},
-        )
+        config.load_settings(write_app_config(tmp_path, configuration))
 
 
-def test_llm_profile_rejects_unknown_activity_markers_and_invalid_budget() -> None:
-    with pytest.raises(ValidationError, match="activities"):
-        LLMProfileSettings.model_validate(
-            {"id": "vision", "activities": ["act", "judge"]}
-        )
-    with pytest.raises(ValidationError, match="smaller than"):
-        LLMProfileSettings(
-            id="invalid",
-            context_window_tokens=2048,
-            max_output_tokens=1024,
-            context_safety_margin_tokens=1024,
-        )
+@pytest.mark.parametrize("invalid_profile", ["missing_parameter", "unknown_parameter", "capacity", "credentials", "duplicate", "empty"])
+def test_invalid_model_configuration_is_rejected_without_exposing_secrets(
+    tmp_path: Path, invalid_profile: str,
+) -> None:
+    configuration = app_config_values(tmp_path)
+    profile = configuration["llm"]["profiles"][0]
+    profile["api_key"] = "never-display-this-secret"
+    if invalid_profile == "missing_parameter":
+        profile.pop("temperature")
+    elif invalid_profile == "unknown_parameter":
+        profile["activities"] = ["act"]
+    elif invalid_profile == "capacity":
+        profile["context_window_tokens"] = 2048
+    elif invalid_profile == "credentials":
+        profile["mode"] = "real"
+    elif invalid_profile == "duplicate":
+        configuration["llm"]["profiles"].append(dict(profile))
+    else:
+        configuration["llm"]["profiles"] = []
+    with pytest.raises(ValidationError) as failure:
+        config.load_settings(write_app_config(tmp_path, configuration))
+    assert "never-display-this-secret" not in str(failure.value)
+
+
+def test_unknown_host_parameter_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        config.load_settings(write_app_config(tmp_path, app_config_values(tmp_path, typo=1)))
+
+
+def test_invalid_toml_stops_loading_without_echoing_its_contents(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('api_key = "never-display-this-secret" invalid\n', encoding="utf-8")
+    with pytest.raises(ValueError) as failure:
+        config.load_settings(config_path)
+    assert "never-display-this-secret" not in str(failure.value)
+
+
+def test_importing_application_factory_does_not_read_personal_configuration(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", "from app.main import create_app; print(callable(create_app))"],
+        cwd=config.PROJECT_ROOT / "backend", capture_output=True, text=True, encoding="utf-8",
+        env={**os.environ, "TEST_AGENT_CONFIG_PATH": str(tmp_path / "missing.toml"),
+             "TEST_AGENT_MODEL_CONFIG_PATH": str(tmp_path / "missing-models.toml")},
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "True"
+
+
+def test_openapi_export_uses_selected_actual_configuration_without_starting_services(tmp_path: Path) -> None:
+    configuration = app_config_values(
+        tmp_path, app_name="Export configuration", data_dir=(tmp_path / "unused-data").as_posix(),
+    )
+    configuration["llm"]["profiles"][0]["api_key"] = "never-export-this-secret"
+    config_path = write_app_config(tmp_path, configuration)
+    output_path = tmp_path / "openapi.json"
+    result = subprocess.run(
+        [sys.executable, "scripts/export_openapi.py", str(output_path)],
+        cwd=config.PROJECT_ROOT / "backend", capture_output=True, text=True, encoding="utf-8",
+        env={**os.environ, "TEST_AGENT_CONFIG_PATH": str(config_path)}, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    exported_text = output_path.read_text(encoding="utf-8")
+    assert json.loads(exported_text)["info"]["title"] == "Export configuration"
+    assert "never-export-this-secret" not in exported_text
+    assert not (tmp_path / "unused-data").exists()

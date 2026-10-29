@@ -13,12 +13,13 @@ frontend/*.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
 
-# Environment files
+# Local configuration
 .vscode/
 .env
 .env.*
 !.env.example
 models.toml
+/config.toml
 
 # Runtime data
 /data/

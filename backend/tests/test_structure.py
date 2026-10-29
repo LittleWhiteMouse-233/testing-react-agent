@@ -15,7 +15,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import ValidationError
 from sqlalchemy import inspect
 
-from app.config import PROJECT_ROOT, Settings
+from app.config import PROJECT_ROOT
 from app.domain.execution import (
     ArtifactType,
     MessageAppendedEvent,
@@ -64,6 +64,7 @@ from app.persistence.run_repository import (
     ActiveRunExists,
     SqlAlchemyRunRepository,
 )
+from config_support import app_config_values, build_settings, write_app_config
 
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
@@ -261,18 +262,19 @@ async def test_fresh_schema_has_only_canonical_tables_and_constraints(
     import sys
     from app.artifacts import ArtifactStore
 
-    with tempfile.TemporaryDirectory(
-        dir=PROJECT_ROOT / "data", ignore_cleanup_errors=True
-    ) as directory:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
         database = Path(directory) / "schema.db"
         engine = build_engine(f"sqlite+aiosqlite:///{database.as_posix()}")
         if schema_source == "orm":
             await init_database(engine)
         else:
+            config_path = write_app_config(Path(directory), app_config_values(
+                Path(directory), database_url=f"sqlite+aiosqlite:///{database.as_posix()}",
+            ))
             migrated = await asyncio.to_thread(subprocess.run,
                 [sys.executable, "-m", "alembic", "upgrade", "head"],
                 cwd=PROJECT_ROOT / "backend", capture_output=True, text=True, encoding="utf-8",
-                env={**os.environ, "TEST_AGENT_DATABASE_URL": f"sqlite+aiosqlite:///{database.as_posix()}"})
+                env={**os.environ, "TEST_AGENT_CONFIG_PATH": str(config_path)})
             assert migrated.returncode == 0, migrated.stdout + migrated.stderr
 
         sessions = build_session_factory(engine)
@@ -561,19 +563,14 @@ def test_graph_state_and_event_vocabulary_have_no_parallel_protocol() -> None:
     assert matches == []
 
 
-def test_checked_in_openapi_is_current() -> None:
+def test_checked_in_openapi_is_current(tmp_path: Path) -> None:
     repository_root = Path(__file__).resolve().parents[2]
     checked_in = json.loads(
         (repository_root / "frontend" / "src" / "api" / "openapi.json").read_text(
             "utf-8"
         )
     )
-    generated = create_app(Settings(
-        model_config_path=repository_root / "models.example.toml",
-        planning_model_id=None,
-        execution_model_id=None,
-        data_dir=repository_root / "data" / "openapi-test",
-    )).openapi()
+    generated = create_app(build_settings(tmp_path)).openapi()
     assert checked_in == generated
     schema_names = set(checked_in["components"]["schemas"])
     assert "ApiError" in schema_names

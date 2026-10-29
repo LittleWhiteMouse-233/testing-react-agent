@@ -46,8 +46,6 @@ class RealChatModelClient:
     """一个 OpenAI-compatible profile 的配置化 LangChain 客户端。"""
 
     def __init__(self, settings: LLMProfileSettings) -> None:
-        if not settings.base_url or not settings.api_key:
-            raise ValueError("base_url and api_key are required for real model profiles")
         self.model_id = settings.id
         self.timeout_seconds = settings.timeout_seconds
         self._settings = {

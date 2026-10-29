@@ -389,7 +389,7 @@ def test_run_freezes_metadata_and_preserves_skill_images_as_run_data(tmp_path: P
         AIMessage(content="Read referenced example", tool_calls=[{"id": "read", "name": "read_resource", "args": {"source_id": "local", "uri": "assets/example.png", "base_uri": child_uri}}]),
         tool_turn(3), finish_turn(4), tool_turn(5), finish_turn(6),
     ]
-    with build_client(tmp_path, skills_dir=root, image_history_rounds=1, calls=[replay_call(), replay_call()], turns=turns) as client:
+    with build_client(tmp_path, skills_dir=root, execution={"image_history_rounds": 1}, calls=[replay_call(), replay_call()], turns=turns) as client:
         run_id = start_run(client, create_plan(client, task_count=2))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "PASS"

@@ -102,45 +102,57 @@ TestPilot 面向内部 Android TV 测试人员。输入自然语言测试用例�
 首次配置时，在仓库根目录执行；已有本地文件时直接编辑，保留原配置：
 
 ```powershell
-Copy-Item .env.example .env
-Copy-Item models.example.toml models.toml
+Copy-Item config.example.toml config.toml
 ```
 
-- `models.toml`：模型连接、密钥、生成参数和信息容量。
-- `.env`：选择规划与执行模型，指定外部连接、数据和资料目录，设置执行预算。
+- `config.toml`：应用参数、模型列表与选择、模型密钥、执行预算，以及数据和资料位置；不进入 Git 跟踪。
+- `config.example.toml`：完整填写样板，仅供人参考和复制，不参与运行、测试或工具的配置加载。
 - `mcp_servers/mcp.json`：默认外部工具连接文件，格式见[外部工具连接](#外部工具连接)。
 
-应用配置中的目录和配置文件相对路径从仓库根目录解析。模型和应用级参数在后端启动时加载，修改后重启，对新规划和新运行生效。
+应用默认读取仓库根目录的 `config.toml`。如需选择另一份完整配置，在启动终端设置唯一的宿主配置环境变量：
+
+```powershell
+$env:TEST_AGENT_CONFIG_PATH = "D:/agent-config/config.toml"
+```
+
+该变量只选择文件，不覆盖单个参数。所选文件是唯一配置来源；应用不读取 `.env`，也不使用样板补齐参数。必要参数必须在实际文件中填写，缺失文件、缺失必要项或未知字段会阻止启动。
+
+配置文件路径及文件内部的相对路径都从仓库根目录解析。模型和应用级参数在后端启动时加载，修改后重启，对新规划和新运行生效。
 
 ### 模型服务
 
 真实使用需要兼容 OpenAI Chat Completions 的模型服务。规划模型需支持 JSON 模式；执行模型需支持工具调用，以及测试实际使用的文字和图片输入。Act、Judge 和 Goal 共用一个执行模型。
 
-模板中的默认 profile 是 `scripted` 测试模型，没有显式执行场景时会阻塞，不能用它验证真实电视。可将 `models.toml` 替换为以下单模型配置，并将占位值和容量改为服务实际支持的值：
+样板中的首个 profile 是 `scripted` 测试模型，没有显式执行场景时会阻塞，不能用它验证真实电视。在实际配置中保留应用及执行参数，将模型列表替换为以下完整 profile，并将占位值和容量改为服务实际支持的值：
 
 ```toml
-[[profiles]]
+[[llm.profiles]]
 id = "tv-model"
 mode = "real"
 base_url = "https://provider.example/v1"
 api_key = "replace-with-your-key"
 model = "replace-with-your-model"
+temperature = 0
+timeout_seconds = 60
 context_window_tokens = 32768
 max_output_tokens = 2048
+characters_per_token = 1.5
+tokens_per_image = 1024
+context_safety_margin_tokens = 1024
 ```
 
 `base_url` 填写服务的 OpenAI 兼容 API 基地址。上例仅说明文件格式，不表示任意服务都支持该容量。
 
-多模型时添加多个 `[[profiles]]`，每份配置使用唯一 `id`。在 `.env` 中通过 `TEST_AGENT_PLANNING_MODEL_ID` 和 `TEST_AGENT_EXECUTION_MODEL_ID` 选择对应 ID；任一路由未填写时使用第一份 profile。
+多模型时添加多个 `[[llm.profiles]]`，每份配置使用唯一 `id`。在 `[llm]` 中通过 `planning_model_id` 和 `execution_model_id` 选择对应 ID；任一路由省略时使用第一份 profile。省略可选项时不要填写空字符串。
 
 每份 profile 支持的参数如下：
 
-| 参数 | 默认值或填写要求 |
+| 参数 | 样板初始值或填写要求 |
 |---|---|
 | `id` | 必填，唯一、非空 |
-| `mode` | 默认 `scripted`；真实服务填写 `real` |
+| `mode` | 必填，样板为 `scripted`；真实服务填写 `real` |
 | `base_url`、`api_key` | `real` 模式必填 |
-| `model` | 填写真实模型名称；测试模式默认 `deterministic` |
+| `model` | 必填，填写真实模型名称；样板测试模型为 `deterministic` |
 | `temperature` | `0` |
 | `timeout_seconds` | `60` 秒，必须大于零 |
 | `context_window_tokens` | `32768`，至少 `2048` |
@@ -149,7 +161,7 @@ max_output_tokens = 2048
 | `tokens_per_image` | `1024`，单图容量估算，必须大于零 |
 | `context_safety_margin_tokens` | `1024`，安全余量，可为零 |
 
-输出预留与安全余量之和必须小于上下文总容量。必需的任务、观察或技能资料装不下时，运行会因容量不足阻塞。文件缺失、格式错误、空 profile 列表、重复 ID、未知字段或无效选择会阻止启动。
+除模拟模型可以省略服务地址与密钥外，表中模型参数都需显式填写，Python 不提供固定参数默认值。输出预留与安全余量之和必须小于上下文总容量。必需的任务、观察或技能资料装不下时，运行会因容量不足阻塞。格式错误、空 profile 列表、重复 ID、未知字段或无效选择会阻止启动。
 
 模型适配性可用[独立模型检测](user_scripts/README.md#检查模型服务)排查；该检测支持的协议范围与应用实际使用的协议分别定义。
 
@@ -161,7 +173,7 @@ max_output_tokens = 2048
 
 ### 外部工具连接
 
-应用通过标准输入输出（stdio）启动独立 MCP 进程。`TEST_AGENT_MCP_CONFIG_PATH` 指定连接文件，默认配置见 [mcp_servers/mcp.json](mcp_servers/mcp.json)。
+应用通过标准输入输出（stdio）启动独立 MCP 进程。应用配置根字段 `mcp_config_path` 指定连接文件，样板使用 [mcp_servers/mcp.json](mcp_servers/mcp.json)。
 
 连接文件的顶层字段为 `mcpServers`，其下每个非空服务名对应一份配置：
 
@@ -181,24 +193,24 @@ max_output_tokens = 2048
 
 ### 执行参数与目录
 
-以下参数在 `.env` 中设置，完整示例见 [.env.example](.env.example)。
+以下参数在实际 TOML 中显式填写，完整样板见 [config.example.toml](config.example.toml)。表中的数值是建议初始值，不是缺项时自动补入的值。
 
-| 参数 | 默认值与作用 |
+| TOML 参数 | 样板初始值与作用 |
 |---|---|
-| `TEST_AGENT_MODEL_CONFIG_PATH` | `./models.toml`，模型配置文件 |
-| `TEST_AGENT_MCP_CONFIG_PATH` | `./mcp_servers/mcp.json`，外部连接文件 |
-| `TEST_AGENT_SKILLS_DIR` | `./skills`，本地技能资料和静态资源根目录 |
-| `TEST_AGENT_DATA_DIR` | `./data`，默认运行数据根目录 |
-| `TEST_AGENT_ACT_MAX_CYCLES` | `30`，每次 Act 的决策轮次上限 |
-| `TEST_AGENT_JUDGE_MAX_CYCLES` | `10`，每次 Judge 的决策轮次上限 |
-| `TEST_AGENT_GOAL_MAX_CYCLES` | `10`，每次 Goal 的决策轮次上限 |
-| `TEST_AGENT_GOAL_MAX_FAILURES` | `10`，同一运行中每个 Goal 独立累计的失败次数上限 |
-| `TEST_AGENT_TOOL_CALL_TIMEOUT_SECONDS` | `120` 秒，完整运行准备过程及每次工具交互各自的超时，不包含图片保存 |
-| `TEST_AGENT_IMAGE_HISTORY_ROUNDS` | `3`，执行上下文保留原图的最近有图片决策轮数，同轮多图全部保留 |
-| `TEST_AGENT_EXECUTION_MODEL_CALL_MAX_ATTEMPTS` | `3`，每轮模型传输的最多尝试次数，包含首次 |
-| `TEST_AGENT_EXECUTION_MODEL_RESPONSE_MAX_ATTEMPTS` | `3`，连续无效响应、工具参数或业务错误及工具超时共用的尝试额度，成功调用后清零 |
-| `TEST_AGENT_CORS_ORIGINS` | `http://localhost:5173`，允许的浏览器来源，多个值以逗号分隔 |
-| `TEST_AGENT_DEBUG` | `false`，应用调试设置 |
+| `app_name`、`app_version` | `Android TV Test Agent`、`0.1.0`，应用名称和记录的版本 |
+| `mcp_config_path` | `./mcp_servers/mcp.json`，外部连接文件 |
+| `skills_dir` | `./skills`，本地技能资料和静态资源根目录 |
+| `data_dir` | `./data`，运行数据根目录 |
+| `execution.max_cycles_by_task_type.act` | `30`，每次 Act 的决策轮次上限 |
+| `execution.max_cycles_by_task_type.judge` | `10`，每次 Judge 的决策轮次上限 |
+| `execution.max_cycles_by_task_type.goal` | `10`，每次 Goal 的决策轮次上限 |
+| `execution.goal_max_failures` | `10`，同一运行中每个 Goal 独立累计的失败次数上限 |
+| `execution.tool_call_timeout_seconds` | `120` 秒，完整运行准备过程及每次工具交互各自的超时，不包含图片保存 |
+| `execution.image_history_rounds` | `3`，执行上下文保留原图的最近有图片决策轮数，同轮多图全部保留 |
+| `execution.model_call_max_attempts` | `3`，每轮模型传输的最多尝试次数，包含首次 |
+| `execution.model_response_max_attempts` | `3`，连续无效响应、工具参数或业务错误及工具超时共用的尝试额度，成功调用后清零 |
+| `cors_origins` | `["http://localhost:5173"]`，允许的浏览器来源数组 |
+| `debug` | `false`，应用调试设置 |
 
 各类任务的轮次上限范围为 1～100，两类模型尝试次数范围为 1～10，Goal 累计失败上限和图片保留轮数必须为正整数，工具超时必须大于零。
 
@@ -227,7 +239,7 @@ max_output_tokens = 2048
 | `data/checkpoints.db` | 执行图保存记录 |
 | `data/artifacts/` | 原始图片和生成的导出文件 |
 
-部署时也可通过 `TEST_AGENT_DATABASE_URL` 与 `TEST_AGENT_CHECKPOINT_PATH` 分别指定数据库连接和执行图保存位置。应用不会主动删除历史数据；备份应在停止应用后同时保留数据库、执行图保存文件和附件。
+可在应用配置根字段中填写可选的 `database_url` 与 `checkpoint_path`，分别指定数据库连接和执行图保存位置；省略时从 `data_dir` 推导。应用不会主动删除历史数据；备份应在停止应用后同时保留数据库、执行图保存文件和附件。
 
 密钥、设备配置、运行数据和诊断记录保留在本地，不提交到源代码仓库。运行内容会按任务需要发送给配置的模型服务。当前开发阶段的数据格式可能随版本变化，升级时不提供旧运行数据和快照的兼容保证。
 

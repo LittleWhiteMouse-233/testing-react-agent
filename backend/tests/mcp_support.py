@@ -12,11 +12,11 @@ from typing import Any, cast
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
-from app.config import Settings
 from app.container import Container
 from app.llm import ScriptedChatModelClient
 from app.main import create_app
 from app.resources.mcp import MCPClientProvider
+from config_support import build_settings
 
 
 PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -86,14 +86,7 @@ def finish_turn(index: int, status: str = "passed") -> AIMessage:
 def build_client(root: Path, *, calls: list[dict[str, Any]] | None = None,
                  turns: list[Any] | None = None, **overrides: Any) -> TestClient:
     config = write_mcp_config(root, calls if calls is not None else [replay_call(), replay_call()])
-    model_config_path = root / "models.toml"
-    model_config_path.write_text('[[profiles]]\nid = "default"\n', encoding="utf-8")
-    # BaseSettings supports _env_file publicly; Pydantic's generated signature omits it.
-    overrides.setdefault("skills_dir", root / "skills")
-    settings = Settings(_env_file=None, model_config_path=model_config_path,  # type: ignore[call-arg]
-                        planning_model_id="default", execution_model_id="default",
-                        data_dir=root, database_url=f"sqlite+aiosqlite:///{(root / 'app.db').as_posix()}",
-                        checkpoint_path=root / "checkpoints.db", mcp_config_path=config, **overrides)
+    settings = build_settings(root, mcp_config_path=config, **overrides)
     app = create_app(settings)
     # Install the explicitly scripted model after lifespan has assembled the container.
     original_lifespan = app.router.lifespan_context
@@ -104,6 +97,7 @@ def build_client(root: Path, *, calls: list[dict[str, Any]] | None = None,
         async with original_lifespan(instance):
             container = cast(Container, instance.state.container)
             container.model_provider.replace_client_for_testing("default", ScriptedChatModelClient(
+                settings.llm.profiles[0],
                 turns=turns if turns is not None else [tool_turn(1), finish_turn(2), tool_turn(3), finish_turn(4)],
             ))
             yield

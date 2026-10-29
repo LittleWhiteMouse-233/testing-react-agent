@@ -17,6 +17,7 @@ from app.domain.errors import PlanningFailure, TestPlanNotLatest as PlanNotLates
 from app.llm import ScriptedChatModelClient
 from app.persistence.models import RunEventRow
 from mcp_support import build_client
+from config_support import build_model_profile
 
 
 def test_planning_stream_ready_precedes_work_and_has_no_history(tmp_path: Path) -> None:
@@ -66,7 +67,7 @@ def test_planning_stream_ready_precedes_work_and_has_no_history(tmp_path: Path) 
 def test_planning_attempt_events_and_failed_plan_is_not_saved(tmp_path: Path, invalid_attempts: int) -> None:
     with build_client(tmp_path) as client:
         container = cast(Container, cast(FastAPI, client.app).state.container)
-        container.model_provider.replace_client_for_testing("default", ScriptedChatModelClient(
+        container.model_provider.replace_client_for_testing("default", ScriptedChatModelClient(build_model_profile(),
             plans=[{"title": "缺少任务"} for _ in range(invalid_attempts)],
         ))
         case_id = client.post("/api/test-cases", json={"name": "重试", "source_text": "检查设置"}).json()["id"]

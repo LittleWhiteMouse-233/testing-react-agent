@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from app.config import LLMProfileSettings
 from app.container import Container
 from app.domain.activity import AgentActivity
 from app.domain.errors import PlanningFailure
@@ -26,6 +25,7 @@ from app.llm import ChatModelClient, RealChatModelClient, ScriptedChatModelClien
 from app.planning.graph import PlanDraft, PlanningGraph
 from app.resources.prompts import PromptCatalog
 from mcp_support import build_client
+from config_support import build_model_profile
 
 
 def install_model(client: TestClient, model: ScriptedChatModelClient) -> Container:
@@ -37,7 +37,7 @@ def install_model(client: TestClient, model: ScriptedChatModelClient) -> Contain
 @pytest.mark.parametrize("payload", [None, {}, {"user_input": None}, {"user_input": ""}, {"user_input": " \n "}, {"user_input": "补充检查要求"}])
 def test_initial_planning_accepts_optional_input(tmp_path: Path, payload: dict | None) -> None:
     with build_client(tmp_path) as client:
-        model = ScriptedChatModelClient()
+        model = ScriptedChatModelClient(build_model_profile())
         install_model(client, model)
         case_content = {"name": "原始用例", "source_text": "检查设置页面"}
         case = client.post("/api/test-cases", json=case_content).json()
@@ -58,7 +58,7 @@ def test_initial_planning_accepts_optional_input(tmp_path: Path, payload: dict |
 @pytest.mark.parametrize("payload", [None, {}, {"user_input": None}, {"user_input": ""}, {"user_input": " \n "}])
 def test_replanning_rejects_missing_input_before_model_call(tmp_path: Path, payload: dict | None) -> None:
     with build_client(tmp_path) as client:
-        model = ScriptedChatModelClient()
+        model = ScriptedChatModelClient(build_model_profile())
         install_model(client, model)
         case = client.post("/api/test-cases", json={"name": "用例", "source_text": "检查画面"}).json()
         url = f"/api/test-cases/{case['id']}/plans"
@@ -72,7 +72,7 @@ def test_replanning_rejects_missing_input_before_model_call(tmp_path: Path, payl
 
 def test_replanning_uses_latest_revision_and_only_current_input(tmp_path: Path) -> None:
     with build_client(tmp_path) as client:
-        model = ScriptedChatModelClient()
+        model = ScriptedChatModelClient(build_model_profile())
         install_model(client, model)
         case_content = {"name": "原始用例", "source_text": "检查画面"}
         case = client.post("/api/test-cases", json=case_content).json()
@@ -125,7 +125,7 @@ def test_replanning_uses_latest_revision_and_only_current_input(tmp_path: Path) 
 @pytest.mark.parametrize("existing_plan", [False, True])
 def test_generation_rejects_concurrent_plan_writes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_plan: bool) -> None:
     with build_client(tmp_path) as client:
-        model = ScriptedChatModelClient()
+        model = ScriptedChatModelClient(build_model_profile())
         container = install_model(client, model)
         case = client.post("/api/test-cases", json={"name": "并发用例", "source_text": "检查画面"}).json()
         url = f"/api/test-cases/{case['id']}/plans"
@@ -167,12 +167,12 @@ def test_generation_rejects_concurrent_plan_writes(tmp_path: Path, monkeypatch: 
 
 def test_planning_retry_keeps_current_context_and_failure_creates_no_version(tmp_path: Path) -> None:
     with build_client(tmp_path) as client:
-        model = ScriptedChatModelClient()
+        model = ScriptedChatModelClient(build_model_profile())
         install_model(client, model)
         case = client.post("/api/test-cases", json={"name": "用例", "source_text": "检查画面"}).json()
         url = f"/api/test-cases/{case['id']}/plans"
         first = client.post(url, json={"planning_request_id": str(uuid4())}).json()
-        invalid_model = ScriptedChatModelClient(plans=[{"title": "缺少任务"}, {"title": "缺少任务"}, {"title": "缺少任务"}])
+        invalid_model = ScriptedChatModelClient(build_model_profile(), plans=[{"title": "缺少任务"}, {"title": "缺少任务"}, {"title": "缺少任务"}])
         install_model(client, invalid_model)
         failed = client.post(url, json={"planning_request_id": str(uuid4()), "user_input": "细化任务"})
         assert failed.status_code == 502
@@ -189,7 +189,7 @@ async def test_real_planning_json_mode_validates_responses(
 ) -> None:
     case = CaseContent(name="设置", source_text="进入设置并检查标题")
     expected_plan = await PlanningGraph(PromptCatalog().prompt_for_activity(AgentActivity.PLANNING)).generate(
-        case, model_client=ScriptedChatModelClient(),
+        case, model_client=ScriptedChatModelClient(build_model_profile()),
     )
     requests: list[httpx.Request] = []
 
@@ -221,7 +221,7 @@ async def test_real_planning_json_mode_validates_responses(
             "app.llm.client.ChatOpenAI",
             partial(ChatOpenAI, http_async_client=http_client),
         )
-        model = RealChatModelClient(LLMProfileSettings(
+        model = RealChatModelClient(build_model_profile(
             id="planner", mode="real", model="deepseek-chat",
             base_url="https://model.invalid/v1", api_key="test-key",
         ))
@@ -250,7 +250,7 @@ async def test_planning_progress_distinguishes_model_boundary_failures(monkeypat
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
         monkeypatch.setattr("app.llm.client.ChatOpenAI", partial(ChatOpenAI, http_async_client=http_client, max_retries=0))
-        model = RealChatModelClient(LLMProfileSettings(
+        model = RealChatModelClient(build_model_profile(
             id="planner", mode="real", model="test", base_url="https://model.invalid/v1",
             api_key="test-key", timeout_seconds=0.1,
         ))

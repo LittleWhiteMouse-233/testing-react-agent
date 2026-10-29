@@ -1,0 +1,66 @@
+# Human reference only: copy to config.toml, then edit your actual configuration.
+# The application never loads this sample automatically or uses it to fill fields.
+# config.toml contains credentials and is ignored by Git.
+# TEST_AGENT_CONFIG_PATH optionally selects another complete configuration file.
+# All relative paths, including that selector, are resolved from the project root.
+
+app_name = "Android TV Test Agent"
+app_version = "0.1.0"
+debug = false
+cors_origins = ["http://localhost:5173"]
+data_dir = "./data"
+mcp_config_path = "./mcp_servers/mcp.json"
+skills_dir = "./skills"
+
+# Optional storage overrides; otherwise derive both locations from data_dir.
+# database_url = "sqlite+aiosqlite:///D:/agent-data/app.db"
+# checkpoint_path = "D:/agent-data/checkpoints.db"
+
+[execution]
+tool_call_timeout_seconds = 120
+goal_max_failures = 10
+image_history_rounds = 3
+model_call_max_attempts = 3
+model_response_max_attempts = 3
+
+[execution.max_cycles_by_task_type]
+act = 30
+judge = 10
+goal = 10
+
+[llm]
+# Optional: select profile IDs below. An omitted route uses the first profile.
+# Act, Judge and Goal all use execution_model_id.
+# planning_model_id = "tv-model"
+# execution_model_id = "tv-model"
+
+# The complete scripted profile is for local tests, not real television testing.
+# Without an explicitly supplied execution scenario it reports blocking.
+[[llm.profiles]]
+id = "default"
+mode = "scripted"
+model = "deterministic"
+temperature = 0
+timeout_seconds = 60
+context_window_tokens = 32768
+max_output_tokens = 2048
+characters_per_token = 1.5
+tokens_per_image = 1024
+context_safety_margin_tokens = 1024
+
+# For real use, replace the scripted profile above with this complete profile.
+# Multiple profiles are allowed; IDs must be unique. Select routes under [llm].
+# Replace connection values and capacity estimates with your service's values.
+# [[llm.profiles]]
+# id = "tv-model"
+# mode = "real"
+# base_url = "https://provider.example/v1"
+# api_key = "replace-with-your-key"
+# model = "replace-with-your-model"
+# temperature = 0
+# timeout_seconds = 60
+# context_window_tokens = 32768
+# max_output_tokens = 2048
+# characters_per_token = 1.5
+# tokens_per_image = 1024
+# context_safety_margin_tokens = 1024

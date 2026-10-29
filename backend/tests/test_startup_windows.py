@@ -21,6 +21,8 @@ from collections.abc import Iterator
 import httpx
 import pytest
 
+from config_support import write_app_config
+
 
 ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows console shutdown")
@@ -89,14 +91,19 @@ def wait_for_text(path: Path, text: str, process: subprocess.Popen[bytes], timeo
 
 
 def test_cmd_entry_ctrl_c_explains_confirmation_and_releases_ports(tmp_path: Path) -> None:
-    env = {**os.environ, "TEST_AGENT_DATA_DIR": str(tmp_path),
-           "TEST_AGENT_DATABASE_URL": f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}",
-           "TEST_AGENT_CHECKPOINT_PATH": str(tmp_path / "checkpoints.db")}
+    env = {**os.environ, "TEST_AGENT_CONFIG_PATH": str(write_app_config(tmp_path))}
     log = tmp_path / "entry.log"
     command = [os.environ["COMSPEC"], "/d", "/c", str(ROOT / "start.cmd")]
     with console_process(command, log, env=env, interactive=True) as process:
         wait_for_text(log, "Application startup complete", process, timeout=40)
         wait_for_text(log, "Local:", process)
+        with httpx.Client(base_url="http://127.0.0.1:8000", trust_env=False) as client:
+            response = client.post("/api/test-cases", json={"name": "Startup configuration", "source_text": "Check isolation"})
+            assert response.status_code == 201, response.text
+            test_case_id = response.json()["id"]
+        with sqlite3.connect(tmp_path / "app.db") as connection:
+            assert connection.execute("select version_num from alembic_version").fetchone() is not None
+            assert connection.execute("select id from test_cases where id = ?", (test_case_id,)).fetchone() == (test_case_id,)
         console_signal(process, event=0)
         wait_for_text(log, "正在停止服务", process, timeout=3)
         wait_for_text(log, "Services stopped", process)
@@ -193,9 +200,7 @@ def test_failed_migration_never_starts_services(tmp_path: Path, monkeypatch: pyt
 
 @pytest.mark.parametrize("service", ["backend", "frontend"])
 def test_service_port_conflict_stops_peer(tmp_path: Path, service: str) -> None:
-    env = {**os.environ, "TEST_AGENT_DATA_DIR": str(tmp_path),
-           "TEST_AGENT_DATABASE_URL": f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}",
-           "TEST_AGENT_CHECKPOINT_PATH": str(tmp_path / "checkpoints.db")}
+    env = {**os.environ, "TEST_AGENT_CONFIG_PATH": str(write_app_config(tmp_path))}
     log = tmp_path / "conflict.log"
     with ExitStack() as sockets:
         addresses = [(socket.AF_INET, "127.0.0.1", 8000)] if service == "backend" else [

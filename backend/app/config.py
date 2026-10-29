@@ -1,37 +1,41 @@
 from __future__ import annotations
 
-from functools import cached_property, lru_cache
+from functools import lru_cache
+import os
 from pathlib import Path
 import tomllib
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.domain.planning import TestTaskType
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class LLMProfileSettings(BaseModel):
-    """一个可选模型客户端的部署配置；activity 路由由 Settings 单独声明。"""
+    """单个模型客户端的完整部署配置；可调参数由实际配置显式提供。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     id: str = Field(min_length=1, max_length=100)
-    mode: Literal["scripted", "real"] = "scripted"
+    mode: Literal["scripted", "real"]
     base_url: str | None = None
     api_key: str | None = None
-    model: str = "deterministic"
-    temperature: float = 0
-    timeout_seconds: float = Field(default=60, gt=0)
-    context_window_tokens: int = Field(default=32_768, ge=2_048)
-    max_output_tokens: int = Field(default=2_048, ge=1)
-    characters_per_token: float = Field(default=1.5, gt=0)
-    tokens_per_image: int = Field(default=1_024, ge=1)
-    context_safety_margin_tokens: int = Field(default=1_024, ge=0)
+    model: str
+    temperature: float
+    timeout_seconds: float = Field(gt=0)
+    context_window_tokens: int = Field(ge=2_048)
+    max_output_tokens: int = Field(ge=1)
+    characters_per_token: float = Field(gt=0)
+    tokens_per_image: int = Field(ge=1)
+    context_safety_margin_tokens: int = Field(ge=0)
 
     @model_validator(mode="after")
-    def context_reservations_fit(self) -> "LLMProfileSettings":
+    def model_parameters_are_valid(self) -> "LLMProfileSettings":
+        if self.mode == "real" and (not self.base_url or not self.api_key):
+            raise ValueError("base_url and api_key are required for real model profiles")
         reserved = self.max_output_tokens + self.context_safety_margin_tokens
         if reserved >= self.context_window_tokens:
             raise ValueError(
@@ -41,71 +45,67 @@ class LLMProfileSettings(BaseModel):
         return self
 
 
-class LLMProfilesSettings(BaseModel):
-    """TOML document boundary: an ordered, nonempty list with unique profile IDs."""
+class LLMSettings(BaseModel):
+    """有序模型配置及规划、执行路由，共享同一启动配置生命周期。"""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     profiles: list[LLMProfileSettings] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def profile_ids_are_unique(self) -> "LLMProfilesSettings":
-        profile_ids = [profile.id for profile in self.profiles]
-        if len(profile_ids) != len(set(profile_ids)):
-            raise ValueError("Model profile ids must be unique")
-        return self
-
-
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=PROJECT_ROOT / ".env",
-        env_file_encoding="utf-8",
-        env_prefix="TEST_AGENT_",
-        env_ignore_empty=True,
-        extra="ignore",
-        populate_by_name=True,
-    )
-
-    app_name: str = "Android TV Test Agent"
-    app_version: str = "0.1.0"
-    debug: bool = False
-    cors_origins: str = "http://localhost:5173"
-
-    data_dir: Path = PROJECT_ROOT / "data"
-    database_url: str | None = None
-    checkpoint_path: Path | None = None
-
-    model_config_path: Path = PROJECT_ROOT / "models.toml"
     planning_model_id: str | None = None
     execution_model_id: str | None = None
 
-    mcp_config_path: Path = PROJECT_ROOT / "mcp_servers" / "mcp.json"
-    skills_dir: Path = PROJECT_ROOT / "skills"
-    tool_call_timeout_seconds: float = Field(default=120, gt=0)
-    act_max_cycles: int = Field(default=30, ge=1, le=100)
-    judge_max_cycles: int = Field(default=10, ge=1, le=100)
-    goal_max_cycles: int = Field(default=10, ge=1, le=100)
-    goal_max_failures: int = Field(default=10, ge=1)
-    image_history_rounds: int = Field(default=3, ge=1)
-    execution_model_call_max_attempts: int = Field(default=3, ge=1, le=10)
-    execution_model_response_max_attempts: int = Field(default=3, ge=1, le=10)
-
     @model_validator(mode="after")
-    def model_routes_are_valid(self) -> "Settings":
-        ids = [profile.id for profile in self.llm_profiles]
-        known = set(ids)
-        for field_name in (
-            "planning_model_id",
-            "execution_model_id",
+    def model_routes_are_valid(self) -> "LLMSettings":
+        profile_ids = [profile.id for profile in self.profiles]
+        if len(profile_ids) != len(set(profile_ids)):
+            raise ValueError("Model profile ids must be unique")
+        for route_name, model_id in (
+            ("planning_model_id", self.planning_model_id),
+            ("execution_model_id", self.execution_model_id),
         ):
-            value = getattr(self, field_name)
-            if value is not None and value not in known:
-                raise ValueError(f"{field_name} references unknown model: {value}")
+            if model_id is not None and model_id not in profile_ids:
+                raise ValueError(f"{route_name} references unknown model: {model_id}")
         return self
 
+
+class ExecutionSettings(BaseModel):
+    """应用启动时加载的执行参数；各类型轮次上限随后固定到运行快照。"""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    tool_call_timeout_seconds: float = Field(gt=0)
+    goal_max_failures: int = Field(ge=1)
+    image_history_rounds: int = Field(ge=1)
+    model_call_max_attempts: int = Field(ge=1, le=10)
+    model_response_max_attempts: int = Field(ge=1, le=10)
+    max_cycles_by_task_type: dict[TestTaskType, Annotated[int, Field(ge=1, le=100)]]
+
+    @field_validator("max_cycles_by_task_type")
+    @classmethod
+    def task_types_are_complete(cls, cycle_limits: dict[TestTaskType, int]) -> dict[TestTaskType, int]:
+        if set(cycle_limits) != set(TestTaskType):
+            raise ValueError("max_cycles_by_task_type must contain exactly the registered task types")
+        return cycle_limits
+
+
+class Settings(BaseModel):
+    """单份 TOML 的应用配置边界；构造及校验不加载其他文件或环境值。"""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    app_name: str
+    app_version: str
+    debug: bool
+    cors_origins: list[str]
+    data_dir: Path
+    database_url: str | None = None
+    checkpoint_path: Path | None = None
+    mcp_config_path: Path
+    skills_dir: Path
+    execution: ExecutionSettings
+    llm: LLMSettings
+
     def model_post_init(self, __context: object) -> None:
-        if not self.model_config_path.is_absolute():
-            self.model_config_path = (PROJECT_ROOT / self.model_config_path).resolve()
         if not self.mcp_config_path.is_absolute():
             self.mcp_config_path = (PROJECT_ROOT / self.mcp_config_path).resolve()
         if not self.skills_dir.is_absolute():
@@ -114,13 +114,6 @@ class Settings(BaseSettings):
             self.data_dir = (PROJECT_ROOT / self.data_dir).resolve()
         if self.checkpoint_path is not None and not self.checkpoint_path.is_absolute():
             self.checkpoint_path = (PROJECT_ROOT / self.checkpoint_path).resolve()
-
-    @cached_property
-    def llm_profiles(self) -> list[LLMProfileSettings]:
-        # The file owns model parameters; environment settings only select routes.
-        # Parse once per Settings instance so all consumers see the startup config.
-        with self.model_config_path.open("rb") as model_config_file:
-            return LLMProfilesSettings.model_validate(tomllib.load(model_config_file)).profiles
 
     @property
     def db_url(self) -> str:
@@ -134,18 +127,25 @@ class Settings(BaseSettings):
     def artifacts_dir(self) -> Path:
         return self.data_dir / "artifacts"
 
-    @property
-    def allowed_origins(self) -> list[str]:
-        return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
-
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoints.parent.mkdir(parents=True, exist_ok=True)
 
 
+def load_settings(config_path: Path | None = None) -> Settings:
+    """读取唯一选定文件；路径环境变量只选择文件，不覆盖配置字段。"""
+    selected_path = config_path if config_path is not None else Path(
+        os.environ.get("TEST_AGENT_CONFIG_PATH") or "config.toml"
+    )
+    if not selected_path.is_absolute():
+        selected_path = PROJECT_ROOT / selected_path
+    with selected_path.open("rb") as config_file:
+        return Settings.model_validate(tomllib.load(config_file))
+
+
 @lru_cache
 def get_settings() -> Settings:
-    settings = Settings()
+    settings = load_settings()
     settings.ensure_directories()
     return settings

@@ -19,6 +19,7 @@ from app.domain.planning import TestCaseContent as CaseContent
 from app.llm import ScriptedChatModelClient
 from app.persistence.db import Base
 from mcp_support import build_client, create_plan, finish_turn, read_records, start_run, tool_turn, wait_for_run
+from config_support import build_model_profile
 
 
 def test_update_and_archive_preserve_all_plan_versions_runs_and_images(tmp_path: Path) -> None:
@@ -131,7 +132,7 @@ def test_planning_blocks_changes_until_request_finishes(tmp_path: Path, monkeypa
         case = client.post("/api/test-cases", json={"name": "名称", "source_text": "正文"}).json()
         other = client.post("/api/test-cases", json={"name": "其他用例", "source_text": "正文"}).json()
         if outcome == "failure":
-            container.model_provider.replace_client_for_testing("default", ScriptedChatModelClient(plans=[{"title": "缺少任务"}, {"title": "缺少任务"}, {"title": "缺少任务"}]))
+            container.model_provider.replace_client_for_testing("default", ScriptedChatModelClient(build_model_profile(), plans=[{"title": "缺少任务"}, {"title": "缺少任务"}, {"title": "缺少任务"}]))
         original_generate = container.planning_graph.generate
         entered, release = asyncio.Event(), asyncio.Event()
 
