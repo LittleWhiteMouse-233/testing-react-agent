@@ -635,7 +635,10 @@ it("archives from a separate inbox button, retains history wording and clears pl
   expect(queryClient.getQueriesData({ queryKey: ["get", "/api/test-cases/{test_case_id}/plans"] }).every(([, value]) => value === undefined)).toBe(true);
 });
 
-it("disables archive as soon as start is submitted and releases it on startup failure", async () => {
+it.each([
+  { status: 502, code: "mcp_unavailable", message: "MCP 连接失败" },
+  { status: 409, code: "active_run_exists", message: "Run preparation is already in progress" }
+])("disables archive during start and releases it after HTTP $status", async ({ status, code, message: errorMessage }) => {
   plans = [savedPlan()];
   let completeStart!: (response: Response) => void;
   startResponse = () => new Promise((resolve) => { completeStart = resolve; });
@@ -645,9 +648,12 @@ it("disables archive as soon as start is submitted and releases it on startup fa
   const archive = screen.getByRole("button", { name: "归档用例：" + testCase.content.name });
   await waitFor(() => expect(archive).toBeDisabled());
   await waitFor(() => expect(completeStart).toBeDefined());
-  completeStart(Response.json({ code: "mcp_unavailable", message: "MCP 连接失败" }, { status: 502 }));
-  await screen.findByText("MCP 连接失败");
+  completeStart(Response.json({ code, message: errorMessage }, { status }));
+  await screen.findByText(errorMessage);
   await waitFor(() => expect(archive).toBeEnabled());
+  expect(startButton()).toBeEnabled();
+  expect(screen.queryByText("运行已创建")).not.toBeInTheDocument();
+  expect(requests.filter((request) => request.method === "POST" && new URL(request.url).pathname === "/api/runs")).toHaveLength(1);
 });
 
 it("keeps the case and dialog when archive is rejected", async () => {

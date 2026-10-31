@@ -3,18 +3,210 @@ from __future__ import annotations
 from app.api import repository as api_repository
 
 import asyncio
+from contextlib import nullcontext
 from pathlib import Path
 from typing import cast
+from uuid import uuid4
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from langchain_core.tools import StructuredTool
 
 from app.container import Container
 from app.execution.run_service import RunConflict
 from app.domain.errors import describe_exception
+from app.domain.execution import TestRunVerdict as RunVerdict
 from app.domain.resources import ResourceCatalogSnapshot
 from app.resources.mcp import MCPConnectionError
 from mcp_support import build_client, create_plan, finish_turn, tool_turn
+
+
+@pytest.mark.parametrize("blocked_stage", ["plan", "tools"])
+def test_competing_starts_are_rejected_during_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocked_stage: str,
+) -> None:
+    with build_client(tmp_path, turns=[finish_turn(1)]) as client:
+        plan = create_plan(client)
+        other_plan = create_plan(client)
+        app = cast(FastAPI, client.app)
+        container = cast(Container, app.state.container)
+        original_get_plan = container.repository.get_test_plan
+        original_discover = container.tools.discover_tools
+
+        async def exercise() -> None:
+            entered, release = asyncio.Event(), asyncio.Event()
+            queried_plan_ids: list[str] = []
+            preparation_calls = 0
+
+            async def get_test_plan(test_plan_id: str):
+                queried_plan_ids.append(test_plan_id)
+                if blocked_stage == "plan":
+                    entered.set()
+                    await release.wait()
+                return await original_get_plan(test_plan_id)
+
+            async def discover_tools():
+                nonlocal preparation_calls
+                preparation_calls += 1
+                if blocked_stage == "tools":
+                    entered.set()
+                    await release.wait()
+                return await original_discover()
+
+            monkeypatch.setattr(container.repository, "get_test_plan", get_test_plan)
+            monkeypatch.setattr(container.tools, "discover_tools", discover_tools)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
+                startup = asyncio.create_task(api.post("/api/runs", json={
+                    "test_plan_id": plan["id"], "assumptions_confirmed": True,
+                }))
+                try:
+                    await asyncio.wait_for(entered.wait(), 5)
+                    for competing_plan in (plan, other_plan):
+                        response = await asyncio.wait_for(api.post("/api/runs", json={
+                            "test_plan_id": competing_plan["id"], "assumptions_confirmed": True,
+                        }), 1)
+                        assert response.status_code == 409, response.text
+                        assert response.json() == {
+                            "code": "active_run_exists", "message": "Run preparation is already in progress",
+                        }
+                    assert queried_plan_ids == [plan["id"]]
+                    assert preparation_calls == (1 if blocked_stage == "tools" else 0)
+                    assert (await api.get("/api/runs")).json()["total"] == 0
+                finally:
+                    startup.cancel()
+                    await asyncio.gather(startup, return_exceptions=True)
+                assert container.run_service._work is None
+                monkeypatch.setattr(container.repository, "get_test_plan", original_get_plan)
+                monkeypatch.setattr(container.tools, "discover_tools", original_discover)
+                run = await container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True)
+                await container.run_service.cancel(run.id)
+                await container.run_service.shutdown()
+
+        assert client.portal is not None
+        client.portal.call(exercise)
+
+
+@pytest.mark.parametrize("rejection", ["missing_plan", "case_busy"])
+def test_rejected_start_releases_run_entry(
+    tmp_path: Path, rejection: str,
+) -> None:
+    with build_client(tmp_path, turns=[finish_turn(1)]) as client:
+        plan = create_plan(client)
+        app = cast(FastAPI, client.app)
+        container = cast(Container, app.state.container)
+
+        async def exercise() -> None:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
+                with (nullcontext() if rejection == "missing_plan"
+                      else container.test_case_lock.hold(plan["test_case_id"], "editing")):
+                    response = await api.post("/api/runs", json={
+                        "test_plan_id": str(uuid4()) if rejection == "missing_plan" else plan["id"],
+                        "assumptions_confirmed": True,
+                    })
+                assert response.status_code == (404 if rejection == "missing_plan" else 409)
+                assert response.json()["code"] == ("run_input_not_found" if rejection == "missing_plan" else "test_case_busy")
+                assert container.run_service._work is None
+                assert (await api.get("/api/runs")).json()["total"] == 0
+                run = await container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True)
+                await container.run_service.cancel(run.id)
+                await container.run_service.shutdown()
+
+        assert client.portal is not None
+        client.portal.call(exercise)
+
+
+@pytest.mark.parametrize("interruption", ["request", "shutdown"])
+def test_interrupted_plan_lookup_releases_run_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interruption: str,
+) -> None:
+    with build_client(tmp_path, turns=[finish_turn(1)]) as client:
+        plan = create_plan(client)
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        original_get_plan = container.repository.get_test_plan
+
+        async def exercise() -> None:
+            entered, cleaned = asyncio.Event(), asyncio.Event()
+
+            async def get_test_plan(test_plan_id: str):
+                try:
+                    entered.set()
+                    await asyncio.Event().wait()
+                    return await original_get_plan(test_plan_id)
+                finally:
+                    cleaned.set()
+
+            monkeypatch.setattr(container.repository, "get_test_plan", get_test_plan)
+            startup = asyncio.create_task(container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True))
+            try:
+                await asyncio.wait_for(entered.wait(), 5)
+                if interruption == "shutdown":
+                    await asyncio.wait_for(container.run_service.shutdown(), 5)
+                    assert cleaned.is_set()
+                else:
+                    startup.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(startup, 5)
+                assert cleaned.is_set()
+                assert container.run_service._work is None
+                monkeypatch.setattr(container.repository, "get_test_plan", original_get_plan)
+                if interruption == "shutdown":
+                    with pytest.raises(RuntimeError, match="shutting down"):
+                        await container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True)
+                else:
+                    run = await container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True)
+                    await container.run_service.cancel(run.id)
+                    await container.run_service.shutdown()
+            finally:
+                startup.cancel()
+                await asyncio.gather(startup, return_exceptions=True)
+
+        assert client.portal is not None
+        client.portal.call(exercise)
+
+
+def test_terminal_persistence_keeps_run_and_case_occupied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with build_client(tmp_path, turns=[finish_turn(1)]) as client:
+        plan = create_plan(client)
+        app = cast(FastAPI, client.app)
+        container = cast(Container, app.state.container)
+        original_finish = container.repository.finish_run
+
+        async def exercise() -> None:
+            finishing, release = asyncio.Event(), asyncio.Event()
+
+            async def finish_run(test_run_id: str, verdict: RunVerdict) -> None:
+                finishing.set()
+                await release.wait()
+                await original_finish(test_run_id, verdict)
+
+            monkeypatch.setattr(container.repository, "finish_run", finish_run)
+            run = await container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True)
+            work = container.run_service._work
+            assert work is not None and work.task is not None
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
+                try:
+                    await asyncio.wait_for(finishing.wait(), 10)
+                    response = await asyncio.wait_for(api.post("/api/runs", json={
+                        "test_plan_id": plan["id"], "assumptions_confirmed": True,
+                    }), 1)
+                    assert response.status_code == 409, response.text
+                    assert response.json() == {
+                        "code": "active_run_exists", "message": f"Run {run.id} is already active",
+                    }
+                    archive = await api.post(f"/api/test-cases/{plan['test_case_id']}/archive")
+                    assert archive.status_code == 409
+                    assert archive.json()["code"] == "test_case_has_active_run"
+                finally:
+                    release.set()
+                    await asyncio.wait_for(work.task, 10)
+                assert container.run_service._work is None
+                assert (await api.post(f"/api/test-cases/{plan['test_case_id']}/archive")).status_code == 204
+
+        assert client.portal is not None
+        client.portal.call(exercise)
 
 
 @pytest.mark.parametrize("blocked_stage", ["configuration", "tools", "resources"])
