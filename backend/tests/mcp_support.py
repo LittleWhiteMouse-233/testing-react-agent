@@ -118,7 +118,7 @@ def create_plan(client: TestClient, *, task_count: int = 1) -> dict[str, Any]:
 
 
 def start_run(client: TestClient, plan: dict[str, Any]) -> str:
-    response = client.post("/api/runs", json={"test_plan_id": plan["id"], "assumptions_confirmed": True})
+    response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True})
     assert response.status_code == 201, response.text
     return response.json()["id"]
 

@@ -136,7 +136,7 @@ async def archive_test_case(test_case_id: TestCaseId, request: Request) -> Respo
 )
 async def get_test_case(test_case_id: TestCaseId, request: Request) -> TestCase:
     try:
-        container(request).test_case_lock.ensure_not_archiving(test_case_id)
+        container(request).test_case_lock.ensure_available(test_case_id)
         return await container(request).repository.get_test_case(test_case_id)
     except LookupError as exc:
         raise problem(404, "test_case_not_found", str(exc)) from exc
@@ -180,7 +180,7 @@ async def list_test_plans(
     test_case_id: TestCaseId, request: Request
 ) -> PageResponse[TestPlan]:
     try:
-        container(request).test_case_lock.ensure_not_archiving(test_case_id)
+        container(request).test_case_lock.ensure_available(test_case_id)
         items = await repository.list_test_plans(container(request).sessions, test_case_id)
     except LookupError as exc:
         raise problem(404, "test_case_not_found", str(exc)) from exc
@@ -221,6 +221,7 @@ async def create_test_run(
 ) -> TestRun:
     try:
         return await container(request).run_service.start(
+            test_case_id=payload.test_case_id,
             test_plan_id=payload.test_plan_id,
             assumptions_confirmed=payload.assumptions_confirmed,
         )
@@ -367,7 +368,7 @@ async def stream_run_events(
 async def stream_planning_events(test_case_id: TestCaseId, request: Request) -> StreamingResponse:
     app = container(request)
     try:
-        app.test_case_lock.ensure_not_archiving(test_case_id)
+        app.test_case_lock.ensure_available(test_case_id)
         await app.repository.get_test_case(test_case_id)
     except LookupError as exc:
         raise problem(404, "test_case_not_found", str(exc)) from exc

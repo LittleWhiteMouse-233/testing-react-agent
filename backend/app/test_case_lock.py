@@ -35,42 +35,54 @@ class TestCaseLock:
     def __init__(self) -> None:
         self._occupations: dict[str, set[TestCaseOccupation]] = {}
 
-    def ensure_not_archiving(self, test_case_id: str) -> None:
-        occupied = self._occupations.get(test_case_id)
-        if occupied and "archiving" in occupied:
+    def ensure_available(
+        self, test_case_id: str, *operations: TestCaseOccupation,
+    ) -> None:
+        """无操作参数时只检查归档；传入操作时检查整批冲突，不登记占用。"""
+        occupied = self._occupations.get(test_case_id, set()).copy()
+        if "archiving" in occupied:
             raise TestCaseBusy("用例正在归档，暂不能访问、编辑、规划或执行")
+        for requested_operation in operations:
+            if (
+                requested_operation not in occupied
+                and occupied.isdisjoint(_INCOMPATIBLE_OCCUPATIONS[requested_operation])
+            ):
+                occupied.add(requested_operation)
+                continue
+            if requested_operation == "editing" and "pre_planning" in occupied:
+                raise TestCasePlanning("用例正在准备规划输入，请稍后保存用例")
+            if requested_operation == "archiving" and "planning" in occupied:
+                raise TestCasePlanning("用例正在规划，请等待完成后再归档")
+            if requested_operation in {"archiving", "running"} and "running" in occupied:
+                raise TestCaseHasActiveRun("用例正在启动或运行，请等待运行和资源释放结束")
+            raise TestCaseBusy("用例正在处理不兼容的操作，请完成后重试")
 
-    def ensure_available(self, test_case_id: str, operation: TestCaseOccupation) -> None:
-        self.ensure_not_archiving(test_case_id)
+    def acquire(
+        self, test_case_id: str, operation: TestCaseOccupation,
+        *additional_operations: TestCaseOccupation,
+    ) -> None:
+        # Validation and registration cannot yield between them on the single loop.
+        self.ensure_available(test_case_id, operation, *additional_operations)
+        self._occupations.setdefault(test_case_id, set()).update((operation, *additional_operations))
+
+    def release(
+        self, test_case_id: str, operation: TestCaseOccupation,
+        *additional_operations: TestCaseOccupation,
+    ) -> None:
         occupied = self._occupations.get(test_case_id)
-        if not occupied or (
-            operation not in occupied
-            and occupied.isdisjoint(_INCOMPATIBLE_OCCUPATIONS[operation])
-        ):
+        if occupied is None:
             return
-        if operation == "editing" and "pre_planning" in occupied:
-            raise TestCasePlanning("用例正在准备规划输入，请稍后保存用例")
-        if operation == "archiving" and "planning" in occupied:
-            raise TestCasePlanning("用例正在规划，请等待完成后再归档")
-        if operation in {"archiving", "running"} and "running" in occupied:
-            raise TestCaseHasActiveRun("用例正在启动或运行，请等待运行和资源释放结束")
-        raise TestCaseBusy("用例正在处理不兼容的操作，请完成后重试")
-
-    def acquire(self, test_case_id: str, operation: TestCaseOccupation) -> None:
-        # No await between check and registration: atomic on the single loop.
-        self.ensure_available(test_case_id, operation)
-        self._occupations.setdefault(test_case_id, set()).add(operation)
-
-    def release(self, test_case_id: str, operation: TestCaseOccupation) -> None:
-        occupied = self._occupations[test_case_id]
-        occupied.remove(operation)
+        occupied.difference_update((operation, *additional_operations))
         if not occupied:
             del self._occupations[test_case_id]
 
     @contextmanager
-    def hold(self, test_case_id: str, operation: TestCaseOccupation) -> Iterator[None]:
-        self.acquire(test_case_id, operation)
+    def hold(
+        self, test_case_id: str, operation: TestCaseOccupation,
+        *additional_operations: TestCaseOccupation,
+    ) -> Iterator[None]:
+        self.acquire(test_case_id, operation, *additional_operations)
         try:
             yield
         finally:
-            self.release(test_case_id, operation)
+            self.release(test_case_id, operation, *additional_operations)

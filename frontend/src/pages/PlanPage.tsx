@@ -184,7 +184,7 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
         </div></article>)}</div>
         <div className="plan-start"><Checkbox disabled={busy || dirty || !isLatest} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}>我已确认计划 assumptions、任务目标和成功标准</Checkbox>
           <Button block size="large" type="primary" icon={<RocketOutlined />} loading={start.isPending} disabled={busy || runOccupied || !valid || dirty || !confirmed || !isLatest}
-            onClick={() => start.mutate({ body: { test_plan_id: plan.id, assumptions_confirmed: true } })}>启动运行</Button>
+            onClick={() => start.mutate({ body: { test_case_id: caseId, test_plan_id: plan.id, assumptions_confirmed: true } })}>启动运行</Button>
           {dirty && <p className="muted">保存为新计划版本后才能启动</p>}
         </div>
       </> : <Empty className="plan-empty" image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未生成计划" />}

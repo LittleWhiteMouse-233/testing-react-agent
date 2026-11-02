@@ -55,7 +55,7 @@ def test_update_and_archive_preserve_all_plan_versions_runs_and_images(tmp_path:
         run_ids.append(start_run(client, second_plan))
         wait_for_run(client, run_ids[-1])
         client.portal.call(wait_for_cleanup)
-        for action, payload in [("/api/runs", {"test_plan_id": first_plan["id"], "assumptions_confirmed": True}),
+        for action, payload in [("/api/runs", {"test_case_id": first_plan["test_case_id"], "test_plan_id": first_plan["id"], "assumptions_confirmed": True}),
                                 (f"/api/test-plans/{first_plan['id']}/revisions", {"content": revision_content})]:
             assert client.post(action, json=payload).status_code == 409
         replanned = client.post(case_url + "/plans", json={"planning_request_id": str(uuid4()), "user_input": "采用新的名称和描述"}).json()
@@ -93,7 +93,7 @@ def test_update_and_archive_preserve_all_plan_versions_runs_and_images(tmp_path:
         assert client.post(case_url + "/plans", json={"planning_request_id": str(uuid4()), "user_input": "不能规划"}).status_code == 404
         assert client.post(f"/api/test-plans/{replanned['id']}/revisions", json={"content": revision_content}).status_code == 404
         mcp_before = read_records(tmp_path)
-        assert client.post("/api/runs", json={"test_plan_id": replanned["id"], "assumptions_confirmed": True}).status_code == 404
+        assert client.post("/api/runs", json={"test_case_id": replanned["test_case_id"], "test_plan_id": replanned["id"], "assumptions_confirmed": True}).status_code == 404
         assert read_records(tmp_path) == mcp_before
         history_cases = client.get("/api/runs/test-cases", params={"search": updated_content["name"], "limit": 1}).json()
         assert history_cases == {"items": [{**updated.json(), "is_archived": True}], "total": 1}
@@ -197,7 +197,7 @@ def test_plan_page_writes_reject_incompatible_operations(
             "editing": ("PATCH", case_url, {"name": "修改", "source_text": "新正文"}),
             "planning": ("POST", case_url + "/plans", {"planning_request_id": str(uuid4()), "user_input": "调整计划"}),
             "revising": ("POST", f"/api/test-plans/{plan['id']}/revisions", {"content": revision_content}),
-            "running": ("POST", "/api/runs", {"test_plan_id": plan["id"], "assumptions_confirmed": True}),
+            "running": ("POST", "/api/runs", {"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True}),
         }
         entered, release = asyncio.Event(), asyncio.Event()
         owner = container.planning_graph if operation == "planning" else container.repository
@@ -313,7 +313,7 @@ def test_accepted_start_blocks_archive_during_mcp_preparation_and_execution(tmp_
 
         async def begin() -> None:
             nonlocal pending
-            pending = asyncio.create_task(container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True))
+            pending = asyncio.create_task(container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True))
             await asyncio.wait_for(entered.wait(), 5)
 
         async def prepare() -> str:
@@ -352,7 +352,7 @@ def test_failed_mcp_start_releases_case_reservation(tmp_path: Path) -> None:
         plan = create_plan(client)
         container = cast(Container, cast(FastAPI, client.app).state.container)
         container.settings.mcp_config_path.unlink()
-        response = client.post("/api/runs", json={"test_plan_id": plan["id"], "assumptions_confirmed": True})
+        response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True})
         assert response.status_code == 502
         assert client.post(f"/api/test-cases/{plan['test_case_id']}/archive").status_code == 204
 
@@ -390,7 +390,7 @@ def test_archive_reserves_case_before_database_work_and_releases_on_cancellation
                     ("PATCH", case_url, {"name": "不能修改", "source_text": "归档占用中"}),
                     ("POST", case_url + "/plans", {"planning_request_id": str(uuid4()), "user_input": "不能规划"}),
                     ("POST", f"/api/test-plans/{plan['id']}/revisions", {"content": revision_content}),
-                    ("POST", "/api/runs", {"test_plan_id": plan["id"], "assumptions_confirmed": True}),
+                    ("POST", "/api/runs", {"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True}),
                 ]
                 for method, url, payload in attempts:
                     response = await api.request(method, url, json=payload)

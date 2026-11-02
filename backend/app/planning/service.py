@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import ExitStack
-
 from app.domain.activity import AgentActivity
 from app.domain.errors import PlanningUserInputRequired
 from app.domain.planning import (
@@ -61,8 +59,7 @@ class PlanningService:
                 **progress, "test_case_id": test_case_id, "planning_request_id": planning_request_id,
             }))
 
-        with self.test_case_lock.hold(test_case_id, "planning"), ExitStack() as preparation:
-            preparation.enter_context(self.test_case_lock.hold(test_case_id, "pre_planning"))
+        with self.test_case_lock.hold(test_case_id, "planning", "pre_planning"):
             try:
                 await stage("planning.started")
                 test_case = await self.repository.get_test_case(test_case_id)
@@ -83,7 +80,7 @@ class PlanningService:
                     ),
                     user_input=user_input,
                 )
-                preparation.close()
+                self.test_case_lock.release(test_case_id, "pre_planning")
                 await stage("planning.input_ready")
                 draft = await self.planning_graph.generate(
                     context.test_case_content,

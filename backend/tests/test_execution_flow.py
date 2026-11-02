@@ -534,7 +534,7 @@ def test_cancel_waits_for_call_or_timeout_and_never_executes_next_call(tmp_path:
                 break
             time.sleep(0.01)
         assert any(entry["phase"] == "started" for entry in read_records(tmp_path))
-        assert client.post("/api/runs", json={"test_plan_id": plan["id"], "assumptions_confirmed": True}).status_code == 409
+        assert client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True}).status_code == 409
         assert client.post(f"/api/runs/{run_id}/cancel").status_code == 202
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "CANCELLED"
@@ -559,7 +559,7 @@ def test_planning_does_not_connect_to_mcp(tmp_path: Path) -> None:
         plan = create_plan(client)
         assert plan["content"]["tasks"]
         assert not read_records(tmp_path)
-        response = client.post("/api/runs", json={"test_plan_id": plan["id"], "assumptions_confirmed": True})
+        response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True})
         assert response.status_code == 502
         assert response.json()["code"] == "mcp_unavailable"
 
@@ -731,7 +731,7 @@ def test_cycle_is_persisted_while_model_response_is_pending(tmp_path: Path, monk
                 return RunnableLambda(invoke)
 
             monkeypatch.setattr(ScriptedChatModel, "bind_tools", bind_tools)
-            run = await container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True)
+            run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
             work = container.run_service._work
             assert work is not None and work.task is not None
             try:
@@ -854,7 +854,7 @@ def test_run_tools_ignore_config_changes_and_hold_the_single_run_slot(tmp_path: 
         plan = create_plan(client)
         run_id = start_run(client, plan)
         (tmp_path / "mcp.json").write_text("invalid", encoding="utf-8")
-        conflict = client.post("/api/runs", json={"test_plan_id": plan["id"], "assumptions_confirmed": True})
+        conflict = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True})
         assert conflict.status_code == 409
         assert wait_for_run(client, run_id)["run"]["verdict"] == "PASS"
         write_mcp_config(tmp_path, [replay_call(content=[text_block("New target state")])], servers=("updated",))

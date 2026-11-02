@@ -33,7 +33,7 @@ class RunConflict(RuntimeError):
 
 @dataclass(eq=False)
 class _RunWork:
-    """One active run from plan lookup through terminal persistence."""
+    """One active run from admission through terminal persistence."""
 
     task: asyncio.Task[None] | None = None
     test_run_id: str | None = None
@@ -75,6 +75,7 @@ class RunService:
     async def start(
         self,
         *,
+        test_case_id: str,
         test_plan_id: str,
         assumptions_confirmed: bool,
     ) -> TestRun:
@@ -84,14 +85,19 @@ class RunService:
             raise RuntimeError("Application is shutting down")
         if self._work is not None:
             raise RunConflict(self._work.test_run_id)
-        # No await before registration: reserve the entry on the single loop.
         prepared_run: asyncio.Future[TestRun] = asyncio.get_running_loop().create_future()
         work = _RunWork()
+        # Admission and registration cannot yield before both occupations are held.
+        self.test_case_lock.acquire(test_case_id, "running", "pre_running")
+        try:
+            work.task = asyncio.create_task(
+                self._prepare_and_execute(test_case_id, test_plan_id, prepared_run, work),
+                name=f"prepare-run-{test_plan_id}",
+            )
+        except BaseException:
+            self.test_case_lock.release(test_case_id, "running", "pre_running")
+            raise
         self._work = work
-        work.task = asyncio.create_task(
-            self._prepare_and_execute(test_plan_id, prepared_run, work),
-            name=f"prepare-run-{test_plan_id}",
-        )
 
         def release_work(completed: asyncio.Task[None]) -> None:
             # Startup failures use prepared_run; unreportable execution failures are logged once.
@@ -107,6 +113,7 @@ class RunService:
                                  exc_info=(type(exc), exc, exc.__traceback__))
             if not prepared_run.done():
                 prepared_run.cancel()
+            self.test_case_lock.release(test_case_id, "running", "pre_running")
             if self._work is work:
                 self._work = None
 
@@ -124,48 +131,48 @@ class RunService:
             raise
 
     async def _prepare_and_execute(
-        self, test_plan_id: str, prepared_run: asyncio.Future[TestRun], work: _RunWork,
+        self, test_case_id: str, test_plan_id: str, prepared_run: asyncio.Future[TestRun],
+        work: _RunWork,
     ) -> None:
-        plan = await self.repository.get_test_plan(test_plan_id)
-        with self.test_case_lock.hold(plan.test_case_id, "running"):
-            with self.test_case_lock.hold(plan.test_case_id, "pre_running"):
-                discovery_phase = "MCP configuration loading"
-                try:
-                    async with asyncio.timeout(self.discovery_timeout_seconds):
-                        await self.mcp_clients.load_clients()
-                        discovery_phase = "MCP tool discovery"
-                        tools = await self.tools.discover_tools()
-                        discovery_phase = "Skill and resource discovery"
-                        resource_catalog = await self.skills.discover_resources()
-                except Exception as exc:
-                    raise MCPConnectionError(describe_exception(exc, phase=discovery_phase)) from exc
-                environment = TestRunEnvironmentSnapshot(
-                    tool_catalog=snapshot_tools(tools),
-                    resource_catalog=resource_catalog,
-                    execution_model=self.model_provider.client_for_activity(
-                        AgentActivity.EXECUTION
-                    ).profile_snapshot,
-                    max_cycles_by_task_type=self.max_cycles_by_task_type,
-                    prompt_fingerprints_by_task_type=self.prompt_catalog.prompt_fingerprints_by_task_type,
-                    app_version=self.app_version,
-                    execution_protocol_version="10",
-                )
-                try:
-                    creation = asyncio.create_task(self.repository.create_test_run(
-                        test_plan_id=test_plan_id, environment=environment,
-                    ))
-                    try:
-                        run = await asyncio.shield(creation)
-                    except asyncio.CancelledError:
-                        # A committed run must acquire an executor even when its
-                        # HTTP caller disappears before receiving the result.
-                        work.cancellation.set()
-                        run = await creation
-                except ActiveRunExists as exc:
-                    raise RunConflict(exc.active_run_id) from exc
-                work.test_run_id = run.id
-            prepared_run.set_result(run)
-            await self.executor.run(run.id, work.cancellation, tools)
+        await self.repository.validate_test_plan_for_run(test_case_id=test_case_id, test_plan_id=test_plan_id)
+        discovery_phase = "MCP configuration loading"
+        try:
+            async with asyncio.timeout(self.discovery_timeout_seconds):
+                await self.mcp_clients.load_clients()
+                discovery_phase = "MCP tool discovery"
+                tools = await self.tools.discover_tools()
+                discovery_phase = "Skill and resource discovery"
+                resource_catalog = await self.skills.discover_resources()
+        except Exception as exc:
+            raise MCPConnectionError(describe_exception(exc, phase=discovery_phase)) from exc
+        environment = TestRunEnvironmentSnapshot(
+            tool_catalog=snapshot_tools(tools),
+            resource_catalog=resource_catalog,
+            execution_model=self.model_provider.client_for_activity(
+                AgentActivity.EXECUTION
+            ).profile_snapshot,
+            max_cycles_by_task_type=self.max_cycles_by_task_type,
+            prompt_fingerprints_by_task_type=self.prompt_catalog.prompt_fingerprints_by_task_type,
+            app_version=self.app_version,
+            execution_protocol_version="10",
+        )
+        try:
+            creation = asyncio.create_task(self.repository.create_test_run(
+                test_plan_id=test_plan_id, environment=environment,
+            ))
+            try:
+                run = await asyncio.shield(creation)
+            except asyncio.CancelledError:
+                # A committed run must acquire an executor even when its
+                # HTTP caller disappears before receiving the result.
+                work.cancellation.set()
+                run = await creation
+        except ActiveRunExists as exc:
+            raise RunConflict(exc.active_run_id) from exc
+        work.test_run_id = run.id
+        self.test_case_lock.release(test_case_id, "pre_running")
+        prepared_run.set_result(run)
+        await self.executor.run(run.id, work.cancellation, tools)
 
     async def shutdown(self) -> None:
         self._closing = True

@@ -1843,7 +1843,7 @@
       },
       "TestPlanPlanningContext": {
         "additionalProperties": false,
-        "description": "计划创建时冻结的输入与模型审计事实，不参与后续版本覆盖。",
+        "description": "规划准备时固定的输入与模型审计事实，不参与后续版本覆盖。",
         "properties": {
           "planning_model": {
             "$ref": "#/components/schemas/LLMProfileSnapshot"
@@ -1960,6 +1960,11 @@
             "title": "Assumptions Confirmed",
             "type": "boolean"
           },
+          "test_case_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Test Case Id",
+            "type": "string"
+          },
           "test_plan_id": {
             "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
             "title": "Test Plan Id",
@@ -1967,6 +1972,7 @@
           }
         },
         "required": [
+          "test_case_id",
           "test_plan_id",
           "assumptions_confirmed"
         ],

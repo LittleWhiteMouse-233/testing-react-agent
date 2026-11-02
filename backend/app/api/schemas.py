@@ -35,6 +35,7 @@ class ReviseTestPlanRequest(BaseModel):
 class TestRunCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    test_case_id: TestCaseId
     test_plan_id: TestPlanId
     assumptions_confirmed: Literal[True]
 

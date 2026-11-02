@@ -75,7 +75,7 @@ def test_complete_message_first_run_and_exports() -> None:
             run_response = client.post(
                 "/api/runs",
                 json={
-                    "test_plan_id": plan["id"],
+                    "test_case_id": plan["test_case_id"], "test_plan_id": plan["id"],
                     "assumptions_confirmed": True,
                 },
             )
@@ -273,7 +273,7 @@ def test_only_latest_plan_can_start() -> None:
             response = client.post(
                 "/api/runs",
                 json={
-                    "test_plan_id": first["id"],
+                    "test_case_id": first["test_case_id"], "test_plan_id": first["id"],
                     "assumptions_confirmed": True,
                 },
             )

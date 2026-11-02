@@ -700,7 +700,7 @@ describe("planning page", () => {
     const posts = requests.filter((request) => request.method === "POST");
     expect(posts).toHaveLength(1);
     expect(new URL(posts[0]!.url).pathname).toBe("/api/runs");
-    expect(await posts[0]!.json()).toEqual({ test_plan_id: plan.id, assumptions_confirmed: true });
+    expect(await posts[0]!.json()).toEqual({ test_case_id: plan.test_case_id, test_plan_id: plan.id, assumptions_confirmed: true });
   });
 
   it("does not carry a plan, extra input or confirmation into another test case", async () => {

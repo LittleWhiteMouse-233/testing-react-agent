@@ -197,29 +197,38 @@ class SqlAlchemyRunRepository:
                 return None
             return test_plan_from_rows(row, await self._task_rows(session, row.id))
 
+    async def validate_test_plan_for_run(self, *, test_case_id: str, test_plan_id: str) -> None:
+        """Validate run input while RunService holds both case occupations."""
+        async with self.sessions() as session:
+            await self._require_available_test_case(session, test_case_id)
+            plan_test_case_id = await session.scalar(
+                select(TestPlanRow.test_case_id).where(TestPlanRow.id == test_plan_id)
+            )
+            if plan_test_case_id is None:
+                raise LookupError("Test plan not found")
+            if plan_test_case_id != test_case_id:
+                raise ValueError("test plan does not belong to the test case")
+            latest_id = await session.scalar(
+                select(TestPlanRow.id)
+                .where(TestPlanRow.test_case_id == test_case_id)
+                .order_by(TestPlanRow.version_number.desc())
+                .limit(1)
+            )
+            if latest_id != test_plan_id:
+                raise ValueError("only the latest test plan may be started")
+
     async def create_test_run(
         self,
         *,
         test_plan_id: str,
         environment: TestRunEnvironmentSnapshot,
     ) -> TestRun:
+        """Insert a run whose validated plan remains protected by RunService."""
         async with self.sessions() as session:
             # The partial unique index is the final invariant; the immediate
             # transaction also turns the expected concurrent loser into the
             # domain-level ActiveRunExists outcome instead of an IntegrityError.
             await session.execute(text("BEGIN IMMEDIATE"))
-            plan = await session.get(TestPlanRow, test_plan_id)
-            if plan is None:
-                raise LookupError("Test plan not found")
-            await self._require_available_test_case(session, plan.test_case_id)
-            latest_id = await session.scalar(
-                select(TestPlanRow.id)
-                .where(TestPlanRow.test_case_id == plan.test_case_id)
-                .order_by(TestPlanRow.version_number.desc())
-                .limit(1)
-            )
-            if latest_id != plan.id:
-                raise ValueError("only the latest test plan may be started")
             active = await session.scalar(
                 select(TestRunRow).where(
                     TestRunRow.status.in_(

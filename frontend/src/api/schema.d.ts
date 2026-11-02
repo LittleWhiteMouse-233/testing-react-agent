@@ -938,7 +938,7 @@ export interface components {
         TestPlanOrigin: "planning" | "replanning" | "manual_revision";
         /**
          * TestPlanPlanningContext
-         * @description 计划创建时冻结的输入与模型审计事实，不参与后续版本覆盖。
+         * @description 规划准备时固定的输入与模型审计事实，不参与后续版本覆盖。
          */
         TestPlanPlanningContext: {
             planning_model: components["schemas"]["LLMProfileSnapshot"];
@@ -976,6 +976,8 @@ export interface components {
              * @constant
              */
             assumptions_confirmed: true;
+            /** Test Case Id */
+            test_case_id: string;
             /** Test Plan Id */
             test_plan_id: string;
         };

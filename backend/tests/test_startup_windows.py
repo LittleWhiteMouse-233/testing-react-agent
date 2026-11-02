@@ -232,7 +232,7 @@ def test_uvicorn_shutdown_with_open_sse_saves_run_and_closes_mcp(tmp_path: Path,
             plan = create_plan(client)  # type: ignore[arg-type]
             run_id: str | None = None
             if phase != "idle":
-                response = client.post("/api/runs", json={"test_plan_id": plan["id"], "assumptions_confirmed": True})
+                response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True})
                 assert response.status_code == 201, response.text
                 run_id = response.json()["id"]
                 marker = tmp_path / ("fixture.jsonl" if phase == "tool" else "phase.txt")
