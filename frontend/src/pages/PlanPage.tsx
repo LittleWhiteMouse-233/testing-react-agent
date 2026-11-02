@@ -1,8 +1,8 @@
 import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, EditOutlined, PlusOutlined, RocketOutlined, SaveOutlined } from "@ant-design/icons";
 import { useIsMutating, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Checkbox, Empty, Form, Input, Modal, Radio, Select, Spin, message } from "antd";
-import { useEffect, useState } from "react";
-import { Link, useBlocker, useNavigate, useParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage } from "../api/client";
 import type { TestCaseContent, TestPlan, TestPlanDraft, TestTaskDefinition } from "../api/contracts";
 import { emptyTask, getGoalsWithInvalidatedJumpTargets, isPlanDraftValid, toPlanDraft, updateTaskOrder } from "../planDraft";
@@ -18,10 +18,13 @@ export default function PlanPage({ archiving = false }: { archiving?: boolean })
 function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolean }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const planning = usePlanningProgress(caseId);
-  const blocker = useBlocker(planning.pending);
-  useEffect(() => { if (blocker.state === "blocked") blocker.reset(); }, [blocker]);
+  const planning = usePlanningProgress();
+  const progress = planning.requests.get(caseId);
+  const planningPending = !!progress && progress.status !== "failed";
+  const previousProgress = useRef(progress);
+  const previousLatestPlanId = useRef<string | undefined>(undefined);
   const caseRequestPending = useIsMutating({ predicate: (mutation) => mutation.options.meta?.testCaseId === caseId }) > 0;
+  const runStartPending = useIsMutating({ mutationKey: ["post", "/api/runs"] }) > 0;
   const [plan, setPlan] = useState<TestPlan | null>(null);
   const [draft, setDraft] = useState<TestPlanDraft | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -31,9 +34,13 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   const [pendingTaskOrder, setPendingTaskOrder] = useState<TestTaskDefinition[] | null>(null);
   const [caseDraft, setCaseDraft] = useState<TestCaseContent | null>(null);
   const [caseUpdated, setCaseUpdated] = useState(false);
-  const testCase = $api.useQuery("get", "/api/test-cases/{test_case_id}", { params: { path: { test_case_id: caseId } } });
-  const plans = $api.useQuery("get", "/api/test-cases/{test_case_id}/plans", { params: { path: { test_case_id: caseId } } });
+  const testCase = $api.useQuery("get", "/api/test-cases/{test_case_id}", { params: { path: { test_case_id: caseId } } }, { refetchOnMount: "always" });
+  const plans = $api.useQuery("get", "/api/test-cases/{test_case_id}/plans", { params: { path: { test_case_id: caseId } } }, { refetchOnMount: "always" });
   const runs = $api.useQuery("get", "/api/runs", { params: { query: { test_case_id: caseId, limit: 5 } } });
+  const activeRuns = $api.useQuery("get", "/api/runs", { params: { query: { status: ["pending", "running"], limit: 1 } } }, {
+    refetchInterval: (query) => query.state.data?.items.length ? 3000 : 30000,
+    refetchOnWindowFocus: true
+  });
   const updateCase = $api.useMutation("patch", "/api/test-cases/{test_case_id}", {
     meta: { testCaseId: caseId },
     onSuccess: (value) => {
@@ -52,29 +59,24 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   const selectPlan = (value: TestPlan) => {
     setPlan(value); setDraft(toPlanDraft(value)); setConfirmed(false); setDirty(false); setEditing(false);
   };
-  useEffect(() => { if (!plan && plans.data?.items[0]) selectPlan(plans.data.items[0]); }, [plans.data, plan]);
+  useEffect(() => {
+    if (!plans.isFetchedAfterMount) return;
+    const latest = plans.data?.items[0];
+    if (latest && (!plan || (!dirty && plan.id === previousLatestPlanId.current && plan.id !== latest.id))) selectPlan(latest);
+    previousLatestPlanId.current = latest?.id;
+  }, [plans.data, plans.isFetchedAfterMount, plan, dirty]);
+  useEffect(() => {
+    if (previousProgress.current && !progress && previousProgress.current.status !== "failed") {
+      setUserInput(""); setConfirmed(false); setCaseUpdated(false);
+    }
+    previousProgress.current = progress;
+  }, [progress]);
   const acceptPlan = (value: TestPlan) => {
     selectPlan(value);
     setCaseUpdated(false);
     void queryClient.invalidateQueries({ queryKey: ["get", "/api/test-cases/{test_case_id}/plans"] });
     void queryClient.invalidateQueries({ queryKey: ["get", "/api/test-cases"] });
   };
-  const generate = $api.useMutation("post", "/api/test-cases/{test_case_id}/plans", {
-    meta: { testCaseId: caseId },
-    // Report transport failure immediately instead of queueing a POST for reconnect.
-    networkMode: "always",
-    retry: false,
-    onSuccess: (value) => { acceptPlan(value); setUserInput(""); message.success("计划已生成"); },
-    onError: (error) => {
-      if (error.code === "planning_input_not_found") void testCase.refetch();
-      if (error.code === "test_plan_not_latest") {
-        void plans.refetch().then((response) => {
-          const latest = response.data?.items[0];
-          if (latest) selectPlan(latest);
-        });
-      }
-    }
-  });
   const revise = $api.useMutation("post", "/api/test-plans/{test_plan_id}/revisions", {
     meta: { testCaseId: caseId },
     onSuccess: (value) => { acceptPlan(value); message.success("已保存为计划版本 " + value.version_number); },
@@ -98,15 +100,13 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   });
   const latest = plans.data?.items[0];
   const isLatest = !!plan && plan.id === latest?.id;
-  const busy = archiving || caseRequestPending || planning.progress !== null || caseDraft !== null;
+  const busy = archiving || caseRequestPending || !!progress || caseDraft !== null;
+  const runOccupied = runStartPending || !!activeRuns.data?.items.length;
   const canEdit = !busy && isLatest;
   const valid = isPlanDraftValid(draft);
   const canGenerate = !busy && !dirty && (!plan || (isLatest && !!userInput.trim()));
   const generatePlan = () => {
-    if (canGenerate) planning.start((requestId) => generate.mutateAsync({
-      params: { path: { test_case_id: caseId } },
-      body: { planning_request_id: requestId, user_input: userInput.trim() || null }
-    }));
+    if (canGenerate) planning.start(caseId, userInput);
   };
   const updateDraft = (value: TestPlanDraft) => { setDraft(value); setDirty(true); setConfirmed(false); };
   const updateTask = (index: number, patch: Partial<TestTaskDefinition>) => {
@@ -129,16 +129,19 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
     tasks[index] = other; tasks[index + direction] = current; applyTaskOrder(tasks);
   };
   const pendingOrderedTasks = pendingTaskOrder ? updateTaskOrder(pendingTaskOrder) : [];
-  const progressDialog = planning.progress && <PlanningProgressDialog progress={planning.progress} onClose={planning.close} />;
-  if (testCase.isLoading || plans.isLoading) return <section className="plan-context">{progressDialog}<div className="planning-welcome"><Spin /></div></section>;
-  if (testCase.error || plans.error || !testCase.data) return <section className="plan-context">{progressDialog}<div className="planning-welcome"><Alert type="error" title={apiErrorMessage(testCase.error ?? plans.error, "用例加载失败")} action={<Button onClick={() => { void testCase.refetch(); void plans.refetch(); }}>重试</Button>} /><Link to="/">返回用例列表</Link></div></section>;
+  const progressDialog = progress && <PlanningProgressDialog progress={progress} onClose={() => {
+    const retainedInput = planning.close(caseId);
+    if (retainedInput !== undefined) setUserInput(retainedInput);
+  }} />;
+  if (testCase.error || plans.error) return <section className="plan-context">{progressDialog}<div className="planning-welcome" inert={!!progress}><Alert type="error" title={apiErrorMessage(testCase.error ?? plans.error, "用例加载失败")} action={<Button onClick={() => { void testCase.refetch(); void plans.refetch(); }}>重试</Button>} /><Link to="/">返回用例列表</Link></div></section>;
+  if (!testCase.isFetchedAfterMount || !plans.isFetchedAfterMount || !testCase.data) return <section className="plan-context">{progressDialog}<div className="planning-welcome" inert={!!progress}><Spin /></div></section>;
 
   return <>
     <section className="plan-context">
       {progressDialog}
-      <div className="context-heading"><div className="eyebrow">用例库 / <span className="mono" title={caseId}>{caseId.slice(0, 8)}</span></div><h2>{testCase.data.content.name}</h2>
+      <div className="context-heading" inert={!!progress}><div className="eyebrow">用例库 / <span className="mono" title={caseId}>{caseId.slice(0, 8)}</span></div><h2>{testCase.data.content.name}</h2>
       </div>
-      <div className="context-scroll"><section className="case-description"><div className="section-label">用例描述 <span>{testCase.data.content.source_text.length} 字</span>
+      <div className="context-scroll" inert={!!progress}><section className="case-description"><div className="section-label">用例描述 <span>{testCase.data.content.source_text.length} 字</span>
         {!caseDraft && <Button size="small" icon={<EditOutlined />} disabled={busy || dirty || editing} onClick={() => setCaseDraft({ ...testCase.data.content })}>编辑用例</Button>}</div>
         {caseDraft ? <Form layout="vertical" disabled={updateCase.isPending || archiving} onFinish={() => { if (!archiving && caseDraft.name.trim() && caseDraft.name.length <= 200 && caseDraft.source_text.trim()) updateCase.mutate({ params: { path: { test_case_id: caseId } }, body: caseDraft }); }}>
           <Form.Item label="用例名称" required validateStatus={!caseDraft.name.trim() ? "error" : undefined} help={!caseDraft.name.trim() ? "名称不能为空" : undefined}>
@@ -158,17 +161,17 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
       {plan && <details className="planning-audit"><summary>规划来源与额外输入</summary><dl><dt>生成此计划时的额外输入</dt><dd>{plan.planning_context.user_input ?? "无"}</dd>
         <dt>规划模型</dt><dd>{plan.planning_context.planning_model.model}</dd><dt>父计划</dt><dd className="mono">{plan.derived_from_plan_id ?? "首次规划"}</dd></dl></details>}
       </div>
-      <div className="planning-prompt"><div className="section-label">告诉规划 Agent 如何调整 <small>Ctrl / ⌘ + Enter 发送</small></div>
+      <div className="planning-prompt" inert={!!progress}><div className="section-label">告诉规划 Agent 如何调整 <small>Ctrl / ⌘ + Enter 发送</small></div>
         <Form.Item label={"额外输入（" + (plan ? "必填" : "可选") + "）"} required={!!plan}>
-          <Input.TextArea aria-label="规划额外输入" value={userInput} disabled={busy || (!!plan && !isLatest)} rows={4} placeholder={plan ? "说明希望如何修改最新计划" : "补充本次规划的要求"}
+          <Input.TextArea aria-label="规划额外输入" value={progress?.userInput ?? userInput} disabled={busy || (!!plan && !isLatest)} rows={4} placeholder={plan ? "说明希望如何修改最新计划" : "补充本次规划的要求"}
             onChange={(event) => setUserInput(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); generatePlan(); } }} />
         </Form.Item>
         {dirty && <Alert type="info" title="存在未保存的修改，请先保存新版本再重新规划" action={<Button disabled={busy} onClick={() => { if (plan) selectPlan(plan); }}>放弃修改</Button>} />}
         {!!plan && !isLatest && <Alert type="info" title="历史计划仅供回溯，不能修订或启动" />}
-        <div className="prompt-actions"><span className="muted">{generate.isPending ? "规划中…" : "以目标和成功标准描述任务"}</span><Button type="primary" loading={generate.isPending} disabled={!canGenerate} onClick={generatePlan}>{plan ? "重新规划" : "生成计划"}</Button></div>
+        <div className="prompt-actions"><span className="muted">{planningPending ? "规划中…" : "以目标和成功标准描述任务"}</span><Button type="primary" loading={planningPending} disabled={!canGenerate} onClick={generatePlan}>{plan ? "重新规划" : "生成计划"}</Button></div>
       </div>
     </section>
-    <aside className="plan-results"><div className="section-heading"><div><small>规划结果</small><h2>任务序列</h2></div>{plan && <Button icon={<EditOutlined />} disabled={!canEdit} onClick={() => setEditing(true)}>编辑计划</Button>}</div>
+    <aside className={"plan-results" + (progress ? " planning-masked" : "")} inert={!!progress}><div className="section-heading"><div><small>规划结果</small><h2>任务序列</h2></div>{plan && <Button icon={<EditOutlined />} disabled={!canEdit} onClick={() => setEditing(true)}>编辑计划</Button>}</div>
       {plan && <div className="version-strip"><span className={"pill " + (isLatest ? "blue" : "")}>版本 {plan.version_number} · {isLatest ? "最新" : "历史只读"}</span>
         <Select aria-label="计划版本" value={plan.id} disabled={busy || dirty} onChange={(id) => { const selected = plans.data?.items.find((entry) => entry.id === id); if (selected) selectPlan(selected); }}
           options={plans.data?.items.map((entry) => ({ value: entry.id, label: "v" + entry.version_number + (entry.id === latest?.id ? " · 最新" : " · 只读") }))} />
@@ -180,7 +183,7 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
           {task.type === "goal" && <p className="muted">未满足时回到任务 {task.jump_back_to_task_no ?? "待选择"}{task.jump_back_to_task_no != null && " · " + draft.tasks.find((target) => target.task_no === task.jump_back_to_task_no)?.title}</p>}
         </div></article>)}</div>
         <div className="plan-start"><Checkbox disabled={busy || dirty || !isLatest} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}>我已确认计划 assumptions、任务目标和成功标准</Checkbox>
-          <Button block size="large" type="primary" icon={<RocketOutlined />} loading={start.isPending} disabled={busy || !valid || dirty || !confirmed || !isLatest}
+          <Button block size="large" type="primary" icon={<RocketOutlined />} loading={start.isPending} disabled={busy || runOccupied || !valid || dirty || !confirmed || !isLatest}
             onClick={() => start.mutate({ body: { test_plan_id: plan.id, assumptions_confirmed: true } })}>启动运行</Button>
           {dirty && <p className="muted">保存为新计划版本后才能启动</p>}
         </div>

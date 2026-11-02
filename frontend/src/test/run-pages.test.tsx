@@ -11,6 +11,7 @@ import ReportPage from "../pages/ReportPage";
 import HistoryPage from "../pages/HistoryPage";
 import CasesPage from "../pages/CasesPage";
 import { useRunReport } from "../api/useRunReport";
+import { PlanningProgressProvider } from "../api/usePlanningProgress";
 import { RunResources } from "../runPresentation";
 import { caseId, runEvent, runId, runReport, taskRunId } from "./run-fixtures";
 
@@ -86,13 +87,13 @@ it("shows every execution of a repeated task in the report", async () => {
 });
 
 function renderPage(path: string, history = false) {
-  render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={[path]}><Location /><Routes>
+  render(<QueryClientProvider client={queryClient}><PlanningProgressProvider><MemoryRouter initialEntries={[path]}><Location /><Routes>
     <Route path="/runs" element={<HistoryPage />} />
     <Route path="/" element={<CasesPage />} />
     <Route path="/runs/:runId" element={<RunPage />} />
     <Route path="/runs/:runId/report" element={history ? <HistoryPage /> : <ReportPage />} />
     <Route path="/cases/:caseId/plan" element={<div>确认最新计划</div>} />
-  </Routes></MemoryRouter></QueryClientProvider>);
+  </Routes></MemoryRouter></PlanningProgressProvider></QueryClientProvider>);
 }
 
 it.each(["execution", "report"])("shows Goal facts without a failure limit snapshot in the %s page", async (page) => {

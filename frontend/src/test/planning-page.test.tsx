@@ -5,14 +5,15 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { Link, createMemoryRouter, RouterProvider, Route, Routes } from "react-router-dom";
 import { StrictMode, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TestCase, TestPlan, TestPlanDraft, TestRunReport } from "../api/contracts";
+import type { TestCase, TestPlan, TestPlanDraft, TestRunListResponse, TestRunReport } from "../api/contracts";
 import PlanPage from "../pages/PlanPage";
 import CasesPage from "../pages/CasesPage";
 import ReportPage from "../pages/ReportPage";
+import { PlanningProgressProvider } from "../api/usePlanningProgress";
 
 function TestRouter({ children, initialEntries }: { children: ReactNode; initialEntries: string[] }) {
   const [router] = useState(() => createMemoryRouter([{ path: "*", element: children }], { initialEntries }));
-  return <RouterProvider router={router} />;
+  return <PlanningProgressProvider><RouterProvider router={router} /></PlanningProgressProvider>;
 }
 
 class PlanningEventSource extends EventTarget {
@@ -48,15 +49,19 @@ const testCase: TestCase = {
   created_at: "2026-01-01T00:00:00Z"
 };
 
-function savedPlan(version = 1, userInput: string | null = null): TestPlan {
+const otherCase: TestCase = {
+  ...testCase, id: "55555555-5555-4555-8555-555555555555", content: { name: "另一用例", source_text: "另一个原始目标" }
+};
+
+function savedPlan(version = 1, userInput: string | null = null, sourceCase = testCase): TestPlan {
   return {
-    id: `11111111-1111-4111-8111-${String(version).padStart(12, "0")}`,
-    test_case_id: testCase.id,
+    id: `${sourceCase.id === testCase.id ? "11111111" : "44444444"}-1111-4111-8111-${String(version).padStart(12, "0")}`,
+    test_case_id: sourceCase.id,
     version_number: version,
     origin: version === 1 ? "planning" : "replanning",
-    derived_from_plan_id: version === 1 ? null : savedPlan(version - 1).id,
+    derived_from_plan_id: version === 1 ? null : savedPlan(version - 1, null, sourceCase).id,
     planning_context: {
-      test_case_content: testCase.content,
+      test_case_content: sourceCase.content,
       user_input: userInput,
       planning_prompt_fingerprint: "planning-fingerprint-2",
       planning_model: {
@@ -80,6 +85,9 @@ function savedPlan(version = 1, userInput: string | null = null): TestPlan {
 }
 
 let plans: TestPlan[];
+let otherPlans: TestPlan[];
+let showOtherCase: boolean;
+let activeRuns: TestRunListResponse[];
 let requests: Request[];
 let generateResponse: ((request: Request) => Promise<Response>) | undefined;
 let plansResponse: (() => Promise<Response>) | undefined;
@@ -95,6 +103,7 @@ beforeEach(() => {
   PlanningEventSource.autoReady = true;
   vi.stubGlobal("EventSource", PlanningEventSource);
   plans = [];
+  otherPlans = []; showOtherCase = false; activeRuns = [];
   requests = [];
   generateResponse = undefined;
   plansResponse = undefined;
@@ -120,11 +129,18 @@ beforeEach(() => {
     requests.push(request.clone());
     const path = new URL(request.url).pathname;
     if (request.method === "GET") {
-      if (path === "/api/runs") return Response.json({ items: [], total: 0 });
-      if (path === "/api/test-cases") return Response.json({ items: archived ? [] : [{ ...currentCase, latest_plan_version: plans[0]?.version_number ?? null }], total: archived ? 0 : 1 });
+      if (path === "/api/runs") {
+        const items = new URL(request.url).searchParams.has("status") ? activeRuns : [];
+        return Response.json({ items, total: items.length });
+      }
+      if (path === "/api/test-cases") {
+        const items = [...(archived ? [] : [{ ...currentCase, latest_plan_version: plans[0]?.version_number ?? null }]),
+          ...(showOtherCase ? [{ ...otherCase, latest_plan_version: otherPlans[0]?.version_number ?? null }] : [])];
+        return Response.json({ items, total: items.length });
+      }
       if (archived && path.startsWith(`/api/test-cases/${testCase.id}`)) return Response.json({ code: "test_case_not_found", message: "用例不存在或已归档" }, { status: 404 });
-      if (path === "/api/test-cases/another-case/plans") return Response.json({ items: [], total: 0 });
-      if (path === "/api/test-cases/another-case") return Response.json({ ...testCase, id: "another-case", content: { name: "另一用例", source_text: "另一个原始目标" } });
+      if (path === `/api/test-cases/${otherCase.id}/plans`) return Response.json({ items: otherPlans, total: otherPlans.length });
+      if (path === `/api/test-cases/${otherCase.id}`) return Response.json(otherCase);
       if (path.endsWith("/plans")) return plansResponse ? plansResponse() : Response.json({ items: plans, total: plans.length });
       return Response.json(currentCase);
     }
@@ -141,8 +157,10 @@ beforeEach(() => {
     if (path.endsWith("/plans")) {
       if (generateResponse) return generateResponse(request);
       const body = await request.json() as { user_input: string | null };
-      const plan = savedPlan(plans.length + 1, body.user_input);
-      plans = [plan, ...plans];
+      const isOtherCase = path === `/api/test-cases/${otherCase.id}/plans`;
+      const plan = savedPlan((isOtherCase ? otherPlans : plans).length + 1, body.user_input, isOtherCase ? otherCase : currentCase);
+      if (isOtherCase) otherPlans = [plan, ...otherPlans];
+      else plans = [plan, ...plans];
       return Response.json(plan, { status: 201 });
     }
     if (path.endsWith("/revisions")) {
@@ -179,11 +197,13 @@ function renderPlanPage() {
     <QueryClientProvider client={queryClient}>
       <StrictMode>
       <TestRouter initialEntries={[`/cases/${testCase.id}/plan`]}>
-        <Link to="/cases/another-case/plan">切换用例</Link>
+        <Link to={`/cases/${otherCase.id}/plan`}>切换用例</Link>
         <Link to={`/cases/${testCase.id}/plan`}>返回原用例</Link>
+        <Link to="/runs">切换历史页面</Link>
         <Routes>
           <Route path="/cases/:caseId/plan" element={<PlanPage />} />
           <Route path="/runs/:runId" element={<div>运行已创建</div>} />
+          <Route path="/runs" element={<div>历史页面</div>} />
         </Routes>
       </TestRouter>
       </StrictMode>
@@ -261,13 +281,17 @@ describe("planning page", () => {
     await act(async () => { fireEvent.click(generateButton); });
     expect(screen.getByRole("dialog", { name: "规划进度" })).toHaveAttribute("aria-busy", "true");
     await act(async () => { fireEvent.click(screen.getByRole("link", { name: "切换用例" })); });
-    expect(screen.getByRole("dialog", { name: "规划进度" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "规划进度" })).not.toBeInTheDocument();
     await act(async () => { await vi.advanceTimersByTimeAsync(10_001); });
+    await act(async () => { fireEvent.click(screen.getByRole("link", { name: "返回原用例" })); });
     expect(screen.getByRole("log")).toHaveTextContent("日志连接超时");
     expect(planningPosts()).toHaveLength(0);
     expect(PlanningEventSource.instances[0]!.close).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
-    await act(async () => { fireEvent.click(generateButton); });
+    vi.useRealTimers();
+    act(() => onlineManager.setOnline(true));
+    await screen.findByRole("button", { name: "生成计划" });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "生成计划" })); });
     expect(screen.getByRole("log")).toBeEmptyDOMElement();
   });
 
@@ -309,7 +333,7 @@ describe("planning page", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("用例已归档");
   });
 
-  it("blocks leaving the case while planning and restores actions after completion", async () => {
+  it("keeps planning and logs across navigation and rebuilds the case before restoring progress", async () => {
     plans = [savedPlan()];
     let completePlanning!: (response: Response) => void;
     generateResponse = () => new Promise((resolve) => { completePlanning = resolve; });
@@ -317,21 +341,38 @@ describe("planning page", () => {
     fireEvent.change(await screen.findByRole("textbox", { name: "规划额外输入" }), { target: { value: "调整计划" } });
     fireEvent.click(screen.getByRole("button", { name: "重新规划" }));
     await waitFor(() => expect(completePlanning).toBeDefined());
+    const stream = PlanningEventSource.instances[0]!;
+    const initialReads = requests.filter((request) => request.method === "GET" && new URL(request.url).pathname === `/api/test-cases/${testCase.id}`).length;
+    const { planning_request_id } = await planningPosts()[0]!.clone().json();
 
     fireEvent.click(screen.getByRole("link", { name: "切换用例" }));
-    expect(screen.getByRole("dialog", { name: "规划进度" })).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "另一用例" });
+    expect(screen.queryByRole("dialog", { name: "规划进度" })).not.toBeInTheDocument();
+    expect(stream.close).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("link", { name: "切换历史页面" }));
+    await screen.findByText("历史页面");
+    act(() => stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify({
+      type: "planning.attempt_started", attempt: 1, test_case_id: testCase.id,
+      planning_request_id, occurred_at: "2026-01-01T00:00:00Z"
+    }) })));
     fireEvent.click(screen.getByRole("link", { name: "返回原用例" }));
+    await screen.findByRole("heading", { name: testCase.content.name });
+    expect(screen.getByRole("log")).toHaveTextContent("第 1/3 次生成");
+    expect(requests.filter((request) => request.method === "GET" && new URL(request.url).pathname === `/api/test-cases/${testCase.id}`).length).toBeGreaterThan(initialReads);
     expect(await screen.findByRole("button", { name: /编辑用例/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /编辑计划/ })).toBeDisabled();
     expect(planningInput()).toBeDisabled();
     expect(screen.getByRole("checkbox")).toBeDisabled();
     expect(startButton()).toBeDisabled();
     expect(planningPosts()).toHaveLength(1);
+    expect(screen.getByRole("link", { name: "查看全部 →" }).closest("[inert]")).not.toBeNull();
 
     plans = [savedPlan(2, "调整计划"), ...plans];
     await act(async () => { completePlanning(Response.json(plans[0], { status: 201 })); });
     await waitFor(() => expect(screen.getByRole("button", { name: /编辑用例/ })).toBeEnabled());
     expect(screen.getByRole("combobox", { name: "计划版本" })).toBeEnabled();
+    expect(planningInput()).toHaveValue("");
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
   });
 
   it("edits both case fields atomically, validates blanks and requires confirmation again", async () => {
@@ -363,6 +404,160 @@ describe("planning page", () => {
     expect(plans[0]).toEqual(originalPlan);
     fireEvent.click(screen.getByRole("checkbox"));
     expect(startButton()).toBeEnabled();
+  });
+
+  it("continues connecting across navigation and submits only after ready", async () => {
+    PlanningEventSource.autoReady = false;
+    let complete!: (response: Response) => void;
+    generateResponse = () => new Promise((resolve) => { complete = resolve; });
+    renderPlanPage();
+    fireEvent.change(await screen.findByRole("textbox", { name: "规划额外输入" }), { target: { value: "连接期间的输入" } });
+    fireEvent.click(screen.getByRole("button", { name: "生成计划" }));
+    const stream = PlanningEventSource.instances[0]!;
+    fireEvent.click(screen.getByRole("link", { name: "切换历史页面" }));
+    await screen.findByText("历史页面");
+    expect(stream.close).not.toHaveBeenCalled();
+    expect(planningPosts()).toHaveLength(0);
+    act(() => { stream.dispatchEvent(new Event("ready")); stream.dispatchEvent(new Event("ready")); });
+    await waitFor(() => expect(planningPosts()).toHaveLength(1));
+    plans = [savedPlan(1, "连接期间的输入")];
+    await act(async () => complete(Response.json(plans[0], { status: 201 })));
+    fireEvent.click(screen.getByRole("link", { name: "返回原用例" }));
+    await screen.findByText("版本 1 · 最新");
+    expect(screen.queryByRole("dialog", { name: "规划进度" })).not.toBeInTheDocument();
+    expect(planningInput()).toHaveValue("");
+    expect(planningPosts()).toHaveLength(1);
+  });
+
+  it("displays the newly saved plan when planning succeeds on another page", async () => {
+    plans = [savedPlan()];
+    let complete!: (response: Response) => void;
+    generateResponse = () => new Promise((resolve) => { complete = resolve; });
+    renderPlanPage();
+    fireEvent.change(await screen.findByRole("textbox", { name: "规划额外输入" }), { target: { value: "后台成功" } });
+    fireEvent.click(screen.getByRole("button", { name: "重新规划" }));
+    await waitFor(() => expect(complete).toBeDefined());
+    fireEvent.click(screen.getByRole("link", { name: "切换历史页面" }));
+    await screen.findByText("历史页面");
+    plans = [savedPlan(2, "后台成功"), ...plans];
+    await act(async () => complete(Response.json(plans[0], { status: 201 })));
+    fireEvent.click(screen.getByRole("link", { name: "返回原用例" }));
+    await screen.findByText("版本 2 · 最新");
+    expect(screen.queryByRole("dialog", { name: "规划进度" })).not.toBeInTheDocument();
+    expect(planningInput()).toHaveValue("");
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
+  });
+
+  it("restores off-page failures and returns only their input to the form on close", async () => {
+    let complete!: (response: Response) => void;
+    generateResponse = () => new Promise((resolve) => { complete = resolve; });
+    renderPlanPage();
+    fireEvent.change(await screen.findByRole("textbox", { name: "规划额外输入" }), { target: { value: "  保留原始输入  " } });
+    fireEvent.click(screen.getByRole("button", { name: "生成计划" }));
+    await waitFor(() => expect(complete).toBeDefined());
+    fireEvent.click(screen.getByRole("link", { name: "切换历史页面" }));
+    await screen.findByText("历史页面");
+    await act(async () => complete(Response.json({ code: "planning_failed", message: "后台规划失败" }, { status: 502 })));
+    fireEvent.click(screen.getByRole("link", { name: "返回原用例" }));
+    expect(await screen.findByRole("log")).toHaveTextContent("后台规划失败");
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    await screen.findByRole("heading", { name: testCase.content.name });
+    expect(planningInput()).toHaveValue("  保留原始输入  ");
+    fireEvent.click(screen.getByRole("link", { name: "切换用例" }));
+    await screen.findByRole("heading", { name: "另一用例" });
+    fireEvent.click(screen.getByRole("link", { name: "返回原用例" }));
+    await screen.findByRole("heading", { name: testCase.content.name });
+    expect(planningInput()).toHaveValue("");
+    expect(screen.queryByRole("dialog", { name: "规划进度" })).not.toBeInTheDocument();
+    expect(planningPosts()).toHaveLength(1);
+  });
+
+  it("refreshes a cache-expired case when a stale initial read overlaps planning success", async () => {
+    queryClient.setQueryDefaults(["get", "/api/test-cases/{test_case_id}/plans"], { gcTime: 0 });
+    plans = [savedPlan()];
+    let completePlanning!: (response: Response) => void;
+    generateResponse = () => new Promise((resolve) => { completePlanning = resolve; });
+    renderPlanPage();
+    fireEvent.change(await screen.findByRole("textbox", { name: "规划额外输入" }), { target: { value: "缓存过期后的规划" } });
+    fireEvent.click(screen.getByRole("button", { name: "重新规划" }));
+    await waitFor(() => expect(completePlanning).toBeDefined());
+    fireEvent.click(screen.getByRole("link", { name: "切换历史页面" }));
+    await screen.findByText("历史页面");
+    await waitFor(() => expect(queryClient.getQueryData(["get", "/api/test-cases/{test_case_id}/plans", {
+      params: { path: { test_case_id: testCase.id } }
+    }])).toBeUndefined());
+    const staleResponse = Response.json({ items: plans, total: plans.length });
+    const staleReads: ((response: Response) => void)[] = [];
+    let planSaved = false;
+    let readsAfterSave = 0;
+    plansResponse = () => {
+      if (!planSaved) return new Promise((resolve) => { staleReads.push(resolve); });
+      readsAfterSave++;
+      return Promise.resolve(Response.json({ items: plans, total: plans.length }));
+    };
+    fireEvent.click(screen.getByRole("link", { name: "返回原用例" }));
+    await waitFor(() => expect(staleReads.length).toBeGreaterThan(0));
+    plans = [savedPlan(2, "缓存过期后的规划"), ...plans];
+    planSaved = true;
+    await act(async () => completePlanning(Response.json(plans[0], { status: 201 })));
+    await act(async () => staleReads.forEach((complete) => complete(staleResponse.clone())));
+    await screen.findByText("版本 2 · 最新");
+    expect(readsAfterSave).toBeGreaterThan(0);
+    expect(planningPosts()).toHaveLength(1);
+    expect(screen.queryByRole("dialog", { name: "规划进度" })).not.toBeInTheDocument();
+  });
+
+  it("isolates simultaneous planning requests and their completion by case", async () => {
+    const completions = new Map<string, (response: Response) => void>();
+    generateResponse = (request) => new Promise((resolve) => { completions.set(new URL(request.url).pathname, resolve); });
+    renderPlanPage();
+    fireEvent.change(await screen.findByRole("textbox", { name: "规划额外输入" }), { target: { value: "原用例输入" } });
+    fireEvent.click(screen.getByRole("button", { name: "生成计划" }));
+    await waitFor(() => expect(planningPosts()).toHaveLength(1));
+    fireEvent.click(screen.getByRole("link", { name: "切换用例" }));
+    await screen.findByRole("heading", { name: "另一用例" });
+    fireEvent.change(planningInput(), { target: { value: "另一用例输入" } });
+    fireEvent.click(screen.getByRole("button", { name: "生成计划" }));
+    await waitFor(() => expect(planningPosts()).toHaveLength(2));
+    for (const [index, request] of planningPosts().entries()) {
+      const { planning_request_id } = await request.clone().json();
+      const caseId = index === 0 ? testCase.id : otherCase.id;
+      act(() => PlanningEventSource.instances[index]!.onmessage?.(new MessageEvent("message", { data: JSON.stringify({
+        type: "planning.attempt_started", attempt: index + 1, test_case_id: caseId,
+        planning_request_id, occurred_at: "2026-01-01T00:00:00Z"
+      }) })));
+    }
+    expect(screen.getByRole("log")).toHaveTextContent("第 2/3 次生成");
+    expect(screen.getByRole("log")).not.toHaveTextContent("第 1/3 次生成");
+    plans = [savedPlan(1, "原用例输入")];
+    await act(async () => completions.get(`/api/test-cases/${testCase.id}/plans`)!(Response.json(plans[0], { status: 201 })));
+    expect(screen.getByRole("dialog")).toHaveAttribute("aria-busy", "true");
+    expect(PlanningEventSource.instances[1]!.close).not.toHaveBeenCalled();
+    await act(async () => completions.get(`/api/test-cases/${otherCase.id}/plans`)!(Response.json({ code: "planning_failed", message: "另一请求失败" }, { status: 502 })));
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(planningInput()).toHaveValue("另一用例输入");
+    fireEvent.click(screen.getByRole("link", { name: "返回原用例" }));
+    await screen.findByText("版本 1 · 最新");
+    expect(planningInput()).toHaveValue("");
+    expect(screen.queryByRole("dialog", { name: "规划进度" })).not.toBeInTheDocument();
+  });
+
+  it("starts a new application session without restoring an old pending request", async () => {
+    let complete!: (response: Response) => void;
+    generateResponse = () => new Promise((resolve) => { complete = resolve; });
+    renderPlanPage();
+    fireEvent.click(await screen.findByRole("button", { name: "生成计划" }));
+    await waitFor(() => expect(complete).toBeDefined());
+    cleanup();
+    expect(PlanningEventSource.instances[0]!.close).toHaveBeenCalledOnce();
+    renderPlanPage();
+    await screen.findByRole("button", { name: "生成计划" });
+    expect(screen.queryByRole("dialog", { name: "规划进度" })).not.toBeInTheDocument();
+    expect(planningPosts()).toHaveLength(1);
+    plans = [savedPlan()];
+    await act(async () => complete(Response.json(plans[0], { status: 201 })));
+    expect(screen.queryByRole("dialog", { name: "规划进度" })).not.toBeInTheDocument();
+    expect(PlanningEventSource.instances).toHaveLength(1);
   });
 
   it("cancels local case changes without a request and preserves input on failure", async () => {
@@ -611,6 +806,61 @@ function renderCasesPage() {
     <Routes><Route path="/" element={<CasesPage />} /><Route path="/cases/:caseId/plan" element={<CasesPage />} /><Route path="/runs/:runId" element={<div>运行已创建</div>} /></Routes>
   </TestRouter></QueryClientProvider>);
 }
+
+it("keeps archive guarded after leaving a planning case and allows another case to run", async () => {
+  showOtherCase = true;
+  otherPlans = [savedPlan(1, null, otherCase)];
+  let complete!: (response: Response) => void;
+  generateResponse = () => new Promise((resolve) => { complete = resolve; });
+  renderCasesPage();
+  fireEvent.click(await screen.findByRole("button", { name: "生成计划" }));
+  await waitFor(() => expect(complete).toBeDefined());
+  const stream = PlanningEventSource.instances[0]!;
+  expect(screen.getByRole("button", { name: "归档用例：" + testCase.content.name })).toBeDisabled();
+  fireEvent.click(screen.getByRole("link", { name: /另一用例/ }));
+  await screen.findByRole("heading", { name: "另一用例", level: 2 });
+  expect(screen.getByRole("button", { name: "归档用例：" + testCase.content.name })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "归档用例：另一用例" })).toBeEnabled();
+  fireEvent.click(await screen.findByRole("checkbox"));
+  expect(startButton()).toBeEnabled();
+  fireEvent.click(startButton());
+  await screen.findByText("运行已创建");
+  expect(stream.close).not.toHaveBeenCalled();
+  plans = [savedPlan()];
+  await act(async () => complete(Response.json(plans[0], { status: 201 })));
+});
+
+it("disables only run start globally while another case has an active run", async () => {
+  plans = [savedPlan()];
+  activeRuns = [{
+    id: "active-run", test_plan_id: "other-plan", test_case_id: otherCase.id, test_case_name: otherCase.content.name,
+    test_case_archived: false, status: "running", verdict: null, created_at: testCase.created_at,
+    started_at: testCase.created_at, finished_at: null, image_count: 0, task_count: 1, task_status_counts: { running: 1 }
+  }];
+  renderPlanPage();
+  fireEvent.click(await screen.findByRole("checkbox"));
+  expect(startButton()).toBeDisabled();
+  expect(screen.getByRole("button", { name: /编辑用例/ })).toBeEnabled();
+  fireEvent.change(planningInput(), { target: { value: "另一个用例仍可规划" } });
+  expect(screen.getByRole("button", { name: "重新规划" })).toBeEnabled();
+});
+
+it("keeps run start disabled across case switches during preparation and releases it on failure", async () => {
+  plans = [savedPlan()]; otherPlans = [savedPlan(1, null, otherCase)];
+  let completeStart!: (response: Response) => void;
+  startResponse = () => new Promise((resolve) => { completeStart = resolve; });
+  renderPlanPage();
+  fireEvent.click(await screen.findByRole("checkbox"));
+  fireEvent.click(startButton());
+  await waitFor(() => expect(completeStart).toBeDefined());
+  fireEvent.click(screen.getByRole("link", { name: "切换用例" }));
+  await screen.findByRole("heading", { name: "另一用例" });
+  fireEvent.click(screen.getByRole("checkbox"));
+  expect(startButton()).toBeDisabled();
+  expect(screen.getByRole("button", { name: /编辑用例/ })).toBeEnabled();
+  await act(async () => completeStart(Response.json({ code: "mcp_unavailable", message: "准备失败" }, { status: 502 })));
+  await waitFor(() => expect(startButton()).toBeEnabled());
+});
 
 it("archives from a separate inbox button, retains history wording and clears planning caches", async () => {
   plans = [savedPlan()];

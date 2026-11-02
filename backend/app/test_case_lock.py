@@ -12,11 +12,25 @@ from typing import Literal
 from app.domain.errors import TestCaseBusy, TestCaseHasActiveRun, TestCasePlanning
 
 
-TestCaseOccupation = Literal["editing", "planning", "revising", "archiving", "running"]
+TestCaseOccupation = Literal[
+    "editing", "planning", "pre_planning", "revising", "archiving", "running", "pre_running",
+]
+
+_INCOMPATIBLE_OCCUPATIONS: dict[TestCaseOccupation, frozenset[TestCaseOccupation]] = {
+    "archiving": frozenset({
+        "editing", "revising", "pre_planning", "planning", "pre_running", "running",
+    }),
+    "editing": frozenset({"archiving", "pre_planning"}),
+    "revising": frozenset({"archiving", "planning", "pre_running"}),
+    "pre_planning": frozenset({"archiving", "editing"}),
+    "planning": frozenset({"archiving", "revising", "pre_running"}),
+    "pre_running": frozenset({"archiving", "revising", "planning"}),
+    "running": frozenset({"archiving"}),
+}
 
 
 class TestCaseLock:
-    """规划页写操作互斥并阻止新运行；已有运行期间仍可修改用例/计划。"""
+    """按全部叠加占用准入；准备结束只解除该流程的附加限制。"""
 
     def __init__(self) -> None:
         self._occupations: dict[str, set[TestCaseOccupation]] = {}
@@ -29,14 +43,18 @@ class TestCaseLock:
     def ensure_available(self, test_case_id: str, operation: TestCaseOccupation) -> None:
         self.ensure_not_archiving(test_case_id)
         occupied = self._occupations.get(test_case_id)
-        if not occupied:
+        if not occupied or (
+            operation not in occupied
+            and occupied.isdisjoint(_INCOMPATIBLE_OCCUPATIONS[operation])
+        ):
             return
-        if operation in {"editing", "archiving"} and "planning" in occupied:
-            raise TestCasePlanning("用例正在生成计划，请等待完成后再修改或归档")
+        if operation == "editing" and "pre_planning" in occupied:
+            raise TestCasePlanning("用例正在准备规划输入，请稍后保存用例")
+        if operation == "archiving" and "planning" in occupied:
+            raise TestCasePlanning("用例正在规划，请等待完成后再归档")
         if operation in {"archiving", "running"} and "running" in occupied:
             raise TestCaseHasActiveRun("用例正在启动或运行，请等待运行和资源释放结束")
-        if operation == "archiving" or occupied.intersection({"editing", "planning", "revising"}):
-            raise TestCaseBusy("用例正在处理其他操作，请完成后重试")
+        raise TestCaseBusy("用例正在处理不兼容的操作，请完成后重试")
 
     def acquire(self, test_case_id: str, operation: TestCaseOccupation) -> None:
         # No await between check and registration: atomic on the single loop.

@@ -99,7 +99,7 @@ def test_rejected_start_releases_run_entry(
         async def exercise() -> None:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
                 with (nullcontext() if rejection == "missing_plan"
-                      else container.test_case_lock.hold(plan["test_case_id"], "editing")):
+                      else container.test_case_lock.hold(plan["test_case_id"], "revising")):
                     response = await api.post("/api/runs", json={
                         "test_plan_id": str(uuid4()) if rejection == "missing_plan" else plan["id"],
                         "assumptions_confirmed": True,
@@ -111,6 +111,82 @@ def test_rejected_start_releases_run_entry(
                 run = await container.run_service.start(test_plan_id=plan["id"], assumptions_confirmed=True)
                 await container.run_service.cancel(run.id)
                 await container.run_service.shutdown()
+
+        assert client.portal is not None
+        client.portal.call(exercise)
+
+
+@pytest.mark.parametrize("preparation_stage", ["discovery", "creation"])
+def test_preparing_run_protects_plan_until_creation_then_allows_new_versions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preparation_stage: str,
+) -> None:
+    with build_client(tmp_path, turns=[finish_turn(1)]) as client:
+        plan = create_plan(client)
+        app = cast(FastAPI, client.app)
+        container = cast(Container, app.state.container)
+        original_prepare = (container.tools.discover_tools if preparation_stage == "discovery"
+                            else container.repository.create_test_run)
+        original_execute = container.executor.run
+
+        async def exercise() -> None:
+            preparing, release_preparation = asyncio.Event(), asyncio.Event()
+            executing, release_execution = asyncio.Event(), asyncio.Event()
+
+            async def prepare(*args, **kwargs):
+                preparing.set()
+                await release_preparation.wait()
+                return await original_prepare(*args, **kwargs)
+
+            async def execute(*args, **kwargs):
+                executing.set()
+                await release_execution.wait()
+                await original_execute(*args, **kwargs)
+
+            if preparation_stage == "discovery":
+                monkeypatch.setattr(container.tools, "discover_tools", prepare)
+            else:
+                monkeypatch.setattr(container.repository, "create_test_run", prepare)
+            monkeypatch.setattr(container.executor, "run", execute)
+            case_url = f"/api/test-cases/{plan['test_case_id']}"
+            revision = {**plan["content"], "tasks": [task["definition"] for task in plan["content"]["tasks"]]}
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
+                startup = asyncio.create_task(api.post("/api/runs", json={
+                    "test_plan_id": plan["id"], "assumptions_confirmed": True,
+                }))
+                try:
+                    await asyncio.wait_for(preparing.wait(), 5)
+                    for url, payload in (
+                        (case_url + "/plans", {"planning_request_id": str(uuid4()), "user_input": "准备期间不得替换计划"}),
+                        (f"/api/test-plans/{plan['id']}/revisions", {"content": revision}),
+                    ):
+                        response = await api.post(url, json=payload)
+                        assert response.status_code == 409, response.text
+                        assert response.json()["code"] == "test_case_busy"
+                    edited = await api.patch(case_url, json={"name": "后续输入", "source_text": "下一轮规划使用"})
+                    assert edited.status_code == 200, edited.text
+                    release_preparation.set()
+                    created = await asyncio.wait_for(startup, 15)
+                    assert created.status_code == 201, created.text
+                    run_id = created.json()["id"]
+                    await asyncio.wait_for(executing.wait(), 5)
+                    revised = await api.post(f"/api/test-plans/{plan['id']}/revisions", json={"content": revision})
+                    assert revised.status_code == 201, revised.text
+                    replanned = await api.post(case_url + "/plans", json={
+                        "planning_request_id": str(uuid4()), "user_input": "创建后允许新规划",
+                    })
+                    assert replanned.status_code == 201, replanned.text
+                    detail = await container.repository.get_test_run_detail(run_id)
+                    assert detail.test_plan.id == plan["id"]
+                    assert detail.test_plan.planning_context.model_dump(mode="json") == plan["planning_context"]
+                    assert (await api.post(case_url + "/archive")).status_code == 409
+                    assert (await api.post("/api/runs", json={
+                        "test_plan_id": replanned.json()["id"], "assumptions_confirmed": True,
+                    })).status_code == 409
+                finally:
+                    release_preparation.set()
+                    release_execution.set()
+                    await asyncio.gather(startup, return_exceptions=True)
+                    await container.run_service.shutdown()
 
         assert client.portal is not None
         client.portal.call(exercise)

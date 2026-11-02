@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
+
 from app.domain.activity import AgentActivity
 from app.domain.errors import PlanningUserInputRequired
 from app.domain.planning import (
@@ -59,7 +61,8 @@ class PlanningService:
                 **progress, "test_case_id": test_case_id, "planning_request_id": planning_request_id,
             }))
 
-        with self.test_case_lock.hold(test_case_id, "planning"):
+        with self.test_case_lock.hold(test_case_id, "planning"), ExitStack() as preparation:
+            preparation.enter_context(self.test_case_lock.hold(test_case_id, "pre_planning"))
             try:
                 await stage("planning.started")
                 test_case = await self.repository.get_test_case(test_case_id)
@@ -70,14 +73,7 @@ class PlanningService:
                 model_client = self.model_provider.client_for_activity(
                     AgentActivity.PLANNING
                 )
-                await stage("planning.input_ready")
-                draft = await self.planning_graph.generate(
-                    test_case.content,
-                    model_client=model_client,
-                    previous_plan=draft_plan_content(previous_plan.content) if previous_plan else None,
-                    user_input=user_input,
-                    on_progress=attempt_progress,
-                )
+                previous_content = draft_plan_content(previous_plan.content) if previous_plan else None
                 prompt_definition = self.planning_graph.prompt_definition
                 context = TestPlanPlanningContext(
                     test_case_content=test_case.content,
@@ -86,6 +82,15 @@ class PlanningService:
                         prompt_definition.fingerprint if prompt_definition is not None else None
                     ),
                     user_input=user_input,
+                )
+                preparation.close()
+                await stage("planning.input_ready")
+                draft = await self.planning_graph.generate(
+                    context.test_case_content,
+                    model_client=model_client,
+                    previous_plan=previous_content,
+                    user_input=context.user_input,
+                    on_progress=attempt_progress,
                 )
                 await stage("planning.saving")
                 plan = await self.repository.create_plan(

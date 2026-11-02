@@ -128,41 +128,42 @@ class RunService:
     ) -> None:
         plan = await self.repository.get_test_plan(test_plan_id)
         with self.test_case_lock.hold(plan.test_case_id, "running"):
-            discovery_phase = "MCP configuration loading"
-            try:
-                async with asyncio.timeout(self.discovery_timeout_seconds):
-                    await self.mcp_clients.load_clients()
-                    discovery_phase = "MCP tool discovery"
-                    tools = await self.tools.discover_tools()
-                    discovery_phase = "Skill and resource discovery"
-                    resource_catalog = await self.skills.discover_resources()
-            except Exception as exc:
-                raise MCPConnectionError(describe_exception(exc, phase=discovery_phase)) from exc
-            environment = TestRunEnvironmentSnapshot(
-                tool_catalog=snapshot_tools(tools),
-                resource_catalog=resource_catalog,
-                execution_model=self.model_provider.client_for_activity(
-                    AgentActivity.EXECUTION
-                ).profile_snapshot,
-                max_cycles_by_task_type=self.max_cycles_by_task_type,
-                prompt_fingerprints_by_task_type=self.prompt_catalog.prompt_fingerprints_by_task_type,
-                app_version=self.app_version,
-                execution_protocol_version="10",
-            )
-            try:
-                creation = asyncio.create_task(self.repository.create_test_run(
-                    test_plan_id=test_plan_id, environment=environment,
-                ))
+            with self.test_case_lock.hold(plan.test_case_id, "pre_running"):
+                discovery_phase = "MCP configuration loading"
                 try:
-                    run = await asyncio.shield(creation)
-                except asyncio.CancelledError:
-                    # A committed run must acquire an executor even when its
-                    # HTTP caller disappears before receiving the result.
-                    work.cancellation.set()
-                    run = await creation
-            except ActiveRunExists as exc:
-                raise RunConflict(exc.active_run_id) from exc
-            work.test_run_id = run.id
+                    async with asyncio.timeout(self.discovery_timeout_seconds):
+                        await self.mcp_clients.load_clients()
+                        discovery_phase = "MCP tool discovery"
+                        tools = await self.tools.discover_tools()
+                        discovery_phase = "Skill and resource discovery"
+                        resource_catalog = await self.skills.discover_resources()
+                except Exception as exc:
+                    raise MCPConnectionError(describe_exception(exc, phase=discovery_phase)) from exc
+                environment = TestRunEnvironmentSnapshot(
+                    tool_catalog=snapshot_tools(tools),
+                    resource_catalog=resource_catalog,
+                    execution_model=self.model_provider.client_for_activity(
+                        AgentActivity.EXECUTION
+                    ).profile_snapshot,
+                    max_cycles_by_task_type=self.max_cycles_by_task_type,
+                    prompt_fingerprints_by_task_type=self.prompt_catalog.prompt_fingerprints_by_task_type,
+                    app_version=self.app_version,
+                    execution_protocol_version="10",
+                )
+                try:
+                    creation = asyncio.create_task(self.repository.create_test_run(
+                        test_plan_id=test_plan_id, environment=environment,
+                    ))
+                    try:
+                        run = await asyncio.shield(creation)
+                    except asyncio.CancelledError:
+                        # A committed run must acquire an executor even when its
+                        # HTTP caller disappears before receiving the result.
+                        work.cancellation.set()
+                        run = await creation
+                except ActiveRunExists as exc:
+                    raise RunConflict(exc.active_run_id) from exc
+                work.test_run_id = run.id
             prepared_run.set_result(run)
             await self.executor.run(run.id, work.cancellation, tools)
 

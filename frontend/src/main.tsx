@@ -5,6 +5,7 @@ import { ConfigProvider } from "antd";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import zhCN from "antd/locale/zh_CN";
 import App from "./App";
+import { PlanningProgressProvider } from "./api/usePlanningProgress";
 import "./styles.css";
 
 const queryClient = new QueryClient({
@@ -16,7 +17,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: "#0066cc", colorText: "#1d1d1f", colorBorder: "#e0e0e0", borderRadius: 8, fontSize: 13, fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif' } }}>
       <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
+        <PlanningProgressProvider><RouterProvider router={router} /></PlanningProgressProvider>
       </QueryClientProvider>
     </ConfigProvider>
   </React.StrictMode>

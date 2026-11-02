@@ -36,7 +36,7 @@ class TestPlanNotLatest(ValueError):
 
 
 class TestCasePlanning(RuntimeError):
-    """用例仍在生成计划，暂不允许修改或归档。"""
+    """规划准备阻止用例保存，完整规划流程阻止归档。"""
 
 
 class TestCaseBusy(RuntimeError):

@@ -127,7 +127,7 @@ class TestPlanContent(BaseModel, Generic[TTask]):
 
 
 class TestPlanPlanningContext(BaseModel):
-    """计划创建时冻结的输入与模型审计事实，不参与后续版本覆盖。"""
+    """规划准备时固定的输入与模型审计事实，不参与后续版本覆盖。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

@@ -4,6 +4,7 @@ import { Alert, Button, Empty, Form, Input, Modal, Pagination, Spin, Tooltip, me
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { $api, apiErrorMessage } from "../api/client";
+import { usePlanningProgress } from "../api/usePlanningProgress";
 import type { TestCase, TestCaseCreateRequest } from "../api/contracts";
 import PlanPage from "./PlanPage";
 import { parsePage } from "../pageParams";
@@ -12,6 +13,7 @@ export default function CasesPage() {
   const { caseId } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const planning = usePlanningProgress();
   const [params, setParams] = useSearchParams();
   const search = params.get("search") ?? "";
   const page = parsePage(params.get("page"), 12);
@@ -26,7 +28,9 @@ export default function CasesPage() {
     refetchInterval: (query) => query.state.data?.items.length ? 3000 : 30000,
     refetchOnWindowFocus: true
   });
-  const cannotArchive = (id: string) => occupiedCases.includes(id) || !!activeRuns.data?.items.some((run) => run.test_case_id === id);
+  const cannotArchive = (id: string) => occupiedCases.includes(id)
+    || (planning.requests.has(id) && planning.requests.get(id)?.status !== "failed")
+    || !!activeRuns.data?.items.some((run) => run.test_case_id === id);
   useEffect(() => {
     if (!cases.data) return;
     const lastPage = Math.max(1, Math.ceil(cases.data.total / 12));

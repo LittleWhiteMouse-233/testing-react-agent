@@ -125,7 +125,7 @@ def test_update_validates_both_fields_without_partial_writes(tmp_path: Path, con
 
 
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancelled"])
-def test_planning_blocks_changes_until_request_finishes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
+def test_prepared_planning_allows_edits_and_preserves_its_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
     with build_client(tmp_path) as client:
         container = cast(Container, cast(FastAPI, client.app).state.container)
         assert client.portal is not None
@@ -149,9 +149,11 @@ def test_planning_blocks_changes_until_request_finishes(tmp_path: Path, monkeypa
             # Rejecting another request must not release the first's occupation.
             with pytest.raises(CaseBusy):
                 await container.planning.generate(test_case_id=case["id"], planning_request_id=str(uuid4()))
-            with pytest.raises(CasePlanning):
-                with container.test_case_lock.hold(case["id"], "editing"):
-                    await container.repository.update_test_case(case["id"], CaseContent(name="修改", source_text="修改"))
+            with container.test_case_lock.hold(case["id"], "editing"):
+                await container.repository.update_test_case(case["id"], CaseContent(name="修改", source_text="修改"))
+            with pytest.raises(CaseBusy):
+                with container.test_case_lock.hold(case["id"], "revising"):
+                    pytest.fail("planning must retain the revision constraint")
             with pytest.raises(CasePlanning):
                 with container.test_case_lock.hold(case["id"], "archiving"):
                     await container.repository.archive_test_case(case["id"])
@@ -167,7 +169,8 @@ def test_planning_blocks_changes_until_request_finishes(tmp_path: Path, monkeypa
                     with pytest.raises(PlanningFailure):
                         await first
                 else:
-                    await first
+                    plan = await first
+                    assert plan.planning_context.test_case_content.model_dump() == case["content"]
             with container.test_case_lock.hold(case["id"], "editing"):
                 await container.repository.update_test_case(case["id"], CaseContent(name="修改", source_text="修改"))
             with container.test_case_lock.hold(case["id"], "archiving"):
@@ -178,7 +181,7 @@ def test_planning_blocks_changes_until_request_finishes(tmp_path: Path, monkeypa
 
 @pytest.mark.parametrize("operation", ["editing", "planning", "revising"])
 @pytest.mark.parametrize("cancelled", [False, True])
-def test_plan_page_writes_exclude_other_writes_and_run_start(
+def test_plan_page_writes_reject_incompatible_operations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, cancelled: bool,
 ) -> None:
     with build_client(tmp_path) as client:
@@ -214,11 +217,17 @@ def test_plan_page_writes_exclude_other_writes_and_run_start(
                 pending = asyncio.create_task(api.request(method, url, json=payload))
                 try:
                     await asyncio.wait_for(entered.wait(), 5)
+                    conflicting = {
+                        "editing": {"editing", "planning"},
+                        "planning": {"planning", "revising", "running"},
+                        "revising": {"planning", "revising", "running"},
+                    }
                     for attempted, (method, url, payload) in requests.items():
+                        if attempted not in conflicting[operation]:
+                            continue
                         response = await api.request(method, url, json=payload)
                         assert response.status_code == 409, response.text
-                        expected_code = "test_case_planning" if operation == "planning" and attempted == "editing" else "test_case_busy"
-                        assert response.json()["code"] == expected_code
+                        assert response.json()["code"] == "test_case_busy"
                     assert (await api.get(case_url + "/plans")).json()["items"] == original_plans
                     assert read_records(tmp_path) == []
                     assert (await api.get(f"/api/test-cases/{other['id']}")).status_code == 200
@@ -239,6 +248,42 @@ def test_plan_page_writes_exclude_other_writes_and_run_start(
                 response = await api.patch(case_url, json={"name": "解除占用", "source_text": "可以保存"})
                 assert response.status_code == 200, response.text
 
+        client.portal.call(exercise)
+
+
+def test_planning_reserves_inputs_before_reading_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with build_client(tmp_path) as client:
+        plan = create_plan(client)
+        app = cast(FastAPI, client.app)
+        container = cast(Container, app.state.container)
+        original_read = container.repository.get_test_case
+
+        async def exercise() -> None:
+            reading, release = asyncio.Event(), asyncio.Event()
+
+            async def read_case(test_case_id: str):
+                reading.set()
+                await release.wait()
+                return await original_read(test_case_id)
+
+            monkeypatch.setattr(container.repository, "get_test_case", read_case)
+            case_url = f"/api/test-cases/{plan['test_case_id']}"
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
+                planning = asyncio.create_task(api.post(case_url + "/plans", json={
+                    "planning_request_id": str(uuid4()), "user_input": "固定输入",
+                }))
+                try:
+                    await asyncio.wait_for(reading.wait(), 5)
+                    rejected = await api.patch(case_url, json={"name": "不能修改", "source_text": "读取尚未结束"})
+                    assert rejected.status_code == 409, rejected.text
+                    assert rejected.json()["code"] == "test_case_planning"
+                finally:
+                    release.set()
+                    response = await planning
+                assert response.status_code == 201, response.text
+                assert response.json()["planning_context"]["test_case_content"] == plan["planning_context"]["test_case_content"]
+
+        assert client.portal is not None
         client.portal.call(exercise)
 
 
@@ -341,6 +386,7 @@ def test_archive_reserves_case_before_database_work_and_releases_on_cancellation
                 revision_content = {**plan["content"], "tasks": [task["definition"] for task in plan["content"]["tasks"]]}
                 attempts = [
                     ("GET", case_url, None), ("GET", case_url + "/plans", None),
+                    ("GET", case_url + "/planning/stream", None),
                     ("PATCH", case_url, {"name": "不能修改", "source_text": "归档占用中"}),
                     ("POST", case_url + "/plans", {"planning_request_id": str(uuid4()), "user_input": "不能规划"}),
                     ("POST", f"/api/test-plans/{plan['id']}/revisions", {"content": revision_content}),
