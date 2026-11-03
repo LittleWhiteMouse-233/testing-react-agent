@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_support import install_model_client
+
 import asyncio
 import json
 from pathlib import Path
@@ -67,7 +69,7 @@ def test_planning_stream_ready_precedes_work_and_has_no_history(tmp_path: Path) 
 def test_planning_attempt_events_and_failed_plan_is_not_saved(tmp_path: Path, invalid_attempts: int) -> None:
     with build_client(tmp_path) as client:
         container = cast(Container, cast(FastAPI, client.app).state.container)
-        container.model_provider.replace_client_for_testing("default", ScriptedChatModelClient(build_model_profile(),
+        install_model_client(container, ScriptedChatModelClient(build_model_profile(),
             plans=[{"title": "缺少任务"} for _ in range(invalid_attempts)],
         ))
         case_id = client.post("/api/test-cases", json={"name": "重试", "source_text": "检查设置"}).json()["id"]

@@ -936,7 +936,9 @@ it("shows the saved planning input in the online report", async () => {
       created_at: plan.created_at, started_at: plan.created_at, finished_at: plan.created_at
     }, environment: { execution_model: plan.planning_context.planning_model, tool_catalog: { tools: [] },
       resource_catalog: { local_root: null, resources: [], templates: [] },
-      prompt_fingerprints_by_task_type: { act: "act-v1", judge: "judge-v1", goal: "goal-v1" }, app_version: "0.1.0", execution_protocol_version: "10", max_cycles_by_task_type: { act: 30, judge: 10, goal: 10 }
+      prompt_fingerprints_by_task_type: { act: "act-v1", judge: "judge-v1", goal: "goal-v1" }, app_version: "0.1.0", execution_protocol_version: "11",
+      execution: { max_cycles_by_task_type: { act: 30, judge: 10, goal: 10 }, goal_max_failures: 10,
+        tool_call_timeout_seconds: 120, image_history_rounds: 3, model_call_max_attempts: 3, model_response_max_attempts: 3 }
     }, task_runs: [] },
     artifacts: [], events: []
   };

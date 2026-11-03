@@ -28,6 +28,7 @@ from app.domain.execution.messages import (
     RunToolMessage,
 )
 from app.domain.execution.runs import (
+    ExecutionSettings,
     ReasonCode,
     TaskAgentCompletion,
     TaskRun,
@@ -42,6 +43,7 @@ from app.domain.execution.runs import (
 )
 
 __all__ = [
+    "ExecutionSettings",
     "Artifact",
     "ArtifactType",
     "CycleStartedEvent",

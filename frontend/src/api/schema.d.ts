@@ -141,6 +141,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Settings */
+        get: operations["read_settings_api_settings_get"];
+        /** Update Settings */
+        put: operations["update_settings_api_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/test-cases": {
         parameters: {
             query?: never;
@@ -271,8 +289,20 @@ export interface components {
         ApiError: {
             /** Code */
             code: string;
+            /** Errors */
+            errors?: components["schemas"]["ApiValidationError"][] | null;
             /** Message */
             message: string;
+        };
+        /**
+         * ApiValidationError
+         * @description HTTP 字段校验错误；仅包含定位与安全说明，不携带输入。
+         */
+        ApiValidationError: {
+            /** Loc */
+            loc: (string | number)[];
+            /** Msg */
+            msg: string;
         };
         /**
          * Artifact
@@ -340,8 +370,179 @@ export interface components {
             type: "execution.error";
         };
         /**
+         * ExecutionSettings
+         * @description 应用配置及单次运行共同使用的执行预算与交互参数。
+         */
+        ExecutionSettings: {
+            /**
+             * Goal 累计失败上限
+             * @description 同一运行中每个 Goal 独立累计的失败次数上限。
+             */
+            goal_max_failures: number;
+            /**
+             * 图片保留轮数
+             * @description 模型上下文保留原图的最近有图片决策轮数。
+             */
+            image_history_rounds: number;
+            /**
+             * 各类任务决策轮次上限
+             * @description 每次任务执行独立使用对应类型的上限。
+             */
+            max_cycles_by_task_type: {
+                [key: string]: number;
+            };
+            /**
+             * 模型传输尝试次数
+             * @description 单轮模型传输的最多尝试次数，包含首次。
+             */
+            model_call_max_attempts: number;
+            /**
+             * 连续纠错尝试次数
+             * @description 连续无效模型响应和工具错误共用的尝试额度。
+             */
+            model_response_max_attempts: number;
+            /**
+             * 工具交互超时
+             * @description 外部能力准备及每次工具完整交互的超时秒数。
+             */
+            tool_call_timeout_seconds: number;
+        };
+        JsonValue: unknown;
+        /**
+         * LLMProfileSettings
+         * @description 单个模型部署参数；更新请求的空令牌在完整配置校验前合并。
+         */
+        LLMProfileSettings: {
+            /**
+             * 模型令牌
+             * Format: password
+             * @description 留空保留已有令牌；新真实模型必须填写。
+             */
+            api_key?: string | null;
+            /**
+             * 服务地址
+             * @description 真实模型的 OpenAI 兼容 API 基地址。
+             */
+            base_url?: string | null;
+            /**
+             * 每 token 字符数
+             * @description 文字容量估算使用的每 token 字符数。
+             */
+            characters_per_token: number;
+            /**
+             * 上下文安全余量
+             * @description 额外预留的 token 数。
+             */
+            context_safety_margin_tokens: number;
+            /**
+             * 上下文容量
+             * @description 模型完整上下文的 token 容量。
+             */
+            context_window_tokens: number;
+            /**
+             * 模型配置 ID
+             * @description 唯一、稳定的模型配置标识；修改 ID 视为新增模型。
+             */
+            id: string;
+            /**
+             * 最大输出容量
+             * @description 为模型输出预留的 token 数。
+             */
+            max_output_tokens: number;
+            /**
+             * 模型模式
+             * @description real 为真实服务，scripted 仅用于可控测试。
+             * @enum {string}
+             */
+            mode: "scripted" | "real";
+            /**
+             * 模型名称
+             * @description 服务端实际使用的模型名称。
+             */
+            model: string;
+            /**
+             * 生成温度
+             * @description 模型服务的 temperature 请求参数。
+             */
+            temperature: number;
+            /**
+             * 模型请求超时
+             * @description 每次模型调用的超时秒数。
+             */
+            timeout_seconds: number;
+            /**
+             * 每张图片容量
+             * @description 每张图片估算占用的 token 数。
+             */
+            tokens_per_image: number;
+        };
+        /**
+         * LLMProfileSettingsResponse
+         * @description 设置公开投影隐藏已有凭据，并说明是否已配置。
+         */
+        LLMProfileSettingsResponse: {
+            /** Api Key Configured */
+            api_key_configured: boolean;
+            /**
+             * 服务地址
+             * @description 真实模型的 OpenAI 兼容 API 基地址。
+             */
+            base_url?: string | null;
+            /**
+             * 每 token 字符数
+             * @description 文字容量估算使用的每 token 字符数。
+             */
+            characters_per_token: number;
+            /**
+             * 上下文安全余量
+             * @description 额外预留的 token 数。
+             */
+            context_safety_margin_tokens: number;
+            /**
+             * 上下文容量
+             * @description 模型完整上下文的 token 容量。
+             */
+            context_window_tokens: number;
+            /**
+             * 模型配置 ID
+             * @description 唯一、稳定的模型配置标识；修改 ID 视为新增模型。
+             */
+            id: string;
+            /**
+             * 最大输出容量
+             * @description 为模型输出预留的 token 数。
+             */
+            max_output_tokens: number;
+            /**
+             * 模型模式
+             * @description real 为真实服务，scripted 仅用于可控测试。
+             * @enum {string}
+             */
+            mode: "scripted" | "real";
+            /**
+             * 模型名称
+             * @description 服务端实际使用的模型名称。
+             */
+            model: string;
+            /**
+             * 生成温度
+             * @description 模型服务的 temperature 请求参数。
+             */
+            temperature: number;
+            /**
+             * 模型请求超时
+             * @description 每次模型调用的超时秒数。
+             */
+            timeout_seconds: number;
+            /**
+             * 每张图片容量
+             * @description 每张图片估算占用的 token 数。
+             */
+            tokens_per_image: number;
+        };
+        /**
          * LLMProfileSnapshot
-         * @description 一次模型客户端配置的脱敏投影；TestPlan/TestRun 用它冻结实际选择。
+         * @description 冻结实际模型选择，内存保留认证令牌，持久化及公开输出排除令牌。
          */
         LLMProfileSnapshot: {
             /** Base Url */
@@ -366,6 +567,42 @@ export interface components {
             timeout_seconds: number;
             /** Tokens Per Image */
             tokens_per_image: number;
+        };
+        /** LLMSettings[LLMProfileSettingsResponse] */
+        LLMSettings_LLMProfileSettingsResponse_: {
+            /**
+             * 执行模型
+             * @description Act、Judge 和 Goal 共用的模型。
+             */
+            execution_model_id: string;
+            /**
+             * 规划模型
+             * @description 生成测试计划使用的模型。
+             */
+            planning_model_id: string;
+            /**
+             * 模型配置列表
+             * @description 可以新增、编辑、删除模型；顺序不影响模型选择。
+             */
+            profiles: components["schemas"]["LLMProfileSettingsResponse"][];
+        };
+        /** LLMSettings[LLMProfileSettings] */
+        LLMSettings_LLMProfileSettings_: {
+            /**
+             * 执行模型
+             * @description Act、Judge 和 Goal 共用的模型。
+             */
+            execution_model_id: string;
+            /**
+             * 规划模型
+             * @description 生成测试计划使用的模型。
+             */
+            planning_model_id: string;
+            /**
+             * 模型配置列表
+             * @description 可以新增、编辑、删除模型；顺序不影响模型选择。
+             */
+            profiles: components["schemas"]["LLMProfileSettings"][];
         };
         /**
          * MessageAppendedEvent
@@ -734,6 +971,152 @@ export interface components {
             /** Tool Call Id */
             tool_call_id: string;
         };
+        /** SettingsContent[LLMProfileSettingsResponse] */
+        SettingsContent_LLMProfileSettingsResponse_: {
+            /**
+             * 应用名称
+             * @description 后端接口文档显示的应用名称。
+             */
+            app_name: string;
+            /**
+             * 应用版本
+             * @description 后端及运行记录使用的应用版本。
+             */
+            app_version: string;
+            /**
+             * 检查点文件
+             * @description 留空时使用数据目录内的 checkpoints.db。
+             */
+            checkpoint_path?: string | null;
+            /**
+             * 允许的浏览器来源
+             * @description 允许访问后端的浏览器 Origin 列表。
+             */
+            cors_origins: string[];
+            /**
+             * 数据目录
+             * Format: path
+             * @description 数据库、图片和导出文件的默认根目录。
+             */
+            data_dir: string;
+            /**
+             * 数据库地址
+             * @description 留空时从数据目录派生 SQLite 地址。
+             */
+            database_url?: string | null;
+            /**
+             * 调试模式
+             * @description 后端调试开关。
+             */
+            debug: boolean;
+            /**
+             * 执行参数
+             * @description 新运行使用的预算和交互参数。
+             */
+            execution: components["schemas"]["ExecutionSettings"];
+            /**
+             * 模型设置
+             * @description 新规划和新运行使用的模型。
+             */
+            llm: components["schemas"]["LLMSettings_LLMProfileSettingsResponse_"];
+            /**
+             * MCP 连接配置文件
+             * Format: path
+             * @description 独立外部服务的连接配置路径。
+             */
+            mcp_config_path: string;
+            /**
+             * 资料目录
+             * Format: path
+             * @description 本地 Skill 和静态资料的根目录。
+             */
+            skills_dir: string;
+        };
+        /** SettingsContent[LLMProfileSettings] */
+        SettingsContent_LLMProfileSettings_: {
+            /**
+             * 应用名称
+             * @description 后端接口文档显示的应用名称。
+             */
+            app_name: string;
+            /**
+             * 应用版本
+             * @description 后端及运行记录使用的应用版本。
+             */
+            app_version: string;
+            /**
+             * 检查点文件
+             * @description 留空时使用数据目录内的 checkpoints.db。
+             */
+            checkpoint_path?: string | null;
+            /**
+             * 允许的浏览器来源
+             * @description 允许访问后端的浏览器 Origin 列表。
+             */
+            cors_origins: string[];
+            /**
+             * 数据目录
+             * Format: path
+             * @description 数据库、图片和导出文件的默认根目录。
+             */
+            data_dir: string;
+            /**
+             * 数据库地址
+             * @description 留空时从数据目录派生 SQLite 地址。
+             */
+            database_url?: string | null;
+            /**
+             * 调试模式
+             * @description 后端调试开关。
+             */
+            debug: boolean;
+            /**
+             * 执行参数
+             * @description 新运行使用的预算和交互参数。
+             */
+            execution: components["schemas"]["ExecutionSettings"];
+            /**
+             * 模型设置
+             * @description 新规划和新运行使用的模型。
+             */
+            llm: components["schemas"]["LLMSettings_LLMProfileSettings_"];
+            /**
+             * MCP 连接配置文件
+             * Format: path
+             * @description 独立外部服务的连接配置路径。
+             */
+            mcp_config_path: string;
+            /**
+             * 资料目录
+             * Format: path
+             * @description 本地 Skill 和静态资料的根目录。
+             */
+            skills_dir: string;
+        };
+        /**
+         * SettingsResponse
+         * @description 设置页内容、渲染协议及进程级提示的统一响应。
+         */
+        SettingsResponse: {
+            /** Restart Required */
+            restart_required: boolean;
+            settings: components["schemas"]["SettingsContent_LLMProfileSettingsResponse_"];
+            /** Settings Schema */
+            settings_schema: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Version */
+            version: string;
+        };
+        /**
+         * SettingsUpdateRequest
+         * @description 携带乐观版本的完整设置替换命令；令牌为空时保留原值。
+         */
+        SettingsUpdateRequest: {
+            settings: components["schemas"]["SettingsContent_LLMProfileSettings_"];
+            /** Version */
+            version: string;
+        };
         /**
          * StoredRunEvent
          * @description 事件存储分配的 ID、顺序和时间与 canonical 事件的统一 envelope。
@@ -1016,16 +1399,13 @@ export interface components {
         TestRunEnvironmentSnapshot: {
             /** App Version */
             app_version: string;
+            execution: components["schemas"]["ExecutionSettings"];
             execution_model: components["schemas"]["LLMProfileSnapshot"];
             /**
              * Execution Protocol Version
              * @constant
              */
-            execution_protocol_version: "10";
-            /** Max Cycles By Task Type */
-            max_cycles_by_task_type: {
-                [key: string]: number;
-            };
+            execution_protocol_version: "11";
             /** Prompt Fingerprints By Task Type */
             prompt_fingerprints_by_task_type: {
                 [key: string]: string | null;
@@ -1646,6 +2026,95 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    read_settings_api_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    update_settings_api_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettingsUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

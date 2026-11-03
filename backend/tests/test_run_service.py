@@ -499,7 +499,11 @@ def test_one_preparation_timeout_covers_every_stage_and_releases_run_entry(
             monkeypatch.setattr(container.mcp_clients, "load_clients", load_clients)
             monkeypatch.setattr(container.tools, "discover_tools", discover_tools)
             monkeypatch.setattr(container.skills, "discover_resources", discover_resources)
-            container.run_service.discovery_timeout_seconds = 0.05
+            from app.config import LLMProfileSettings, SettingsContent
+            service = container.settings_service
+            draft = service.current.model_dump()
+            draft["execution"]["tool_call_timeout_seconds"] = 0.05
+            await service.update(SettingsContent[LLMProfileSettings].model_validate(draft), version=service.version)
             with pytest.raises(MCPConnectionError, match="TimeoutError") as captured:
                 await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
             expected_phases = {"configuration": "MCP configuration loading", "tools": "MCP tool discovery",

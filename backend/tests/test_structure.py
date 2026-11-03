@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_support import build_execution_settings
+
 from app.api import repository as api_repository
 
 import ast
@@ -93,10 +95,10 @@ def run_environment_snapshot() -> RunEnvironmentSnapshot:
         tool_catalog=ToolCatalogSnapshot(tools=[]),
         resource_catalog=ResourceCatalogSnapshot(),
         execution_model=model_snapshot(),
-        max_cycles_by_task_type={TaskType.ACT: 30, TaskType.JUDGE: 10, TaskType.GOAL: 10},
+        execution=build_execution_settings(),
         prompt_fingerprints_by_task_type={TaskType.ACT: "act-v1", TaskType.JUDGE: "judge-v1", TaskType.GOAL: "goal-v1"},
         app_version="0.1.0",
-        execution_protocol_version="10",
+        execution_protocol_version="11",
     )
 
 
@@ -192,7 +194,10 @@ def test_run_environment_rejects_incomplete_or_invalid_task_type_configuration(
     field_name: str, configuration: dict[str, int | str],
 ) -> None:
     snapshot = dump_test_run_environment_snapshot(run_environment_snapshot())
-    snapshot[field_name] = configuration
+    if field_name == "max_cycles_by_task_type":
+        snapshot["execution"][field_name] = configuration
+    else:
+        snapshot[field_name] = configuration
     with pytest.raises(ValidationError):
         load_test_run_environment_snapshot(snapshot)
 

@@ -1,6 +1,8 @@
 """Confirmed backward jumps, repeated execution history and failure precedence."""
 from __future__ import annotations
 
+from config_support import execution_model_client
+
 import json
 from pathlib import Path
 from typing import Any, cast
@@ -97,7 +99,7 @@ def test_reentered_memory_uses_actual_execution_numbers_and_resets_for_a_new_run
     with build_client(tmp_path, turns=turns * 2, execution={"goal_max_failures": 2}) as client:
         plan = confirmed_plan(client, ["act", "judge", "goal", "act"], {3: 1})
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         for _ in range(2):
             first_invocation = len(model.invocations)
             detail = wait_for_run(client, start_run(client, plan))

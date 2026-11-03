@@ -8,6 +8,20 @@
             "title": "Code",
             "type": "string"
           },
+          "errors": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ApiValidationError"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errors"
+          },
           "message": {
             "title": "Message",
             "type": "string"
@@ -18,6 +32,36 @@
           "message"
         ],
         "title": "ApiError",
+        "type": "object"
+      },
+      "ApiValidationError": {
+        "additionalProperties": false,
+        "description": "HTTP 字段校验错误；仅包含定位与安全说明，不携带输入。",
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Loc",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Msg",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg"
+        ],
+        "title": "ApiValidationError",
         "type": "object"
       },
       "Artifact": {
@@ -187,9 +231,280 @@
         "title": "ExecutionErrorEvent",
         "type": "object"
       },
+      "ExecutionSettings": {
+        "additionalProperties": false,
+        "description": "应用配置及单次运行共同使用的执行预算与交互参数。",
+        "properties": {
+          "goal_max_failures": {
+            "description": "同一运行中每个 Goal 独立累计的失败次数上限。",
+            "minimum": 1.0,
+            "title": "Goal 累计失败上限",
+            "type": "integer"
+          },
+          "image_history_rounds": {
+            "description": "模型上下文保留原图的最近有图片决策轮数。",
+            "minimum": 1.0,
+            "title": "图片保留轮数",
+            "type": "integer"
+          },
+          "max_cycles_by_task_type": {
+            "additionalProperties": {
+              "maximum": 100.0,
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "description": "每次任务执行独立使用对应类型的上限。",
+            "propertyNames": {
+              "$ref": "#/components/schemas/TestTaskType"
+            },
+            "title": "各类任务决策轮次上限",
+            "type": "object"
+          },
+          "model_call_max_attempts": {
+            "description": "单轮模型传输的最多尝试次数，包含首次。",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "模型传输尝试次数",
+            "type": "integer"
+          },
+          "model_response_max_attempts": {
+            "description": "连续无效模型响应和工具错误共用的尝试额度。",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "连续纠错尝试次数",
+            "type": "integer"
+          },
+          "tool_call_timeout_seconds": {
+            "description": "外部能力准备及每次工具完整交互的超时秒数。",
+            "exclusiveMinimum": 0.0,
+            "title": "工具交互超时",
+            "type": "number"
+          }
+        },
+        "required": [
+          "tool_call_timeout_seconds",
+          "goal_max_failures",
+          "image_history_rounds",
+          "model_call_max_attempts",
+          "model_response_max_attempts",
+          "max_cycles_by_task_type"
+        ],
+        "title": "ExecutionSettings",
+        "type": "object"
+      },
+      "JsonValue": {},
+      "LLMProfileSettings": {
+        "additionalProperties": false,
+        "description": "单个模型部署参数；更新请求的空令牌在完整配置校验前合并。",
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "留空保留已有令牌；新真实模型必须填写。",
+            "format": "password",
+            "title": "模型令牌",
+            "writeOnly": true
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "真实模型的 OpenAI 兼容 API 基地址。",
+            "title": "服务地址"
+          },
+          "characters_per_token": {
+            "description": "文字容量估算使用的每 token 字符数。",
+            "exclusiveMinimum": 0.0,
+            "title": "每 token 字符数",
+            "type": "number"
+          },
+          "context_safety_margin_tokens": {
+            "description": "额外预留的 token 数。",
+            "minimum": 0.0,
+            "title": "上下文安全余量",
+            "type": "integer"
+          },
+          "context_window_tokens": {
+            "description": "模型完整上下文的 token 容量。",
+            "minimum": 2048.0,
+            "title": "上下文容量",
+            "type": "integer"
+          },
+          "id": {
+            "description": "唯一、稳定的模型配置标识；修改 ID 视为新增模型。",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "模型配置 ID",
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "description": "为模型输出预留的 token 数。",
+            "minimum": 1.0,
+            "title": "最大输出容量",
+            "type": "integer"
+          },
+          "mode": {
+            "description": "real 为真实服务，scripted 仅用于可控测试。",
+            "enum": [
+              "scripted",
+              "real"
+            ],
+            "title": "模型模式",
+            "type": "string"
+          },
+          "model": {
+            "description": "服务端实际使用的模型名称。",
+            "minLength": 1,
+            "title": "模型名称",
+            "type": "string"
+          },
+          "temperature": {
+            "description": "模型服务的 temperature 请求参数。",
+            "title": "生成温度",
+            "type": "number"
+          },
+          "timeout_seconds": {
+            "description": "每次模型调用的超时秒数。",
+            "exclusiveMinimum": 0.0,
+            "title": "模型请求超时",
+            "type": "number"
+          },
+          "tokens_per_image": {
+            "description": "每张图片估算占用的 token 数。",
+            "minimum": 1.0,
+            "title": "每张图片容量",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "mode",
+          "model",
+          "temperature",
+          "timeout_seconds",
+          "context_window_tokens",
+          "max_output_tokens",
+          "characters_per_token",
+          "tokens_per_image",
+          "context_safety_margin_tokens"
+        ],
+        "title": "LLMProfileSettings",
+        "type": "object"
+      },
+      "LLMProfileSettingsResponse": {
+        "additionalProperties": false,
+        "description": "设置公开投影隐藏已有凭据，并说明是否已配置。",
+        "properties": {
+          "api_key_configured": {
+            "title": "Api Key Configured",
+            "type": "boolean"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "真实模型的 OpenAI 兼容 API 基地址。",
+            "title": "服务地址"
+          },
+          "characters_per_token": {
+            "description": "文字容量估算使用的每 token 字符数。",
+            "exclusiveMinimum": 0.0,
+            "title": "每 token 字符数",
+            "type": "number"
+          },
+          "context_safety_margin_tokens": {
+            "description": "额外预留的 token 数。",
+            "minimum": 0.0,
+            "title": "上下文安全余量",
+            "type": "integer"
+          },
+          "context_window_tokens": {
+            "description": "模型完整上下文的 token 容量。",
+            "minimum": 2048.0,
+            "title": "上下文容量",
+            "type": "integer"
+          },
+          "id": {
+            "description": "唯一、稳定的模型配置标识；修改 ID 视为新增模型。",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "模型配置 ID",
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "description": "为模型输出预留的 token 数。",
+            "minimum": 1.0,
+            "title": "最大输出容量",
+            "type": "integer"
+          },
+          "mode": {
+            "description": "real 为真实服务，scripted 仅用于可控测试。",
+            "enum": [
+              "scripted",
+              "real"
+            ],
+            "title": "模型模式",
+            "type": "string"
+          },
+          "model": {
+            "description": "服务端实际使用的模型名称。",
+            "minLength": 1,
+            "title": "模型名称",
+            "type": "string"
+          },
+          "temperature": {
+            "description": "模型服务的 temperature 请求参数。",
+            "title": "生成温度",
+            "type": "number"
+          },
+          "timeout_seconds": {
+            "description": "每次模型调用的超时秒数。",
+            "exclusiveMinimum": 0.0,
+            "title": "模型请求超时",
+            "type": "number"
+          },
+          "tokens_per_image": {
+            "description": "每张图片估算占用的 token 数。",
+            "minimum": 1.0,
+            "title": "每张图片容量",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "mode",
+          "model",
+          "temperature",
+          "timeout_seconds",
+          "context_window_tokens",
+          "max_output_tokens",
+          "characters_per_token",
+          "tokens_per_image",
+          "context_safety_margin_tokens",
+          "api_key_configured"
+        ],
+        "title": "LLMProfileSettingsResponse",
+        "type": "object"
+      },
       "LLMProfileSnapshot": {
         "additionalProperties": false,
-        "description": "一次模型客户端配置的脱敏投影；TestPlan/TestRun 用它冻结实际选择。",
+        "description": "冻结实际模型选择，内存保留认证令牌，持久化及公开输出排除令牌。",
         "properties": {
           "base_url": {
             "anyOf": [
@@ -267,6 +582,96 @@
           "context_safety_margin_tokens"
         ],
         "title": "LLMProfileSnapshot",
+        "type": "object"
+      },
+      "LLMSettings_LLMProfileSettingsResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "execution_model_id": {
+            "description": "Act、Judge 和 Goal 共用的模型。",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "执行模型",
+            "type": "string",
+            "x-option-value": "id",
+            "x-options-path": [
+              "llm",
+              "profiles"
+            ]
+          },
+          "planning_model_id": {
+            "description": "生成测试计划使用的模型。",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "规划模型",
+            "type": "string",
+            "x-option-value": "id",
+            "x-options-path": [
+              "llm",
+              "profiles"
+            ]
+          },
+          "profiles": {
+            "description": "可以新增、编辑、删除模型；顺序不影响模型选择。",
+            "items": {
+              "$ref": "#/components/schemas/LLMProfileSettingsResponse"
+            },
+            "minItems": 1,
+            "title": "模型配置列表",
+            "type": "array"
+          }
+        },
+        "required": [
+          "profiles",
+          "planning_model_id",
+          "execution_model_id"
+        ],
+        "title": "LLMSettings[LLMProfileSettingsResponse]",
+        "type": "object"
+      },
+      "LLMSettings_LLMProfileSettings_": {
+        "additionalProperties": false,
+        "properties": {
+          "execution_model_id": {
+            "description": "Act、Judge 和 Goal 共用的模型。",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "执行模型",
+            "type": "string",
+            "x-option-value": "id",
+            "x-options-path": [
+              "llm",
+              "profiles"
+            ]
+          },
+          "planning_model_id": {
+            "description": "生成测试计划使用的模型。",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "规划模型",
+            "type": "string",
+            "x-option-value": "id",
+            "x-options-path": [
+              "llm",
+              "profiles"
+            ]
+          },
+          "profiles": {
+            "description": "可以新增、编辑、删除模型；顺序不影响模型选择。",
+            "items": {
+              "$ref": "#/components/schemas/LLMProfileSettings"
+            },
+            "minItems": 1,
+            "title": "模型配置列表",
+            "type": "array"
+          }
+        },
+        "required": [
+          "profiles",
+          "planning_model_id",
+          "execution_model_id"
+        ],
+        "title": "LLMSettings[LLMProfileSettings]",
         "type": "object"
       },
       "MessageAppendedEvent": {
@@ -1262,6 +1667,249 @@
         "title": "RunToolMessage",
         "type": "object"
       },
+      "SettingsContent_LLMProfileSettingsResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "app_name": {
+            "description": "后端接口文档显示的应用名称。",
+            "title": "应用名称",
+            "type": "string"
+          },
+          "app_version": {
+            "description": "后端及运行记录使用的应用版本。",
+            "title": "应用版本",
+            "type": "string"
+          },
+          "checkpoint_path": {
+            "anyOf": [
+              {
+                "format": "path",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "留空时使用数据目录内的 checkpoints.db。",
+            "title": "检查点文件"
+          },
+          "cors_origins": {
+            "description": "允许访问后端的浏览器 Origin 列表。",
+            "items": {
+              "type": "string"
+            },
+            "title": "允许的浏览器来源",
+            "type": "array"
+          },
+          "data_dir": {
+            "description": "数据库、图片和导出文件的默认根目录。",
+            "format": "path",
+            "title": "数据目录",
+            "type": "string"
+          },
+          "database_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "留空时从数据目录派生 SQLite 地址。",
+            "title": "数据库地址"
+          },
+          "debug": {
+            "description": "后端调试开关。",
+            "title": "调试模式",
+            "type": "boolean"
+          },
+          "execution": {
+            "$ref": "#/components/schemas/ExecutionSettings",
+            "description": "新运行使用的预算和交互参数。",
+            "title": "执行参数",
+            "x-requires-restart": false
+          },
+          "llm": {
+            "$ref": "#/components/schemas/LLMSettings_LLMProfileSettingsResponse_",
+            "description": "新规划和新运行使用的模型。",
+            "title": "模型设置",
+            "x-requires-restart": false
+          },
+          "mcp_config_path": {
+            "description": "独立外部服务的连接配置路径。",
+            "format": "path",
+            "title": "MCP 连接配置文件",
+            "type": "string"
+          },
+          "skills_dir": {
+            "description": "本地 Skill 和静态资料的根目录。",
+            "format": "path",
+            "title": "资料目录",
+            "type": "string"
+          }
+        },
+        "required": [
+          "app_name",
+          "app_version",
+          "debug",
+          "cors_origins",
+          "data_dir",
+          "mcp_config_path",
+          "skills_dir",
+          "execution",
+          "llm"
+        ],
+        "title": "SettingsContent[LLMProfileSettingsResponse]",
+        "type": "object"
+      },
+      "SettingsContent_LLMProfileSettings_": {
+        "additionalProperties": false,
+        "properties": {
+          "app_name": {
+            "description": "后端接口文档显示的应用名称。",
+            "title": "应用名称",
+            "type": "string"
+          },
+          "app_version": {
+            "description": "后端及运行记录使用的应用版本。",
+            "title": "应用版本",
+            "type": "string"
+          },
+          "checkpoint_path": {
+            "anyOf": [
+              {
+                "format": "path",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "留空时使用数据目录内的 checkpoints.db。",
+            "title": "检查点文件"
+          },
+          "cors_origins": {
+            "description": "允许访问后端的浏览器 Origin 列表。",
+            "items": {
+              "type": "string"
+            },
+            "title": "允许的浏览器来源",
+            "type": "array"
+          },
+          "data_dir": {
+            "description": "数据库、图片和导出文件的默认根目录。",
+            "format": "path",
+            "title": "数据目录",
+            "type": "string"
+          },
+          "database_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "留空时从数据目录派生 SQLite 地址。",
+            "title": "数据库地址"
+          },
+          "debug": {
+            "description": "后端调试开关。",
+            "title": "调试模式",
+            "type": "boolean"
+          },
+          "execution": {
+            "$ref": "#/components/schemas/ExecutionSettings",
+            "description": "新运行使用的预算和交互参数。",
+            "title": "执行参数",
+            "x-requires-restart": false
+          },
+          "llm": {
+            "$ref": "#/components/schemas/LLMSettings_LLMProfileSettings_",
+            "description": "新规划和新运行使用的模型。",
+            "title": "模型设置",
+            "x-requires-restart": false
+          },
+          "mcp_config_path": {
+            "description": "独立外部服务的连接配置路径。",
+            "format": "path",
+            "title": "MCP 连接配置文件",
+            "type": "string"
+          },
+          "skills_dir": {
+            "description": "本地 Skill 和静态资料的根目录。",
+            "format": "path",
+            "title": "资料目录",
+            "type": "string"
+          }
+        },
+        "required": [
+          "app_name",
+          "app_version",
+          "debug",
+          "cors_origins",
+          "data_dir",
+          "mcp_config_path",
+          "skills_dir",
+          "execution",
+          "llm"
+        ],
+        "title": "SettingsContent[LLMProfileSettings]",
+        "type": "object"
+      },
+      "SettingsResponse": {
+        "additionalProperties": false,
+        "description": "设置页内容、渲染协议及进程级提示的统一响应。",
+        "properties": {
+          "restart_required": {
+            "title": "Restart Required",
+            "type": "boolean"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/SettingsContent_LLMProfileSettingsResponse_"
+          },
+          "settings_schema": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Settings Schema",
+            "type": "object"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "restart_required",
+          "settings",
+          "settings_schema"
+        ],
+        "title": "SettingsResponse",
+        "type": "object"
+      },
+      "SettingsUpdateRequest": {
+        "additionalProperties": false,
+        "description": "携带乐观版本的完整设置替换命令；令牌为空时保留原值。",
+        "properties": {
+          "settings": {
+            "$ref": "#/components/schemas/SettingsContent_LLMProfileSettings_"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "settings"
+        ],
+        "title": "SettingsUpdateRequest",
+        "type": "object"
+      },
       "StoredRunEvent": {
         "additionalProperties": false,
         "description": "事件存储分配的 ID、顺序和时间与 canonical 事件的统一 envelope。",
@@ -2055,25 +2703,16 @@
             "title": "App Version",
             "type": "string"
           },
+          "execution": {
+            "$ref": "#/components/schemas/ExecutionSettings"
+          },
           "execution_model": {
             "$ref": "#/components/schemas/LLMProfileSnapshot"
           },
           "execution_protocol_version": {
-            "const": "10",
+            "const": "11",
             "title": "Execution Protocol Version",
             "type": "string"
-          },
-          "max_cycles_by_task_type": {
-            "additionalProperties": {
-              "maximum": 100.0,
-              "minimum": 1.0,
-              "type": "integer"
-            },
-            "propertyNames": {
-              "$ref": "#/components/schemas/TestTaskType"
-            },
-            "title": "Max Cycles By Task Type",
-            "type": "object"
           },
           "prompt_fingerprints_by_task_type": {
             "additionalProperties": {
@@ -2104,7 +2743,7 @@
           "tool_catalog",
           "resource_catalog",
           "execution_model",
-          "max_cycles_by_task_type",
+          "execution",
           "prompt_fingerprints_by_task_type",
           "app_version",
           "execution_protocol_version"
@@ -3353,6 +3992,100 @@
           }
         },
         "summary": "Stream Run Events"
+      }
+    },
+    "/api/settings": {
+      "get": {
+        "operationId": "read_settings_api_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Read Settings"
+      },
+      "put": {
+        "operationId": "update_settings_api_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Update Settings"
       }
     },
     "/api/test-cases": {

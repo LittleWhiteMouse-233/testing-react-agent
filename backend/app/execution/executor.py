@@ -29,6 +29,7 @@ from app.domain.execution import (
     TaskRunResult,
     TaskRunStatus,
     TestRunVerdict,
+    TestRunEnvironmentSnapshot,
     aggregate_test_run_verdict,
 )
 from app.domain.ids import TaskRunId
@@ -64,18 +65,17 @@ class RunExecutor:
         repository: SqlAlchemyRunRepository,
         agent_factory: TaskAgentFactory,
         checkpoint_path: str,
-        goal_max_failures: int,
     ) -> None:
         self.repository = repository
         self.agent_factory = agent_factory
         self.checkpoint_path = checkpoint_path
-        self.goal_max_failures = goal_max_failures
 
     async def run(
         self,
         test_run_id: str,
         run_cancellation_event: asyncio.Event,
         tools: tuple[BaseTool, ...],
+        environment: TestRunEnvironmentSnapshot,
     ) -> None:
         active_task_run_id: TaskRunId | None = None
         remaining_after_active_task: list[TestTask] = []
@@ -107,11 +107,12 @@ class RunExecutor:
                                 task_run_id=active_task_run_id,
                                 task=test_task,
                                 memory_text=serialize_task_memories(task_memories),
-                                max_cycles=detail.environment.max_cycles_by_task_type[test_task.definition.type],
+                                max_cycles=environment.execution.max_cycles_by_task_type[test_task.definition.type],
                             ),
                             tools=tools,
-                            resource_catalog=detail.environment.resource_catalog,
-                            model_profile_id=detail.environment.execution_model.profile_id,
+                            resource_catalog=environment.resource_catalog,
+                            model_profile=environment.execution_model,
+                            execution=environment.execution,
                         )
                         completion = await self._execute_task(
                             test_run_id=test_run_id,
@@ -123,7 +124,7 @@ class RunExecutor:
                                        and completion.status == TaskRunStatus.FAILED)
                         if is_goal_failure:
                             goal_failure_counts[test_task.test_task_id] += 1
-                        if is_goal_failure and goal_failure_counts[test_task.test_task_id] >= self.goal_max_failures:
+                        if is_goal_failure and goal_failure_counts[test_task.test_task_id] >= environment.execution.goal_max_failures:
                             completion = completion.model_copy(update={"result": completion.result.model_copy(
                                 update={"reason_code": ReasonCode.GOAL_FAILURE_LIMIT},
                             )})

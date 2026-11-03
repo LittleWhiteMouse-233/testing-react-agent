@@ -7,9 +7,9 @@ from dataclasses import dataclass, field
 from app.domain.activity import AgentActivity
 from app.domain.errors import describe_exception
 from app.domain.execution import TestRun, TestRunEnvironmentSnapshot, TestRunStatus
-from app.domain.planning import TestTaskType
+from app.config import SettingsService
 from app.execution.executor import RunExecutor
-from app.llm import ModelProvider
+from app.llm import profile_snapshot_from_settings
 from app.persistence.run_repository import (
     ActiveRunExists,
     SqlAlchemyRunRepository,
@@ -49,26 +49,22 @@ class RunService:
         repository: SqlAlchemyRunRepository,
         test_case_lock: TestCaseLock,
         executor: RunExecutor,
-        model_provider: ModelProvider,
+        settings_service: SettingsService,
         prompt_catalog: PromptCatalog,
         mcp_clients: MCPClientProvider,
         tools: ToolProvider,
         skills: SkillResourceProvider,
-        max_cycles_by_task_type: dict[TestTaskType, int],
         app_version: str,
-        discovery_timeout_seconds: float,
     ) -> None:
         self.repository = repository
         self.test_case_lock = test_case_lock
         self.executor = executor
-        self.model_provider = model_provider
+        self.settings_service = settings_service
         self.prompt_catalog = prompt_catalog
         self.tools = tools
         self.skills = skills
         self.mcp_clients = mcp_clients
-        self.max_cycles_by_task_type = max_cycles_by_task_type
         self.app_version = app_version
-        self.discovery_timeout_seconds = discovery_timeout_seconds
         self._work: _RunWork | None = None
         self._closing = False
 
@@ -85,6 +81,7 @@ class RunService:
             raise RuntimeError("Application is shutting down")
         if self._work is not None:
             raise RunConflict(self._work.test_run_id)
+        self.settings_service.ensure_available()
         prepared_run: asyncio.Future[TestRun] = asyncio.get_running_loop().create_future()
         work = _RunWork()
         # Admission and registration cannot yield before both occupations are held.
@@ -134,10 +131,13 @@ class RunService:
         self, test_case_id: str, test_plan_id: str, prepared_run: asyncio.Future[TestRun],
         work: _RunWork,
     ) -> None:
+        settings = self.settings_service.current
+        execution_settings = settings.execution.model_copy(deep=True)
+        model_profile = profile_snapshot_from_settings(settings.llm.profile_for_activity(AgentActivity.EXECUTION))
         await self.repository.validate_test_plan_for_run(test_case_id=test_case_id, test_plan_id=test_plan_id)
         discovery_phase = "MCP configuration loading"
         try:
-            async with asyncio.timeout(self.discovery_timeout_seconds):
+            async with asyncio.timeout(execution_settings.tool_call_timeout_seconds):
                 await self.mcp_clients.load_clients()
                 discovery_phase = "MCP tool discovery"
                 tools = await self.tools.discover_tools()
@@ -148,13 +148,11 @@ class RunService:
         environment = TestRunEnvironmentSnapshot(
             tool_catalog=snapshot_tools(tools),
             resource_catalog=resource_catalog,
-            execution_model=self.model_provider.client_for_activity(
-                AgentActivity.EXECUTION
-            ).profile_snapshot,
-            max_cycles_by_task_type=self.max_cycles_by_task_type,
+            execution_model=model_profile,
+            execution=execution_settings,
             prompt_fingerprints_by_task_type=self.prompt_catalog.prompt_fingerprints_by_task_type,
             app_version=self.app_version,
-            execution_protocol_version="10",
+            execution_protocol_version="11",
         )
         try:
             creation = asyncio.create_task(self.repository.create_test_run(
@@ -172,7 +170,7 @@ class RunService:
         work.test_run_id = run.id
         self.test_case_lock.release(test_case_id, "pre_running")
         prepared_run.set_result(run)
-        await self.executor.run(run.id, work.cancellation, tools)
+        await self.executor.run(run.id, work.cancellation, tools, environment)
 
     async def shutdown(self) -> None:
         self._closing = True

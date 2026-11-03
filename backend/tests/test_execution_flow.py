@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_support import execution_model_client
+
 from app.api import repository as api_repository
 from app.api.schemas import TestRunPageQuery as RunPageQuery
 
@@ -70,7 +72,7 @@ def test_memory_is_projected_only_from_prior_tasks_in_the_same_run(tmp_path: Pat
         assert revision.status_code == 201, revision.text
         plan = revision.json()
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         for _ in range(2):
             first_invocation = len(model.invocations)
             detail = wait_for_run(client, start_run(client, plan))
@@ -135,7 +137,7 @@ def test_memory_image_reads_preserve_original_identity_window_and_exports(tmp_pa
             assert message["content"] == [{"type": "text", "text": f"[Image artifact {source['id']}]"},
                                            {"type": "image_artifact", "artifact_id": source["id"]}]
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         before_reread = model.invocations[-2]
         assert any("outside the image history" in message.text and source["id"] in message.text for message in before_reread)
         assert not any(block["type"] == "image" and block.get("id") == source["id"]
@@ -208,7 +210,7 @@ def test_required_context_over_budget_blocks_without_calling_model(tmp_path: Pat
         )
         assert response.status_code == 201, response.text
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         model_call_count = len(model.invocations)
 
         detail = wait_for_run(client, start_run(client, response.json()))
@@ -237,15 +239,19 @@ def test_configured_cycle_limits_by_task_type(
         assert [task["cycle_count"] for task in detail["task_runs"]] == counts
         blocked = next(task for task in detail["task_runs"] if task["status"] == "blocked")
         assert blocked["result"]["reason_code"] == "cycle_limit"
-        assert detail["environment"]["max_cycles_by_task_type"] == {"act": act_limit, "judge": judge_limit, "goal": 10}
+        assert detail["environment"]["execution"]["max_cycles_by_task_type"] == {"act": act_limit, "judge": judge_limit, "goal": 10}
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         contexts = [json.loads(invocation[1].text) for invocation in model.invocations[1:]]
         for context in contexts:
             expected = act_limit if context["task"]["definition"]["type"] == "act" else judge_limit
             assert context["max_cycles"] == expected
             assert "max_cycles" not in context["task"]["definition"]
-        container.run_service.max_cycles_by_task_type.update({TaskType.ACT: 50, TaskType.JUDGE: 50})
+        settings = client.get('/api/settings').json()
+        for profile in settings['settings']['llm']['profiles']:
+            profile.pop('api_key_configured')
+        settings['settings']['execution']['max_cycles_by_task_type'].update(act=50, judge=50)
+        assert client.put('/api/settings', json={'version': settings['version'], 'settings': settings['settings']}).status_code == 200
         stored = client.get(f"/api/runs/{run_id}").json()["detail"]
         assert stored["environment"] == detail["environment"]
         events = client.get(f"/api/runs/{run_id}").json()["events"]
@@ -298,7 +304,7 @@ def test_act_and_judge_share_tools_and_model(tmp_path: Path, monkeypatch: pytest
                     ["call-1", "finish-2"] if task_run == detail["task_runs"][0] else ["call-3", "finish-4"]
                 )
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         assert len(model.invocations) == 9  # one planning call, eight execution replies across two runs
         assert [invocation[0].content for invocation in model.invocations[1:]] == [
             act_prompt.text, act_prompt.text, judge_prompt.text, judge_prompt.text,
@@ -334,7 +340,7 @@ def test_optional_prompts_preserve_selected_text_and_snapshot_fingerprints(
         stored = client.get(f"/api/runs/{run_id}").json()["detail"]
         assert stored["environment"] == detail["environment"]
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         assert [invocation[0].content for invocation in model.invocations[1:]] == [prompt_text or ""] * 2
 
 
@@ -453,7 +459,7 @@ def test_timeout_returns_to_model_and_late_images_are_unconfirmed(tmp_path: Path
         report = client.get(f"/api/runs/{run_id}").json()
         assert len(report["artifacts"]) == 2
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         timeout = next(message for invocation in model.invocations for message in invocation
                        if isinstance(message, ToolMessage) and "unconfirmed" in message.text)
         assert timeout.tool_call_id == "call-2" and timeout.status == "error"
@@ -514,7 +520,7 @@ def test_model_can_correct_tool_parameters(tmp_path: Path, failure_kind: str) ->
         report = client.get(f"/api/runs/{run_id}").json()
         assert len(report["artifacts"]) == 1
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         correction_messages = [message for message in model.invocations[2] if isinstance(message, ToolMessage)]
         assert correction_messages[-1].status == "error" and correction_messages[-1].tool_call_id == "call-1"
     started = [entry for entry in read_records(tmp_path) if entry["phase"] == "started"]
@@ -544,7 +550,7 @@ def test_cancel_waits_for_call_or_timeout_and_never_executes_next_call(tmp_path:
         assert len(report["artifacts"]) == (1 if delay < 5 else 0)
         assert not any(entry["event"]["type"] == "execution.error" for entry in report["events"])
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         assert len(model.invocations) == 2  # planning and the first execution decision
         assert client.post(f"/api/runs/{run_id}/cancel").status_code == 202
         assert client.get(f"/api/runs/{run_id}").json()["detail"] == detail
@@ -605,7 +611,7 @@ def test_image_history_preserves_order_text_events_and_artifacts(tmp_path: Path)
                 assert all(f"data:image/svg+xml;base64,{encoded}" in download.text for encoded in image_encodings)
                 assert all(artifact["id"] in download.text for artifact in report["artifacts"])
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         assert sum(block['type'] == 'image' for message in model.invocations[-1] for block in message.content_blocks) == 6
         assert any('outside the image history' in message.text for message in model.invocations[-1])
         task_id = detail["task_runs"][0]["id"]
@@ -799,7 +805,7 @@ def test_cancellation_during_cycle_publication_prevents_model_call(tmp_path: Pat
     with build_client(tmp_path) as client:
         plan = create_plan(client)
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         prior_invocations = len(model.invocations)
         original_commit = container.run_event_writer.commit
 
@@ -825,7 +831,7 @@ def test_failed_cycle_transaction_rolls_back_count_and_event(tmp_path: Path, mon
     with build_client(tmp_path) as client:
         plan = create_plan(client)
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         prior_invocations = len(model.invocations)
         original_stage = container.run_event_writer._stage
 
@@ -1035,7 +1041,7 @@ def test_event_write_failure_stops_execution(
         detail = wait_for_run(client, start_run(client, create_plan(client)))
         assert detail["run"]["verdict"] == "BLOCKED"
         assert "event storage unavailable" in detail["task_runs"][0]["result"]["summary"]
-        model = cast(ScriptedChatModelClient, container.model_provider.client_for_activity(AgentActivity.EXECUTION))
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
         assert len(model.invocations) == 2
         assert sum(entry["phase"] == "started" for entry in read_records(tmp_path)) == (1 if event_stage == "result" else 0)
 

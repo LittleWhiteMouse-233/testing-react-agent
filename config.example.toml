@@ -29,10 +29,10 @@ judge = 10
 goal = 10
 
 [llm]
-# Optional: select profile IDs below. An omitted route uses the first profile.
+# Required: select existing profile IDs below; list order has no selection meaning.
 # Act, Judge and Goal all use execution_model_id.
-# planning_model_id = "tv-model"
-# execution_model_id = "tv-model"
+planning_model_id = "default"
+execution_model_id = "default"
 
 # The complete scripted profile is for local tests, not real television testing.
 # Without an explicitly supplied execution scenario it reports blocking.
@@ -49,7 +49,7 @@ tokens_per_image = 1024
 context_safety_margin_tokens = 1024
 
 # For real use, replace the scripted profile above with this complete profile.
-# Multiple profiles are allowed; IDs must be unique. Select routes under [llm].
+# Multiple profiles are allowed; IDs must be unique. Also change both routes under [llm].
 # Replace connection values and capacity estimates with your service's values.
 # [[llm.profiles]]
 # id = "tv-model"

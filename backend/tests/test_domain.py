@@ -206,27 +206,21 @@ def test_settings_to_snapshot_is_a_single_secret_free_projection() -> None:
     assert "api_key" not in snapshot.model_dump()
 
 
-def test_activity_conversion_and_model_provider_routes_are_explicit() -> None:
-    first = ScriptedChatModelClient(build_model_profile(id="first"))
-    second = ScriptedChatModelClient(build_model_profile(id="second"))
-    provider = ModelProvider(
-        {"first": first, "second": second},
-        planning_model_id="second",
-        execution_model_id="first",
-    )
-    assert provider.client_for_activity(AgentActivity.PLANNING) is second
-    assert provider.client_for_activity(AgentActivity.EXECUTION) is first
-    assert provider.client_for_activity(AgentActivity.EXECUTION) is first
-    assert provider.client_by_id("second") is second
+def test_model_provider_uses_the_explicit_snapshot_and_retains_its_credentials() -> None:
+    snapshot = profile_snapshot_from_settings(build_model_profile(
+        id="selected", mode="real", base_url="https://model.invalid/v1", api_key="snapshot-secret"))
+    client = ModelProvider().client_for_profile(snapshot)
+    assert client.model_id == "selected"
+    assert client.profile_snapshot.api_key == "snapshot-secret"
+    assert "snapshot-secret" not in client.profile_snapshot.model_dump_json()
 
 
-def test_model_provider_uses_ordered_default_and_one_profile_for_two_routes() -> None:
-    first = ScriptedChatModelClient(build_model_profile(id="first"))
-    second = ScriptedChatModelClient(build_model_profile(id="second"))
-    provider = ModelProvider(
-        {"first": first, "second": second},
-        execution_model_id="second",
-    )
-    assert provider.client_for_activity(AgentActivity.PLANNING) is first
-    assert provider.client_for_activity(AgentActivity.EXECUTION) is second
-    assert provider.client_for_activity(AgentActivity.EXECUTION) is second
+def test_model_routes_are_required_and_resolve_by_identity_instead_of_order() -> None:
+    from app.config import LLMProfileSettings, LLMSettings
+    profiles = [build_model_profile(id="first"), build_model_profile(id="second")]
+    with pytest.raises(ValidationError):
+        LLMSettings[LLMProfileSettings].model_validate({"profiles": profiles})
+    for ordered_profiles in (profiles, list(reversed(profiles))):
+        routes = LLMSettings[LLMProfileSettings](profiles=ordered_profiles, planning_model_id="second", execution_model_id="first")
+        assert routes.profile_for_activity(AgentActivity.PLANNING).id == "second"
+        assert routes.profile_for_activity(AgentActivity.EXECUTION).id == "first"

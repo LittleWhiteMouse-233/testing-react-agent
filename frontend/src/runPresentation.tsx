@@ -53,7 +53,7 @@ export function taskStatus(taskRun: TaskRun | undefined, finished: boolean) {
 
 export function taskMaxCycles(type: TestTaskDefinition["type"], environment: TestRunReport["detail"]["environment"]) {
   // Snapshot validation requires a budget for every registered task type.
-  return environment.max_cycles_by_task_type[type]!;
+  return environment.execution.max_cycles_by_task_type[type]!;
 }
 
 export function taskCycleCount(taskRun: TaskRun, events: StoredRunEvent[]) {

@@ -1,4 +1,4 @@
-"""LLM profile 的公开、脱敏且可审计领域快照。"""
+"""LLM profile 的固定领域快照；公开序列化排除令牌。"""
 
 from __future__ import annotations
 
@@ -8,11 +8,12 @@ from app.domain.ids import ModelProfileId
 
 
 class LLMProfileSnapshot(BaseModel):
-    """一次模型客户端配置的脱敏投影；TestPlan/TestRun 用它冻结实际选择。"""
+    """冻结实际模型选择，内存保留认证令牌，持久化及公开输出排除令牌。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     profile_id: ModelProfileId
+    api_key: str | None = Field(default=None, exclude=True, repr=False)
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
     base_url: str | None

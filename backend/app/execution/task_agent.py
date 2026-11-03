@@ -34,14 +34,15 @@ from app.domain.errors import (
     ModelCallTimeout,
 )
 from app.domain.execution import (
+    ExecutionSettings,
     TaskAgentCompletion,
     ReasonCode,
     TaskRunResult,
     TaskRunStatus,
 )
-from app.domain.resources import ResourceCatalogSnapshot, ResourceDefinitionSnapshot
+from app.domain.resources import LLMProfileSnapshot, ResourceCatalogSnapshot, ResourceDefinitionSnapshot
 from app.resources.static_resources import top_level_skills
-from app.domain.ids import ArtifactId, ModelProfileId, TaskRunId
+from app.domain.ids import ArtifactId, TaskRunId
 from app.domain.planning import TestTask, TestTaskType
 from app.execution.model_context import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent_events import TaskAgentEventRecorder
@@ -143,31 +144,25 @@ class TaskAgentInput:
     task_context: TaskAgentContext
     tools: tuple[BaseTool, ...]
     resource_catalog: ResourceCatalogSnapshot
-    model_profile_id: ModelProfileId
+    model_profile: LLMProfileSnapshot
+    execution: ExecutionSettings
 
 
 class TaskAgentFactory:
     def __init__(
         self, *, artifacts: ArtifactStore, model_provider: ModelProvider,
         prompt_catalog: PromptCatalog,
-        tool_call_timeout_seconds: float,
-        model_call_max_attempts: int, model_response_max_attempts: int,
-        image_history_rounds: int,
     ) -> None:
         self.artifacts = artifacts
         self.model_provider = model_provider
         self.prompt_catalog = prompt_catalog
-        self.tool_call_timeout_seconds = tool_call_timeout_seconds
-        self.model_call_max_attempts = model_call_max_attempts
-        self.model_response_max_attempts = model_response_max_attempts
-        self.image_history_rounds = image_history_rounds
 
     async def build(
         self, *, task_input: TaskAgentInput,
         run_cancellation_event: asyncio.Event, checkpointer: BaseCheckpointSaver[Any] | None,
         event_recorder: TaskAgentEventRecorder,
     ) -> tuple[CompiledStateGraph[TaskAgentGraphState, TaskAgentRuntimeContext], TaskAgentGraphState, TaskAgentRuntimeContext]:
-        model_client = self.model_provider.client_by_id(task_input.model_profile_id)
+        model_client = self.model_provider.client_for_profile(task_input.model_profile)
         prompt = self.prompt_catalog.prompt_for_task_type(task_input.task_context.task.definition.type)
         runtime_context = TaskAgentRuntimeContext(task_context=task_input.task_context, artifacts=self.artifacts)
         runtime = _TaskRuntime(
@@ -175,8 +170,8 @@ class TaskAgentFactory:
             model_client=model_client, prompt_definition=prompt, tools=task_input.tools,
             available_skills=top_level_skills(task_input.resource_catalog),
             model_context_window=ModelContextWindow(model_profile=model_client.profile_snapshot, tools=task_input.tools),
-            model_image_window=ModelImageWindow(history_rounds=self.image_history_rounds),
-            model_response_max_attempts=self.model_response_max_attempts,
+            model_image_window=ModelImageWindow(history_rounds=task_input.execution.image_history_rounds),
+            model_response_max_attempts=task_input.execution.model_response_max_attempts,
             event_recorder=event_recorder,
         )
         graph = StateGraph(TaskAgentGraphState, context_schema=TaskAgentRuntimeContext)
@@ -184,13 +179,13 @@ class TaskAgentFactory:
         graph.add_node("cycle_guard", runtime.cycle_guard)
         graph.add_node("model", runtime.call_model, retry_policy=RetryPolicy(
             initial_interval=0.25, backoff_factor=2, max_interval=1,
-            max_attempts=self.model_call_max_attempts, jitter=False, retry_on=_retry_model_error,
+            max_attempts=task_input.execution.model_call_max_attempts, jitter=False, retry_on=_retry_model_error,
         ))
         graph.add_node("validate", runtime.validate_message)
         graph.add_node("announce_tool", runtime.announce_tool)
         nodes_before_tools = set(graph.nodes)
         graph.add_node(
-            "tools", ToolNode(task_input.tools), timeout=self.tool_call_timeout_seconds,
+            "tools", ToolNode(task_input.tools), timeout=task_input.execution.tool_call_timeout_seconds,
             # LangGraph 1.2.9 supports NodeError injection but omits it from StateNode's type.
             error_handler=runtime.handle_tool_error,  # type: ignore[reportArgumentType]
         )

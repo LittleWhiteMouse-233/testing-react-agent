@@ -1,6 +1,8 @@
 """TaskAgent timeout feedback and image processing contracts."""
 from __future__ import annotations
 
+from config_support import build_execution_settings, model_provider_with_client
+
 import asyncio
 import base64
 import json
@@ -93,17 +95,15 @@ async def test_message_publication_contract_is_checked_during_build(
     monkeypatch.setattr(task_agent, "MESSAGE_PUBLISHING_NODES", declared_nodes, raising=False)
     model = ScriptedChatModelClient(build_model_profile())
     factory = TaskAgentFactory(
-        artifacts=task_runtime.runtime_context.artifacts, model_provider=ModelProvider({model.model_id: model}),
+        artifacts=task_runtime.runtime_context.artifacts, model_provider=model_provider_with_client(model),
         prompt_catalog=PromptCatalog(),
-        tool_call_timeout_seconds=120, model_call_max_attempts=3,
-        model_response_max_attempts=3, image_history_rounds=3,
     )
     expected_difference = r"missing=\['initialize'\]" if declaration_change == "missing" else r"extra=\['unexpected'\]"
     with pytest.raises(ValueError, match=expected_difference):
         await factory.build(
             task_input=TaskAgentInput(
                 task_context=task_runtime.runtime_context.task_context, tools=TASK_AGENT_TOOLS,
-                resource_catalog=ResourceCatalogSnapshot(), model_profile_id=model.profile_snapshot.profile_id,
+                resource_catalog=ResourceCatalogSnapshot(), model_profile=model.profile_snapshot, execution=build_execution_settings(),
             ),
             run_cancellation_event=asyncio.Event(), checkpointer=None, event_recorder=task_runtime.event_recorder,
         )
@@ -151,13 +151,13 @@ async def test_executor_captures_completion_independently_and_waits_for_stream_e
     checkpointer = InMemorySaver()
     factory.build.return_value = (graph.compile(checkpointer=checkpointer), initial, task_runtime.runtime_context)
     repository = create_autospec(SqlAlchemyRunRepository, instance=True)
-    executor = RunExecutor(repository=repository, agent_factory=factory, checkpoint_path="unused", goal_max_failures=10)
+    executor = RunExecutor(repository=repository, agent_factory=factory, checkpoint_path="unused")
     with tracing_context(enabled=False):
         actual = await executor._execute_task(
             test_run_id=str(uuid4()),
             task_input=TaskAgentInput(
                 task_context=task_runtime.runtime_context.task_context, tools=TASK_AGENT_TOOLS,
-                resource_catalog=ResourceCatalogSnapshot(), model_profile_id=task_runtime.model_client.profile_snapshot.profile_id,
+                resource_catalog=ResourceCatalogSnapshot(), model_profile=task_runtime.model_client.profile_snapshot, execution=build_execution_settings(),
             ),
             run_cancellation_event=asyncio.Event(), checkpointer=checkpointer,
         )
@@ -209,17 +209,15 @@ async def test_cancellation_at_model_or_event_boundary_prevents_further_calls(
         AIMessage(content="invalid") if boundary == "invalid_response" else tool_turn(1, "observe"),
     ])
     factory = TaskAgentFactory(
-        artifacts=task_runtime.runtime_context.artifacts, model_provider=ModelProvider({model.model_id: model}),
+        artifacts=task_runtime.runtime_context.artifacts, model_provider=model_provider_with_client(model),
         prompt_catalog=PromptCatalog(),
-        tool_call_timeout_seconds=120, model_call_max_attempts=3,
-        model_response_max_attempts=1, image_history_rounds=1,
     )
     graph, initial, runtime_context = await factory.build(
         task_input=TaskAgentInput(
             task_context=task_runtime.runtime_context.task_context,
             tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"), *TASK_AGENT_TOOLS),
             resource_catalog=ResourceCatalogSnapshot(),
-            model_profile_id=model.profile_snapshot.profile_id,
+            model_profile=model.profile_snapshot, execution=build_execution_settings(),
         ),
         run_cancellation_event=task_runtime.run_cancellation_event, checkpointer=None,
         event_recorder=event_recorder,
@@ -254,17 +252,15 @@ async def test_native_timeout_returns_to_model_without_waiting_for_late_result(t
 
     model = ScriptedChatModelClient(build_model_profile(), turns=[tool_turn(1, "observe"), finish_turn(2, "blocked")])
     factory = TaskAgentFactory(
-        artifacts=task_runtime.runtime_context.artifacts, model_provider=ModelProvider({model.model_id: model}),
+        artifacts=task_runtime.runtime_context.artifacts, model_provider=model_provider_with_client(model),
         prompt_catalog=PromptCatalog(),
-        model_call_max_attempts=3, model_response_max_attempts=3,
-        tool_call_timeout_seconds=0.05, image_history_rounds=1,
     )
     graph, initial, runtime_context = await factory.build(
         task_input=TaskAgentInput(
             task_context=task_runtime.runtime_context.task_context,
             tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"), *TASK_AGENT_TOOLS),
             resource_catalog=ResourceCatalogSnapshot(),
-            model_profile_id=model.profile_snapshot.profile_id,
+            model_profile=model.profile_snapshot, execution=build_execution_settings(tool_call_timeout_seconds=0.05, image_history_rounds=1),
         ),
         run_cancellation_event=task_runtime.run_cancellation_event, checkpointer=None,
         event_recorder=task_runtime.event_recorder,

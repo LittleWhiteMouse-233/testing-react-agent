@@ -303,3 +303,14 @@ dd { margin-left: 0; font-size: 12px; white-space: pre-wrap; }
   .report-footer > div { width: 100%; }
   .report-footer .ant-btn { font-size: 11px; }
 }
+/* Configuration uses the existing page, form and action components. */
+.settings-page { max-width: 1100px; margin: 0 auto; padding: 28px; }
+.settings-page .page-header, .settings-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.settings-page > .ant-alert { margin-bottom: 16px; }
+.settings-section { background: white; border: 1px solid #e0e0e0; border-radius: 10px; padding: 24px; margin: 24px 0; }
+.settings-section h2 { margin-top: 0; font-size: 18px; }
+.settings-description { color: #686873; font-size: 13px; }
+.settings-list { margin-bottom: 24px; }
+.settings-list-row { display: flex; gap: 12px; align-items: flex-start; margin: 12px 0; padding: 16px; border: 1px solid #e8e8ed; border-radius: 8px; }
+.settings-list-row > .settings-fields, .settings-list-row > .ant-form-item { flex: 1; min-width: 0; }
+@media (max-width: 640px) { .settings-page { padding: 16px; } .settings-page .page-header { align-items: flex-start; flex-direction: column; } }

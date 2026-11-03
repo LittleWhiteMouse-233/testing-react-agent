@@ -1,119 +1,114 @@
+"""应用配置家族、唯一文件加载及原子热更新。"""
 from __future__ import annotations
 
+import asyncio
 from functools import lru_cache
 import os
 from pathlib import Path
+import tempfile
 import tomllib
-from typing import Annotated, Literal
+from typing import Generic, Literal, TypeVar
+from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+import tomli_w
 
-from app.domain.planning import TestTaskType
+from app.domain.execution import ExecutionSettings
+from app.domain.activity import AgentActivity
+from app.domain.ids import ModelProfileId
+from app.test_case_lock import TestCaseLock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class LLMProfileSettings(BaseModel):
-    """单个模型客户端的完整部署配置；可调参数由实际配置显式提供。"""
+    """单个模型部署参数；更新请求的空令牌在完整配置校验前合并。"""
 
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
-    id: str = Field(min_length=1, max_length=100)
-    mode: Literal["scripted", "real"]
-    base_url: str | None = None
-    api_key: str | None = None
-    model: str
-    temperature: float
-    timeout_seconds: float = Field(gt=0)
-    context_window_tokens: int = Field(ge=2_048)
-    max_output_tokens: int = Field(ge=1)
-    characters_per_token: float = Field(gt=0)
-    tokens_per_image: int = Field(ge=1)
-    context_safety_margin_tokens: int = Field(ge=0)
+    id: ModelProfileId = Field(title="模型配置 ID", description="唯一、稳定的模型配置标识；修改 ID 视为新增模型。")
+    mode: Literal["scripted", "real"] = Field(title="模型模式", description="real 为真实服务，scripted 仅用于可控测试。")
+    base_url: str | None = Field(default=None, title="服务地址", description="真实模型的 OpenAI 兼容 API 基地址。")
+    api_key: str | None = Field(default=None, repr=False, title="模型令牌", description="留空保留已有令牌；新真实模型必须填写。", json_schema_extra={"writeOnly": True, "format": "password"})
+    model: str = Field(min_length=1, title="模型名称", description="服务端实际使用的模型名称。")
+    temperature: float = Field(title="生成温度", description="模型服务的 temperature 请求参数。")
+    timeout_seconds: float = Field(gt=0, title="模型请求超时", description="每次模型调用的超时秒数。")
+    context_window_tokens: int = Field(ge=2_048, title="上下文容量", description="模型完整上下文的 token 容量。")
+    max_output_tokens: int = Field(ge=1, title="最大输出容量", description="为模型输出预留的 token 数。")
+    characters_per_token: float = Field(gt=0, title="每 token 字符数", description="文字容量估算使用的每 token 字符数。")
+    tokens_per_image: int = Field(ge=1, title="每张图片容量", description="每张图片估算占用的 token 数。")
+    context_safety_margin_tokens: int = Field(ge=0, title="上下文安全余量", description="额外预留的 token 数。")
 
     @model_validator(mode="after")
-    def model_parameters_are_valid(self) -> "LLMProfileSettings":
-        if self.mode == "real" and (not self.base_url or not self.api_key):
-            raise ValueError("base_url and api_key are required for real model profiles")
-        reserved = self.max_output_tokens + self.context_safety_margin_tokens
-        if reserved >= self.context_window_tokens:
-            raise ValueError(
-                "max_output_tokens plus context_safety_margin_tokens must be "
-                "smaller than context_window_tokens"
-            )
+    def model_parameters_are_valid(self) -> LLMProfileSettings:
+        if self.mode == "real" and not self.base_url:
+            raise ValueError("base_url is required for real model profiles")
+        if self.max_output_tokens + self.context_safety_margin_tokens >= self.context_window_tokens:
+            raise ValueError("max_output_tokens plus context_safety_margin_tokens must be smaller than context_window_tokens")
         return self
 
 
-class LLMSettings(BaseModel):
-    """有序模型配置及规划、执行路由，共享同一启动配置生命周期。"""
+TProfile = TypeVar("TProfile", bound=LLMProfileSettings)
 
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    profiles: list[LLMProfileSettings] = Field(min_length=1)
-    planning_model_id: str | None = None
-    execution_model_id: str | None = None
+class LLMSettings(BaseModel, Generic[TProfile]):
+    """模型集合及两个必选路由；配置、替换请求、公开响应共享结构。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    profiles: list[TProfile] = Field(min_length=1, title="模型配置列表", description="可以新增、编辑、删除模型；顺序不影响模型选择。")
+    planning_model_id: ModelProfileId = Field(title="规划模型", description="生成测试计划使用的模型。", json_schema_extra={"x-options-path": ["llm", "profiles"], "x-option-value": "id"})
+    execution_model_id: ModelProfileId = Field(title="执行模型", description="Act、Judge 和 Goal 共用的模型。", json_schema_extra={"x-options-path": ["llm", "profiles"], "x-option-value": "id"})
 
     @model_validator(mode="after")
-    def model_routes_are_valid(self) -> "LLMSettings":
+    def model_routes_are_valid(self) -> LLMSettings[TProfile]:
         profile_ids = [profile.id for profile in self.profiles]
         if len(profile_ids) != len(set(profile_ids)):
             raise ValueError("Model profile ids must be unique")
-        for route_name, model_id in (
-            ("planning_model_id", self.planning_model_id),
-            ("execution_model_id", self.execution_model_id),
-        ):
-            if model_id is not None and model_id not in profile_ids:
-                raise ValueError(f"{route_name} references unknown model: {model_id}")
+        for route_name, model_id in (("planning_model_id", self.planning_model_id), ("execution_model_id", self.execution_model_id)):
+            if model_id not in profile_ids:
+                raise ValueError(f"{route_name} references unknown model")
         return self
 
-
-class ExecutionSettings(BaseModel):
-    """应用启动时加载的执行参数；各类型轮次上限随后固定到运行快照。"""
-
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-
-    tool_call_timeout_seconds: float = Field(gt=0)
-    goal_max_failures: int = Field(ge=1)
-    image_history_rounds: int = Field(ge=1)
-    model_call_max_attempts: int = Field(ge=1, le=10)
-    model_response_max_attempts: int = Field(ge=1, le=10)
-    max_cycles_by_task_type: dict[TestTaskType, Annotated[int, Field(ge=1, le=100)]]
-
-    @field_validator("max_cycles_by_task_type")
-    @classmethod
-    def task_types_are_complete(cls, cycle_limits: dict[TestTaskType, int]) -> dict[TestTaskType, int]:
-        if set(cycle_limits) != set(TestTaskType):
-            raise ValueError("max_cycles_by_task_type must contain exactly the registered task types")
-        return cycle_limits
+    def profile_for_activity(self, activity: AgentActivity) -> TProfile:
+        """按必选路由取得配置，调用方在工作准备阶段固定其副本。"""
+        model_id = self.planning_model_id if activity == AgentActivity.PLANNING else self.execution_model_id
+        return next(profile for profile in self.profiles if profile.id == model_id)
 
 
-class Settings(BaseModel):
-    """单份 TOML 的应用配置边界；构造及校验不加载其他文件或环境值。"""
+class SettingsContent(BaseModel, Generic[TProfile]):
+    """配置内容的共同事实；根级启动参数与嵌套运行参数各只有一份。"""
 
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
-    app_name: str
-    app_version: str
-    debug: bool
-    cors_origins: list[str]
-    data_dir: Path
-    database_url: str | None = None
-    checkpoint_path: Path | None = None
-    mcp_config_path: Path
-    skills_dir: Path
-    execution: ExecutionSettings
-    llm: LLMSettings
+    app_name: str = Field(title="应用名称", description="后端接口文档显示的应用名称。")
+    app_version: str = Field(title="应用版本", description="后端及运行记录使用的应用版本。")
+    debug: bool = Field(title="调试模式", description="后端调试开关。")
+    cors_origins: list[str] = Field(title="允许的浏览器来源", description="允许访问后端的浏览器 Origin 列表。")
+    data_dir: Path = Field(title="数据目录", description="数据库、图片和导出文件的默认根目录。")
+    database_url: str | None = Field(default=None, title="数据库地址", description="留空时从数据目录派生 SQLite 地址。")
+    checkpoint_path: Path | None = Field(default=None, title="检查点文件", description="留空时使用数据目录内的 checkpoints.db。")
+    mcp_config_path: Path = Field(title="MCP 连接配置文件", description="独立外部服务的连接配置路径。")
+    skills_dir: Path = Field(title="资料目录", description="本地 Skill 和静态资料的根目录。")
+    execution: ExecutionSettings = Field(title="执行参数", description="新运行使用的预算和交互参数。", json_schema_extra={"x-requires-restart": False})
+    llm: LLMSettings[TProfile] = Field(title="模型设置", description="新规划和新运行使用的模型。", json_schema_extra={"x-requires-restart": False})
+
+
+class Settings(SettingsContent[LLMProfileSettings]):
+    """合并令牌后完整有效的应用配置；写回 TOML 时保留令牌。"""
+
+    @model_validator(mode="after")
+    def credentials_are_configured(self) -> Settings:
+        if any(profile.mode == "real" and not profile.api_key for profile in self.llm.profiles):
+            raise ValueError("api_key is required for real model profiles")
+        return self
 
     def model_post_init(self, __context: object) -> None:
-        if not self.mcp_config_path.is_absolute():
-            self.mcp_config_path = (PROJECT_ROOT / self.mcp_config_path).resolve()
-        if not self.skills_dir.is_absolute():
-            self.skills_dir = (PROJECT_ROOT / self.skills_dir).resolve()
-        if not self.data_dir.is_absolute():
-            self.data_dir = (PROJECT_ROOT / self.data_dir).resolve()
-        if self.checkpoint_path is not None and not self.checkpoint_path.is_absolute():
-            self.checkpoint_path = (PROJECT_ROOT / self.checkpoint_path).resolve()
+        for field_name in ("mcp_config_path", "skills_dir", "data_dir", "checkpoint_path"):
+            configured_path = getattr(self, field_name)
+            if configured_path is not None and not configured_path.is_absolute():
+                object.__setattr__(self, field_name, (PROJECT_ROOT / configured_path).resolve())
 
     @property
     def db_url(self) -> str:
@@ -133,14 +128,15 @@ class Settings(BaseModel):
         self.checkpoints.parent.mkdir(parents=True, exist_ok=True)
 
 
+def resolve_config_path(config_path: Path | None = None) -> Path:
+    """配置文件和其中相对路径都以仓库根目录为基准。"""
+    selected_path = config_path if config_path is not None else Path(os.environ.get("TEST_AGENT_CONFIG_PATH") or "config.toml")
+    return (PROJECT_ROOT / selected_path).resolve()
+
+
 def load_settings(config_path: Path | None = None) -> Settings:
-    """读取唯一选定文件；路径环境变量只选择文件，不覆盖配置字段。"""
-    selected_path = config_path if config_path is not None else Path(
-        os.environ.get("TEST_AGENT_CONFIG_PATH") or "config.toml"
-    )
-    if not selected_path.is_absolute():
-        selected_path = PROJECT_ROOT / selected_path
-    with selected_path.open("rb") as config_file:
+    """只读取选定实际配置，不使用样板或其他环境变量补齐。"""
+    with resolve_config_path(config_path).open("rb") as config_file:
         return Settings.model_validate(tomllib.load(config_file))
 
 
@@ -149,3 +145,93 @@ def get_settings() -> Settings:
     settings = load_settings()
     settings.ensure_directories()
     return settings
+
+
+class SettingsBusy(RuntimeError):
+    """配置保存与规划或运行准备占用冲突。"""
+
+
+class SettingsVersionConflict(ValueError):
+    """请求基于旧配置或上一次进程的版本。"""
+
+
+class SettingsService:
+    """唯一配置发布者；已接受的保存拥有独立于 HTTP 调用者的生命周期。"""
+
+    def __init__(self, settings: Settings, config_path: Path, test_case_lock: TestCaseLock) -> None:
+        self._current = settings
+        self.config_path = config_path
+        self.test_case_lock = test_case_lock
+        self.version = str(uuid4())
+        self.restart_required = False
+        self._save_task: asyncio.Task[None] | None = None
+        self._closing = False
+
+    @property
+    def current(self) -> Settings:
+        return self._current
+
+    def ensure_available(self) -> None:
+        if self._save_task is not None or self._closing:
+            raise SettingsBusy("设置正在保存或应用正在关闭，请稍后重试")
+
+    async def update(self, content: SettingsContent[LLMProfileSettings], *, version: str) -> None:
+        self.ensure_available()
+        if self.test_case_lock.has_preparation():
+            raise SettingsBusy("正在准备规划或运行，请稍后保存设置")
+        if version != self.version:
+            raise SettingsVersionConflict("配置已更新，请重新加载后保存")
+        # Check and registration cannot yield on the application's single event loop.
+        save_task = asyncio.create_task(self._save(content), name="save-settings")
+        self._save_task = save_task
+        try:
+            await asyncio.shield(save_task)
+        except asyncio.CancelledError:
+            await save_task
+            raise
+
+    async def _save(self, content: SettingsContent[LLMProfileSettings]) -> None:
+        temporary_path: Path | None = None
+        try:
+            previous_profiles = {profile.id: profile for profile in self._current.llm.profiles}
+            candidate_values = content.model_dump()
+            for profile in candidate_values["llm"]["profiles"]:
+                if not profile["api_key"] and profile["id"] in previous_profiles:
+                    profile["api_key"] = previous_profiles[profile["id"]].api_key
+            candidate = Settings.model_validate(candidate_values)
+            startup_changed = any(
+                getattr(candidate, field_name) != getattr(self._current, field_name)
+                for field_name, field in Settings.model_fields.items()
+                if not isinstance(field.json_schema_extra, dict) or field.json_schema_extra.get("x-requires-restart", True)
+            )
+            contents = tomli_w.dumps(candidate.model_dump(mode="json", exclude_none=True))
+            next_version = str(uuid4())
+            temporary_path = await asyncio.to_thread(self._write_temporary_file, contents)
+            # No await between the file commit and the one in-memory publication.
+            os.replace(temporary_path, self.config_path)
+            self._current = candidate
+            self.version = next_version
+            self.restart_required = self.restart_required or startup_changed
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            self._save_task = None
+
+    def _write_temporary_file(self, contents: str) -> Path:
+        config_file = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=self.config_path.parent,
+                                                  prefix=f".{self.config_path.name}.", suffix=".tmp", delete=False)
+        temporary_path = Path(config_file.name)
+        try:
+            with config_file:
+                config_file.write(contents)
+                config_file.flush()
+                os.fsync(config_file.fileno())
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
+        return temporary_path
+
+    async def shutdown(self) -> None:
+        self._closing = True
+        if self._save_task is not None:
+            await asyncio.gather(self._save_task, return_exceptions=True)

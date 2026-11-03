@@ -181,8 +181,8 @@ it("updates memory after task.finished fetches the persisted task result", async
 
 it.each(["act", "judge"] as const)("shows the configured %s budget in the report", async (type) => {
   report.detail.test_plan.content.tasks[0]!.definition.type = type;
-  report.detail.environment.max_cycles_by_task_type.act = 37;
-  report.detail.environment.max_cycles_by_task_type.judge = 14;
+  report.detail.environment.execution.max_cycles_by_task_type.act = 37;
+  report.detail.environment.execution.max_cycles_by_task_type.judge = 14;
   renderPage(`/runs/${runId}/report`);
   await screen.findByText("设置页面验证");
   expect(screen.getByText(`completed · 2 / ${type === "act" ? 37 : 14} 轮`)).toBeInTheDocument();
@@ -231,8 +231,8 @@ it("keeps cancelled unstarted tasks distinct from fail-fast skipped tasks", asyn
 it.each(["act", "judge"] as const)("restores history and merges live cycles with the configured %s budget", async (type) => {
   report = runReport(null);
   report.detail.test_plan.content.tasks[0]!.definition.type = type;
-  report.detail.environment.max_cycles_by_task_type.act = 37;
-  report.detail.environment.max_cycles_by_task_type.judge = 14;
+  report.detail.environment.execution.max_cycles_by_task_type.act = 37;
+  report.detail.environment.execution.max_cycles_by_task_type.judge = 14;
   const limit = type === "act" ? 37 : 14;
   report.detail.test_plan.content.tasks.push({ test_task_id: caseId, definition: { ...report.detail.test_plan.content.tasks[0]!.definition, task_no: 2, title: "后续任务" } });
   renderPage(`/runs/${runId}`);
@@ -456,7 +456,7 @@ it.each(["1.5", "Infinity"])("uses a whole first page for invalid URL page %s on
 
 it("refreshes only on lifecycle changes and reconnection for a multi-task event history", async () => {
   report = runReport(null);
-  report.detail.environment.max_cycles_by_task_type.judge = 30;
+  report.detail.environment.execution.max_cycles_by_task_type.judge = 30;
   report.detail.test_plan.content.tasks.push({ test_task_id: caseId, definition: { ...report.detail.test_plan.content.tasks[0]!.definition, task_no: 2, title: "第二任务" } });
   const transmittedEventCounts: number[] = [];
   const originalFetch = vi.mocked(fetch).getMockImplementation()!;

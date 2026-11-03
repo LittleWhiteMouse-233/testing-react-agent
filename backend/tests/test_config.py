@@ -61,8 +61,8 @@ def test_explicit_file_wins_over_environment_and_optional_paths_are_derived(
     assert settings.db_url == f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}"
     assert settings.checkpoints == tmp_path / "checkpoints.db"
     assert settings.artifacts_dir == tmp_path / "artifacts"
-    assert settings.llm.planning_model_id is None
-    assert settings.llm.execution_model_id is None
+    assert settings.llm.planning_model_id == "default"
+    assert settings.llm.execution_model_id == "default"
     assert not (tmp_path / "artifacts").exists()
 
 
@@ -131,6 +131,20 @@ def test_model_routes_use_ids_from_the_same_file(tmp_path: Path, route: str) -> 
     assert getattr(config.load_settings(write_app_config(tmp_path, configuration)).llm, route) == "default"
     configuration["llm"][route] = "missing"
     with pytest.raises(ValidationError, match="unknown model"):
+        config.load_settings(write_app_config(tmp_path, configuration))
+
+
+def test_model_identity_is_normalized_consistently_for_profiles_and_routes(tmp_path: Path) -> None:
+    configuration = app_config_values(tmp_path, llm={"planning_model_id": " default ", "execution_model_id": "default"})
+    configuration["llm"]["profiles"][0]["id"] = " default "
+    settings = config.load_settings(write_app_config(tmp_path, configuration))
+    assert settings.llm.profiles[0].id == settings.llm.planning_model_id == settings.llm.execution_model_id == "default"
+
+
+def test_duplicate_model_identity_is_rejected_after_normalization(tmp_path: Path) -> None:
+    configuration = app_config_values(tmp_path)
+    configuration["llm"]["profiles"].append({**configuration["llm"]["profiles"][0], "id": " default "})
+    with pytest.raises(ValidationError, match="unique"):
         config.load_settings(write_app_config(tmp_path, configuration))
 
 

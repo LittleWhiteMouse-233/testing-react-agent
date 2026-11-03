@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_support import install_model_client
+
 from uuid import uuid4
 
 import asyncio
@@ -30,7 +32,7 @@ from config_support import build_model_profile
 
 def install_model(client: TestClient, model: ScriptedChatModelClient) -> Container:
     container = cast(Container, cast(FastAPI, client.app).state.container)
-    container.model_provider.replace_client_for_testing("default", model)
+    install_model_client(container, model)
     return container
 
 

@@ -25,6 +25,7 @@ dependencies = [
   "python-frontmatter>=1.1,<2",
   "rfc3986>=2,<3",
   "sqlalchemy[asyncio]>=2.0.38,<3",
+  "tomli-w>=1.2,<2",
   "uvicorn[standard]>=0.34,<1",
 ]
 

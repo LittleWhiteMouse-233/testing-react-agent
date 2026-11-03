@@ -1,6 +1,8 @@
 """Mutable case intent and archive boundaries preserve immutable run history."""
 from __future__ import annotations
 
+from config_support import install_model_client
+
 from uuid import uuid4
 
 import asyncio
@@ -69,8 +71,8 @@ def test_update_and_archive_preserve_all_plan_versions_runs_and_images(tmp_path:
         export = client.post(f"/api/runs/{run_ids[0]}/exports", json={"format": "json"}).json()
         export_content = client.get(f"/api/artifacts/{export['id']}").content
         report_before_archive = client.get(f"/api/runs/{run_ids[0]}").json()
-        files = {path: path.read_bytes() for path in container.settings.artifacts_dir.rglob("*") if path.is_file()}
-        checkpoint = container.settings.checkpoints.read_bytes()
+        files = {path: path.read_bytes() for path in container.settings_service.current.artifacts_dir.rglob("*") if path.is_file()}
+        checkpoint = container.settings_service.current.checkpoints.read_bytes()
 
         async def record_counts() -> dict[str, int]:
             async with container.sessions() as session:
@@ -83,7 +85,7 @@ def test_update_and_archive_preserve_all_plan_versions_runs_and_images(tmp_path:
         assert client.post(case_url + "/archive").status_code == 204
         assert client.portal.call(record_counts) == counts
         assert all(path.read_bytes() == content for path, content in files.items())
-        assert container.settings.checkpoints.read_bytes() == checkpoint
+        assert container.settings_service.current.checkpoints.read_bytes() == checkpoint
         assert client.get("/api/test-cases").json()["items"][0]["id"] == other_case["id"]
         assert client.get("/api/test-cases", params={"search": updated_content["name"], "limit": 1}).json() == {"items": [], "total": 0}
         for url in [case_url, case_url + "/plans"]:
@@ -132,7 +134,7 @@ def test_prepared_planning_allows_edits_and_preserves_its_input(tmp_path: Path, 
         case = client.post("/api/test-cases", json={"name": "名称", "source_text": "正文"}).json()
         other = client.post("/api/test-cases", json={"name": "其他用例", "source_text": "正文"}).json()
         if outcome == "failure":
-            container.model_provider.replace_client_for_testing("default", ScriptedChatModelClient(build_model_profile(), plans=[{"title": "缺少任务"}, {"title": "缺少任务"}, {"title": "缺少任务"}]))
+            install_model_client(container, ScriptedChatModelClient(build_model_profile(), plans=[{"title": "缺少任务"}, {"title": "缺少任务"}, {"title": "缺少任务"}]))
         original_generate = container.planning_graph.generate
         entered, release = asyncio.Event(), asyncio.Event()
 
@@ -351,7 +353,7 @@ def test_failed_mcp_start_releases_case_reservation(tmp_path: Path) -> None:
     with build_client(tmp_path) as client:
         plan = create_plan(client)
         container = cast(Container, cast(FastAPI, client.app).state.container)
-        container.settings.mcp_config_path.unlink()
+        container.settings_service.current.mcp_config_path.unlink()
         response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True})
         assert response.status_code == 502
         assert client.post(f"/api/test-cases/{plan['test_case_id']}/archive").status_code == 204

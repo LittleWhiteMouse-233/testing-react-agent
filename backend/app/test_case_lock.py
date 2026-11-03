@@ -35,6 +35,11 @@ class TestCaseLock:
     def __init__(self) -> None:
         self._occupations: dict[str, set[TestCaseOccupation]] = {}
 
+    def has_preparation(self) -> bool:
+        """任意用例仍在固定规划输入或准备运行时阻止修改全局配置。"""
+        return any(not occupied.isdisjoint({"pre_planning", "pre_running"})
+                   for occupied in self._occupations.values())
+
     def ensure_available(
         self, test_case_id: str, *operations: TestCaseOccupation,
     ) -> None:

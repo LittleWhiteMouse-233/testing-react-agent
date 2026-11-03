@@ -7,10 +7,15 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 from app.api import repository
+from app.config import SettingsBusy, SettingsVersionConflict
 
 from app.api.schemas import (
     ApiError,
+    SettingsResponse,
+    SettingsUpdateRequest,
+    api_validation_error,
     PageResponse,
     ReportExportRequest,
     ReviseTestPlanRequest,
@@ -69,6 +74,28 @@ def problem(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(
         status_code=status_code, detail={"code": code, "message": message}
     )
+
+
+@router.get("/settings", response_model=SettingsResponse)
+async def read_settings(request: Request) -> SettingsResponse:
+    return SettingsResponse.from_service(container(request).settings_service)
+
+
+@router.put("/settings", response_model=SettingsResponse, responses=CONFLICT_RESPONSE)
+async def update_settings(payload: SettingsUpdateRequest, request: Request) -> SettingsResponse:
+    service = container(request).settings_service
+    try:
+        await service.update(payload.settings, version=payload.version)
+    except SettingsBusy as exc:
+        raise problem(409, "settings_busy", str(exc)) from exc
+    except SettingsVersionConflict as exc:
+        raise problem(409, "settings_version_conflict", str(exc)) from exc
+    except ValidationError as exc:
+        error = api_validation_error(exc.errors(include_input=False, include_context=False, include_url=False))
+        raise HTTPException(status_code=422, detail=error.model_dump(mode="json", exclude_none=True)) from exc
+    except OSError as exc:
+        raise problem(500, "settings_save_failed", "设置保存失败，请检查配置文件是否可写") from exc
+    return SettingsResponse.from_service(service)
 
 
 @router.post("/test-cases", status_code=201, response_model=TestCase)
@@ -159,6 +186,8 @@ async def generate_plan(
             test_case_id=test_case_id, user_input=payload.user_input,
             planning_request_id=payload.planning_request_id,
         )
+    except SettingsBusy as exc:
+        raise problem(409, "settings_busy", str(exc)) from exc
     except PlanningUserInputRequired as exc:
         raise problem(422, "planning_user_input_required", str(exc)) from exc
     except TestPlanNotLatest as exc:
@@ -225,6 +254,8 @@ async def create_test_run(
             test_plan_id=payload.test_plan_id,
             assumptions_confirmed=payload.assumptions_confirmed,
         )
+    except SettingsBusy as exc:
+        raise problem(409, "settings_busy", str(exc)) from exc
     except MCPConnectionError as exc:
         raise problem(502, "mcp_unavailable", str(exc)) from exc
     except RunConflict as exc:

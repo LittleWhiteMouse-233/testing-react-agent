@@ -93,7 +93,7 @@ def test_complete_message_first_run_and_exports() -> None:
                 "passed",
                 "passed",
             ]
-            assert detail["environment"]["execution_protocol_version"] == "10"
+            assert detail["environment"]["execution_protocol_version"] == "11"
             assert "planning_model" not in detail["environment"]
 
             events_response = client.get(
@@ -288,7 +288,7 @@ def test_api_errors_use_the_stable_error_contract() -> None:
                 "/api/test-cases", json={"name": "", "source_text": ""}
             )
             assert invalid.status_code == 422
-            assert set(invalid.json()) == {"code", "message"}
+            assert set(invalid.json()) == {"code", "message", "errors"}
             assert invalid.json()["code"] == "validation_error"
 
             missing = client.get(

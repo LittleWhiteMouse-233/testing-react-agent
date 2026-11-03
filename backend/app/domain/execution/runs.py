@@ -14,6 +14,29 @@ from app.domain.planning import TestPlan, TestTask, TestTaskType
 from app.domain.resources import LLMProfileSnapshot, ResourceCatalogSnapshot, ToolCatalogSnapshot
 
 
+class ExecutionSettings(BaseModel):
+    """应用配置及单次运行共同使用的执行预算与交互参数。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    tool_call_timeout_seconds: float = Field(gt=0, title="工具交互超时", description="外部能力准备及每次工具完整交互的超时秒数。")
+    goal_max_failures: int = Field(ge=1, title="Goal 累计失败上限", description="同一运行中每个 Goal 独立累计的失败次数上限。")
+    image_history_rounds: int = Field(ge=1, title="图片保留轮数", description="模型上下文保留原图的最近有图片决策轮数。")
+    model_call_max_attempts: int = Field(ge=1, le=10, title="模型传输尝试次数", description="单轮模型传输的最多尝试次数，包含首次。")
+    model_response_max_attempts: int = Field(ge=1, le=10, title="连续纠错尝试次数", description="连续无效模型响应和工具错误共用的尝试额度。")
+    max_cycles_by_task_type: dict[TestTaskType, Annotated[int, Field(ge=1, le=100)]] = Field(
+        title="各类任务决策轮次上限", description="每次任务执行独立使用对应类型的上限。",
+    )
+
+    @field_validator("max_cycles_by_task_type")
+    @classmethod
+    def task_types_are_complete(cls, cycle_limits: dict[TestTaskType, int]) -> dict[TestTaskType, int]:
+        """执行预算必须覆盖且只覆盖已注册任务类型。"""
+        if set(cycle_limits) != set(TestTaskType):
+            raise ValueError("max_cycles_by_task_type must contain exactly the registered task types")
+        return cycle_limits
+
+
 class TestRunStatus(StrEnum):
     """TestRun 的持久化生命周期阶段；取消由终态 verdict 表达。"""
 
@@ -84,16 +107,15 @@ class TestRunEnvironmentSnapshot(BaseModel):
     tool_catalog: ToolCatalogSnapshot
     resource_catalog: ResourceCatalogSnapshot
     execution_model: LLMProfileSnapshot
-    max_cycles_by_task_type: dict[TestTaskType, Annotated[int, Field(ge=1, le=100)]]
+    execution: ExecutionSettings
     prompt_fingerprints_by_task_type: dict[TestTaskType, Annotated[str, Field(min_length=1)] | None]
     app_version: str = Field(min_length=1)
-    execution_protocol_version: Literal["10"]
+    execution_protocol_version: Literal["11"]
 
     @model_validator(mode="after")
     def task_types_are_complete(self) -> "TestRunEnvironmentSnapshot":
         required_task_types = set(TestTaskType)
         for field_name, configured_task_types in (
-            ("max_cycles_by_task_type", self.max_cycles_by_task_type.keys()),
             ("prompt_fingerprints_by_task_type", self.prompt_fingerprints_by_task_type.keys()),
         ):
             if set(configured_task_types) != required_task_types:

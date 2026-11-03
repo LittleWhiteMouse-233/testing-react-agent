@@ -3,6 +3,9 @@ import type { components } from "./schema";
 type Schemas = components["schemas"];
 
 export type ApiError = Schemas["ApiError"];
+export type ApiValidationError = Schemas["ApiValidationError"];
+export type SettingsResponse = Schemas["SettingsResponse"];
+export type SettingsUpdateRequest = Schemas["SettingsUpdateRequest"];
 export type StoredRunEvent = Schemas["StoredRunEvent"];
 export type PlanningEvent = Schemas["PlanningEvent"];
 export type TestCase = Schemas["TestCase"];

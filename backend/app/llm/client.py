@@ -1,4 +1,4 @@
-"""单个 LLM profile 的客户端合同、真实实现与脱敏快照转换。"""
+"""单个 LLM profile 的客户端合同、真实实现与运行快照转换。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from app.domain.resources import LLMProfileSnapshot
 
 
 class ChatModelClient(Protocol):
-    """绑定一个 profile 的模型访问对象；activity 选择由 ModelProvider 负责。"""
+    """绑定一个固定 profile 的模型访问对象；配置路由在工作准备时选择。"""
 
     model_id: str
     profile_snapshot: LLMProfileSnapshot
@@ -24,11 +24,12 @@ class ChatModelClient(Protocol):
 def profile_snapshot_from_settings(
     settings: LLMProfileSettings,
 ) -> LLMProfileSnapshot:
-    """唯一的部署配置到公开审计快照单向脱敏转换。"""
+    """部署配置到固定模型快照的转换；令牌在快照序列化时排除。"""
 
     provider = "openai-compatible" if settings.mode == "real" else "scripted"
     return LLMProfileSnapshot(
         profile_id=settings.id,
+        api_key=settings.api_key,
         provider=provider,
         model=settings.model,
         base_url=settings.base_url if settings.mode == "real" else None,
