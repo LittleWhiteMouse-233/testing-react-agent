@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import logging
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -10,24 +9,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes import router
-from app.config import Settings, load_settings, resolve_config_path
+from app.config import Settings, get_settings
 from app.api.schemas import ApiError, api_validation_error
 from app.container import Container
-from app.persistence.db import init_database
+from app.persistence.db import ensure_sqlite_database_directory, init_database
 
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(settings_override: Settings | None = None, *, config_path: Path | None = None) -> FastAPI:
-    selected_config_path = resolve_config_path(config_path)
-    settings = load_settings(selected_config_path) if settings_override is None else settings_override
-    if settings_override is None:
-        settings.ensure_directories()
+def create_app(settings_override: Settings | None = None) -> FastAPI:
+    settings = get_settings() if settings_override is None else settings_override
 
     @asynccontextmanager
     async def lifespan(instance: FastAPI):
-        container = Container(settings.model_copy(deep=True), selected_config_path)
+        startup_settings = settings.model_copy(deep=True)
+        startup_settings.ensure_directories()
+        ensure_sqlite_database_directory(startup_settings.db_url)
+        container = Container(startup_settings)
         instance.state.container = container
         await init_database(container.engine)
         await container.run_service.reconcile_orphaned_runs()

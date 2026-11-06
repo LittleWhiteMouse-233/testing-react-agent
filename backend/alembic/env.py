@@ -9,7 +9,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import get_settings
-from app.persistence.db import Base
+from app.persistence.db import Base, ensure_sqlite_database_directory
 from app.persistence import models  # noqa: F401
 
 
@@ -17,7 +17,8 @@ config = context.config
 if config.config_file_name:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", get_settings().db_url)
+settings = get_settings()
+config.set_main_option("sqlalchemy.url", settings.db_url)
 target_metadata = Base.metadata
 
 
@@ -39,6 +40,7 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
+    ensure_sqlite_database_directory(settings.db_url)
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",

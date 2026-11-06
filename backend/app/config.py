@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from functools import lru_cache
 import os
 from pathlib import Path
 import tempfile
@@ -10,7 +9,7 @@ import tomllib
 from typing import Generic, Literal, TypeVar
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import tomli_w
 
 from app.domain.execution import ExecutionSettings
@@ -96,7 +95,16 @@ class SettingsContent(BaseModel, Generic[TProfile]):
 
 
 class Settings(SettingsContent[LLMProfileSettings]):
-    """合并令牌后完整有效的应用配置；写回 TOML 时保留令牌。"""
+    """绑定来源文件的完整应用配置；路径不写入 TOML，令牌保留。"""
+
+    config_path: Path = Field(exclude=True)
+
+    @field_validator("config_path")
+    @classmethod
+    def config_path_is_absolute(cls, config_path: Path) -> Path:
+        if not config_path.is_absolute():
+            raise ValueError("config_path must be an absolute path")
+        return config_path
 
     @model_validator(mode="after")
     def credentials_are_configured(self) -> Settings:
@@ -128,23 +136,15 @@ class Settings(SettingsContent[LLMProfileSettings]):
         self.checkpoints.parent.mkdir(parents=True, exist_ok=True)
 
 
-def resolve_config_path(config_path: Path | None = None) -> Path:
-    """配置文件和其中相对路径都以仓库根目录为基准。"""
+def get_settings(config_path: Path | None = None) -> Settings:
+    """读取并绑定唯一实际配置；路径从仓库根目录解析，不创建目录。"""
     selected_path = config_path if config_path is not None else Path(os.environ.get("TEST_AGENT_CONFIG_PATH") or "config.toml")
-    return (PROJECT_ROOT / selected_path).resolve()
-
-
-def load_settings(config_path: Path | None = None) -> Settings:
-    """只读取选定实际配置，不使用样板或其他环境变量补齐。"""
-    with resolve_config_path(config_path).open("rb") as config_file:
-        return Settings.model_validate(tomllib.load(config_file))
-
-
-@lru_cache
-def get_settings() -> Settings:
-    settings = load_settings()
-    settings.ensure_directories()
-    return settings
+    selected_path = (PROJECT_ROOT / selected_path).resolve()
+    with selected_path.open("rb") as config_file:
+        settings_values = tomllib.load(config_file)
+    if "config_path" in settings_values:
+        raise ValueError("config_path selects the source file and cannot be configured inside TOML")
+    return Settings.model_validate({**settings_values, "config_path": selected_path})
 
 
 class SettingsBusy(RuntimeError):
@@ -158,9 +158,8 @@ class SettingsVersionConflict(ValueError):
 class SettingsService:
     """唯一配置发布者；已接受的保存拥有独立于 HTTP 调用者的生命周期。"""
 
-    def __init__(self, settings: Settings, config_path: Path, test_case_lock: TestCaseLock) -> None:
+    def __init__(self, settings: Settings, test_case_lock: TestCaseLock) -> None:
         self._current = settings
-        self.config_path = config_path
         self.test_case_lock = test_case_lock
         self.version = str(uuid4())
         self.restart_required = False
@@ -195,20 +194,21 @@ class SettingsService:
         try:
             previous_profiles = {profile.id: profile for profile in self._current.llm.profiles}
             candidate_values = content.model_dump()
+            candidate_values["config_path"] = self._current.config_path
             for profile in candidate_values["llm"]["profiles"]:
                 if not profile["api_key"] and profile["id"] in previous_profiles:
                     profile["api_key"] = previous_profiles[profile["id"]].api_key
             candidate = Settings.model_validate(candidate_values)
             startup_changed = any(
                 getattr(candidate, field_name) != getattr(self._current, field_name)
-                for field_name, field in Settings.model_fields.items()
+                for field_name, field in SettingsContent[LLMProfileSettings].model_fields.items()
                 if not isinstance(field.json_schema_extra, dict) or field.json_schema_extra.get("x-requires-restart", True)
             )
             contents = tomli_w.dumps(candidate.model_dump(mode="json", exclude_none=True))
             next_version = str(uuid4())
             temporary_path = await asyncio.to_thread(self._write_temporary_file, contents)
             # No await between the file commit and the one in-memory publication.
-            os.replace(temporary_path, self.config_path)
+            os.replace(temporary_path, candidate.config_path)
             self._current = candidate
             self.version = next_version
             self.restart_required = self.restart_required or startup_changed
@@ -218,8 +218,9 @@ class SettingsService:
             self._save_task = None
 
     def _write_temporary_file(self, contents: str) -> Path:
-        config_file = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=self.config_path.parent,
-                                                  prefix=f".{self.config_path.name}.", suffix=".tmp", delete=False)
+        config_path = self._current.config_path
+        config_file = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=config_path.parent,
+                                                  prefix=f".{config_path.name}.", suffix=".tmp", delete=False)
         temporary_path = Path(config_file.name)
         try:
             with config_file:

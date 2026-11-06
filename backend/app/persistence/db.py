@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from sqlalchemy import event, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -16,6 +18,12 @@ from sqlalchemy.engine.interfaces import DBAPIConnection
 
 class Base(DeclarativeBase):
     pass
+
+
+def ensure_sqlite_database_directory(database_url: str) -> None:
+    sqlite_url = make_url(database_url)
+    if sqlite_url.get_backend_name() == "sqlite" and sqlite_url.database not in (None, "", ":memory:"):
+        Path(sqlite_url.database).parent.mkdir(parents=True, exist_ok=True)
 
 
 def build_engine(database_url: str) -> AsyncEngine:

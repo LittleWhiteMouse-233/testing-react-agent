@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from app.config import LLMProfileSettings, Settings
+from app.config import LLMProfileSettings, PROJECT_ROOT, Settings
 from app.domain.activity import AgentActivity
 from app.domain.resources import LLMProfileSnapshot
 from app.llm import ChatModelClient, profile_snapshot_from_settings
@@ -58,9 +58,9 @@ def build_settings(
     root: Path, *, execution: dict[str, Any] | None = None,
     llm: dict[str, Any] | None = None, **app_parameters: object,
 ) -> Settings:
-    return Settings.model_validate(app_config_values(
-        root, execution=execution, llm=llm, **app_parameters,
-    ))
+    settings_values = app_config_values(root, execution=execution, llm=llm, **app_parameters)
+    settings_values["config_path"] = (PROJECT_ROOT / root / "config.toml").resolve()
+    return Settings.model_validate(settings_values)
 
 
 def install_model_client(container: Container, model_client: ChatModelClient) -> None:

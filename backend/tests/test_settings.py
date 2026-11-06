@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 import threading
+import tomllib
 
 import pytest
 from pydantic import ValidationError
@@ -22,7 +23,7 @@ def settings_service(root: Path):
     )
     config_path = write_app_config(root, configuration)
     case_lock = CaseLock()
-    service = config.SettingsService(config.load_settings(config_path), config_path, case_lock)
+    service = config.SettingsService(config.get_settings(config_path), case_lock)
     return service, case_lock, config_path
 
 
@@ -35,13 +36,37 @@ async def test_save_preserves_credentials_and_publishes_only_after_file_commit(t
     draft["execution"]["goal_max_failures"] = 7
     await service.update(config.SettingsContent[config.LLMProfileSettings].model_validate(draft), version=version)
     assert service.current.execution.goal_max_failures == 7
-    assert config.load_settings(config_path).execution.goal_max_failures == 7
+    assert config.get_settings(config_path).execution.goal_max_failures == 7
     assert service.current.llm.profiles[0].api_key == "old-test-secret"
     assert original.execution.goal_max_failures == 10
     assert service.version != version
     assert service.restart_required is False
     with pytest.raises(config.SettingsVersionConflict):
         await service.update(config.SettingsContent[config.LLMProfileSettings].model_validate(draft), version=version)
+
+
+async def test_repeated_saves_keep_the_bound_file_after_environment_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = write_app_config(tmp_path / "selected")
+    other_config_path = write_app_config(tmp_path / "other")
+    other_configuration = other_config_path.read_bytes()
+    service = config.SettingsService(config.get_settings(config_path), CaseLock())
+    original = service.current
+    monkeypatch.setenv("TEST_AGENT_CONFIG_PATH", str(other_config_path))
+
+    for failure_limit in (7, 8):
+        draft = service.current.model_dump()
+        draft["execution"]["goal_max_failures"] = failure_limit
+        await service.update(config.SettingsContent[config.LLMProfileSettings].model_validate(draft), version=service.version)
+        assert service.current.config_path == config_path
+        assert config.get_settings(config_path).execution.goal_max_failures == failure_limit
+        assert "config_path" not in tomllib.loads(config_path.read_text(encoding="utf-8"))
+        assert service.restart_required is False
+
+    assert original.execution.goal_max_failures == 10
+    assert original.config_path == config_path
+    assert other_config_path.read_bytes() == other_configuration
 
 
 async def test_startup_changes_remain_flagged_after_reverting_and_reset_on_restart(tmp_path: Path) -> None:
@@ -51,7 +76,7 @@ async def test_startup_changes_remain_flagged_after_reverting_and_reset_on_resta
         draft["app_name"] = app_name
         await service.update(config.SettingsContent[config.LLMProfileSettings].model_validate(draft), version=service.version)
         assert service.restart_required is True
-    restarted = config.SettingsService(config.load_settings(config_path), config_path, CaseLock())
+    restarted = config.SettingsService(config.get_settings(config_path), CaseLock())
     assert restarted.restart_required is False
     assert restarted.version != service.version
 
@@ -82,6 +107,7 @@ async def test_replacement_failure_keeps_memory_version_and_file(tmp_path: Path,
     assert config_path.read_bytes() == original_file
     assert service.version == original_version
     assert service.current.debug is False
+    assert service.current.config_path == config_path
     assert service.restart_required is False
     assert list(tmp_path.glob("*.tmp")) == []
     service.ensure_available()
@@ -112,7 +138,7 @@ async def test_cancelled_caller_does_not_release_an_ongoing_save(tmp_path: Path,
         release.set()
         await asyncio.gather(command, return_exceptions=True)
         await service.shutdown()
-    assert config.load_settings(config_path).execution.goal_max_failures == 9
+    assert config.get_settings(config_path).execution.goal_max_failures == 9
 
 
 async def test_new_real_model_requires_new_credentials_before_commit(tmp_path: Path) -> None:

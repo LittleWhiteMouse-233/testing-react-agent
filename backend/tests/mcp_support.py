@@ -87,8 +87,8 @@ def build_client(root: Path, *, calls: list[dict[str, Any]] | None = None,
                  turns: list[Any] | None = None, **overrides: Any) -> TestClient:
     config = write_mcp_config(root, calls if calls is not None else [replay_call(), replay_call()])
     settings = build_settings(root, mcp_config_path=config, **overrides)
-    config_path = write_app_config(root, settings.model_dump(mode="json", exclude_none=True))
-    app = create_app(settings, config_path=config_path)
+    write_app_config(root, settings.model_dump(mode="json", exclude_none=True))
+    app = create_app(settings)
     # Install the explicitly scripted model after lifespan has assembled the container.
     original_lifespan = app.router.lifespan_context
     from contextlib import asynccontextmanager

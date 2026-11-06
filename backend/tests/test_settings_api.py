@@ -16,6 +16,7 @@ import httpx
 from langchain_openai import ChatOpenAI
 
 from app.container import Container
+from app.config import get_settings
 from app.main import create_app
 from app.llm import ModelProvider
 from config_support import app_config_values, write_app_config
@@ -27,16 +28,17 @@ def test_explicit_config_path_owns_both_startup_read_and_settings_save(tmp_path:
     configuration["app_name"] = "Selected configuration"
     config_path = write_app_config(tmp_path, configuration)
     monkeypatch.setenv("TEST_AGENT_CONFIG_PATH", str(tmp_path / "unselected.toml"))
-    with TestClient(create_app(config_path=config_path)) as client:
+    with TestClient(create_app(get_settings(config_path))) as client:
         snapshot = client.get("/api/settings").json()
         assert snapshot["settings"]["app_name"] == "Selected configuration"
+        assert "config_path" not in snapshot["settings"]
+        assert "config_path" not in snapshot["settings_schema"]["properties"]
         for profile in snapshot["settings"]["llm"]["profiles"]:
             profile.pop("api_key_configured")
         snapshot["settings"]["app_name"] = "Saved selected configuration"
         response = client.put("/api/settings", json={"version": snapshot["version"], "settings": snapshot["settings"]})
         assert response.status_code == 200, response.text
-    from app.config import load_settings
-    assert load_settings(config_path).app_name == "Saved selected configuration"
+    assert get_settings(config_path).app_name == "Saved selected configuration"
     assert not (tmp_path / "unselected.toml").exists()
 
 
@@ -44,8 +46,7 @@ def test_settings_read_and_save_never_return_stored_or_replacement_tokens(tmp_pa
     configuration = app_config_values(tmp_path)
     configuration["llm"]["profiles"][0]["api_key"] = "old-api-test-secret"
     config_path = write_app_config(tmp_path, configuration)
-    from app.config import load_settings
-    with TestClient(create_app(load_settings(config_path), config_path=config_path)) as client:
+    with TestClient(create_app(get_settings(config_path))) as client:
         response = client.get("/api/settings")
         assert response.status_code == 200
         assert "old-api-test-secret" not in response.text
@@ -59,7 +60,7 @@ def test_settings_read_and_save_never_return_stored_or_replacement_tokens(tmp_pa
         saved = client.put("/api/settings", json={"version": settings["version"], "settings": draft})
         assert saved.status_code == 200, saved.text
         assert "new-api-test-secret" not in saved.text
-        assert load_settings(config_path).llm.profiles[0].api_key == "new-api-test-secret"
+        assert get_settings(config_path).llm.profiles[0].api_key == "new-api-test-secret"
         assert saved.json()["restart_required"] is False
         stale = client.put("/api/settings", json={"version": settings["version"], "settings": draft})
         assert stale.status_code == 409
@@ -82,10 +83,9 @@ def test_invalid_http_configuration_does_not_echo_token_or_change_file(tmp_path:
 
 
 def test_blank_model_identity_is_rejected_before_publishing_settings(tmp_path: Path) -> None:
-    from app.config import load_settings
     config_path = write_app_config(tmp_path)
     original_file = config_path.read_bytes()
-    with TestClient(create_app(load_settings(config_path), config_path=config_path)) as client:
+    with TestClient(create_app(get_settings(config_path))) as client:
         snapshot = client.get("/api/settings").json()
         draft = snapshot["settings"]
         draft["llm"]["profiles"][0].pop("api_key_configured")

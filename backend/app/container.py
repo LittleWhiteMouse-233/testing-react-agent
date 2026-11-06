@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from functools import partial
-from pathlib import Path
 
 from app.api.repository import read_test_run_report
 from app.artifacts import ArtifactStore
 from app.llm import ModelProvider
-from app.config import Settings, SettingsService, resolve_config_path
+from app.config import Settings, SettingsService
 from app.domain.activity import AgentActivity
 from app.event_stream import EventBus, RunEventWriter
 from app.domain.planning import PlanningEvent
@@ -25,9 +24,9 @@ from app.test_case_lock import TestCaseLock
 
 
 class Container:
-    def __init__(self, settings: Settings, config_path: Path | None = None) -> None:
+    def __init__(self, settings: Settings) -> None:
         self.test_case_lock = TestCaseLock()
-        self.settings_service = SettingsService(settings, resolve_config_path(config_path), self.test_case_lock)
+        self.settings_service = SettingsService(settings, self.test_case_lock)
         self.engine = build_engine(settings.db_url)
         self.sessions = build_session_factory(self.engine)
         self.run_event_bus = EventBus[int]()
