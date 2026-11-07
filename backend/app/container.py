@@ -4,7 +4,6 @@ from functools import partial
 
 from app.api.repository import read_test_run_report
 from app.artifacts import ArtifactStore
-from app.llm import ModelProvider
 from app.config import Settings, SettingsService
 from app.domain.activity import AgentActivity
 from app.event_stream import EventBus, RunEventWriter
@@ -42,7 +41,6 @@ class Container:
             self.mcp_clients, additional_tools=(*self.skills.build_resource_tools(), *TASK_AGENT_TOOLS),
         )
         prompt_catalog = PromptCatalog()
-        self.model_provider = ModelProvider()
         self.planning_graph = PlanningGraph(prompt_catalog.prompt_for_activity(AgentActivity.PLANNING))
         self.repository = SqlAlchemyRunRepository(self.sessions, self.run_event_writer)
         self.planning = PlanningService(
@@ -50,12 +48,10 @@ class Container:
             test_case_lock=self.test_case_lock,
             repository=self.repository,
             planning_graph=self.planning_graph,
-            model_provider=self.model_provider,
             settings_service=self.settings_service,
         )
         self.agent_factory = TaskAgentFactory(
             artifacts=self.artifacts,
-            model_provider=self.model_provider,
             prompt_catalog=prompt_catalog,
         )
         self.executor = RunExecutor(

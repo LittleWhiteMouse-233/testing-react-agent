@@ -4,9 +4,10 @@ from datetime import datetime, timezone
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from app.domain.activity import AgentActivity
+from app.domain.resources import LLMProfileSettings
 from app.domain.execution import (
     Artifact,
     ArtifactType,
@@ -24,7 +25,7 @@ from app.domain.planning import (
     TestTaskType as TaskType,
     identify_plan_content,
 )
-from app.llm import ModelProvider, ScriptedChatModelClient, profile_snapshot_from_settings
+from app.llm import ScriptedChatModelClient, create_model_client
 from config_support import build_model_profile
 
 
@@ -193,7 +194,7 @@ def test_artifact_owner_is_direct_and_exclusive() -> None:
         )
 
 
-def test_settings_to_snapshot_is_a_single_secret_free_projection() -> None:
+def test_profile_serialization_excludes_credentials_without_changing_model() -> None:
     settings = build_model_profile(
         id="audited",
         mode="real",
@@ -201,22 +202,25 @@ def test_settings_to_snapshot_is_a_single_secret_free_projection() -> None:
         api_key="secret",
         model="vision",
     )
-    snapshot = profile_snapshot_from_settings(settings)
-    assert snapshot.profile_id == "audited"
-    assert "api_key" not in snapshot.model_dump()
+    assert "api_key" not in settings.model_dump()
+    assert "api_key" not in settings.model_dump(mode="json")
+    assert "secret" not in settings.model_dump_json()
+    assert "secret" not in repr(settings)
+    assert "api_key" not in TypeAdapter(list[LLMProfileSettings]).dump_python([settings], mode="json")[0]
+    assert settings.api_key == "secret"
 
 
-def test_model_provider_uses_the_explicit_snapshot_and_retains_its_credentials() -> None:
-    snapshot = profile_snapshot_from_settings(build_model_profile(
-        id="selected", mode="real", base_url="https://model.invalid/v1", api_key="snapshot-secret"))
-    client = ModelProvider().client_for_profile(snapshot)
+def test_model_client_uses_the_explicit_profile_and_retains_its_credentials() -> None:
+    snapshot = build_model_profile(
+        id="selected", mode="real", base_url="https://model.invalid/v1", api_key="snapshot-secret")
+    client = create_model_client(snapshot)
     assert client.model_id == "selected"
     assert client.profile_snapshot.api_key == "snapshot-secret"
     assert "snapshot-secret" not in client.profile_snapshot.model_dump_json()
 
 
 def test_model_routes_are_required_and_resolve_by_identity_instead_of_order() -> None:
-    from app.config import LLMProfileSettings, LLMSettings
+    from app.config import LLMSettings
     profiles = [build_model_profile(id="first"), build_model_profile(id="second")]
     with pytest.raises(ValidationError):
         LLMSettings[LLMProfileSettings].model_validate({"profiles": profiles})

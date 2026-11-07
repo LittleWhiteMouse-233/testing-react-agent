@@ -30,17 +30,17 @@ from mcp_support import build_client
 from config_support import build_model_profile
 
 
-def install_model(client: TestClient, model: ScriptedChatModelClient) -> Container:
+def install_model(client: TestClient, model: ScriptedChatModelClient, monkeypatch: pytest.MonkeyPatch) -> Container:
     container = cast(Container, cast(FastAPI, client.app).state.container)
-    install_model_client(container, model)
+    install_model_client(monkeypatch, model)
     return container
 
 
 @pytest.mark.parametrize("payload", [None, {}, {"user_input": None}, {"user_input": ""}, {"user_input": " \n "}, {"user_input": "补充检查要求"}])
 def test_initial_planning_accepts_optional_input(tmp_path: Path, payload: dict | None) -> None:
-    with build_client(tmp_path) as client:
+    with build_client(tmp_path) as client, pytest.MonkeyPatch.context() as model_patch:
         model = ScriptedChatModelClient(build_model_profile())
-        install_model(client, model)
+        install_model(client, model, model_patch)
         case_content = {"name": "原始用例", "source_text": "检查设置页面"}
         case = client.post("/api/test-cases", json=case_content).json()
         response = client.post(f"/api/test-cases/{case['id']}/plans", json={"planning_request_id": str(uuid4()), **(payload or {})})
@@ -59,9 +59,9 @@ def test_initial_planning_accepts_optional_input(tmp_path: Path, payload: dict |
 
 @pytest.mark.parametrize("payload", [None, {}, {"user_input": None}, {"user_input": ""}, {"user_input": " \n "}])
 def test_replanning_rejects_missing_input_before_model_call(tmp_path: Path, payload: dict | None) -> None:
-    with build_client(tmp_path) as client:
+    with build_client(tmp_path) as client, pytest.MonkeyPatch.context() as model_patch:
         model = ScriptedChatModelClient(build_model_profile())
-        install_model(client, model)
+        install_model(client, model, model_patch)
         case = client.post("/api/test-cases", json={"name": "用例", "source_text": "检查画面"}).json()
         url = f"/api/test-cases/{case['id']}/plans"
         first = client.post(url, json={"planning_request_id": str(uuid4())}).json()
@@ -73,9 +73,9 @@ def test_replanning_rejects_missing_input_before_model_call(tmp_path: Path, payl
 
 
 def test_replanning_uses_latest_revision_and_only_current_input(tmp_path: Path) -> None:
-    with build_client(tmp_path) as client:
+    with build_client(tmp_path) as client, pytest.MonkeyPatch.context() as model_patch:
         model = ScriptedChatModelClient(build_model_profile())
-        install_model(client, model)
+        install_model(client, model, model_patch)
         case_content = {"name": "原始用例", "source_text": "检查画面"}
         case = client.post("/api/test-cases", json=case_content).json()
         url = f"/api/test-cases/{case['id']}/plans"
@@ -126,9 +126,9 @@ def test_replanning_uses_latest_revision_and_only_current_input(tmp_path: Path) 
 
 @pytest.mark.parametrize("existing_plan", [False, True])
 def test_generation_rejects_concurrent_plan_writes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_plan: bool) -> None:
-    with build_client(tmp_path) as client:
+    with build_client(tmp_path) as client, pytest.MonkeyPatch.context() as model_patch:
         model = ScriptedChatModelClient(build_model_profile())
-        container = install_model(client, model)
+        container = install_model(client, model, model_patch)
         case = client.post("/api/test-cases", json={"name": "并发用例", "source_text": "检查画面"}).json()
         url = f"/api/test-cases/{case['id']}/plans"
         first = client.post(url, json={"planning_request_id": str(uuid4())}).json() if existing_plan else None
@@ -168,14 +168,14 @@ def test_generation_rejects_concurrent_plan_writes(tmp_path: Path, monkeypatch: 
 
 
 def test_planning_retry_keeps_current_context_and_failure_creates_no_version(tmp_path: Path) -> None:
-    with build_client(tmp_path) as client:
+    with build_client(tmp_path) as client, pytest.MonkeyPatch.context() as model_patch:
         model = ScriptedChatModelClient(build_model_profile())
-        install_model(client, model)
+        install_model(client, model, model_patch)
         case = client.post("/api/test-cases", json={"name": "用例", "source_text": "检查画面"}).json()
         url = f"/api/test-cases/{case['id']}/plans"
         first = client.post(url, json={"planning_request_id": str(uuid4())}).json()
         invalid_model = ScriptedChatModelClient(build_model_profile(), plans=[{"title": "缺少任务"}, {"title": "缺少任务"}, {"title": "缺少任务"}])
-        install_model(client, invalid_model)
+        install_model(client, invalid_model, model_patch)
         failed = client.post(url, json={"planning_request_id": str(uuid4()), "user_input": "细化任务"})
         assert failed.status_code == 502
         assert len(invalid_model.invocations) == 3

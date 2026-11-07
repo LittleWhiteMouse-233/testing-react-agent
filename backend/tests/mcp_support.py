@@ -7,16 +7,16 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
-from app.container import Container
 from app.llm import ScriptedChatModelClient
 from app.main import create_app
 from app.resources.mcp import MCPClientProvider
-from config_support import build_settings, install_model_client, write_app_config
+from config_support import app_config_values, build_settings, install_model_client, write_app_config
 
 
 PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -87,7 +87,7 @@ def build_client(root: Path, *, calls: list[dict[str, Any]] | None = None,
                  turns: list[Any] | None = None, **overrides: Any) -> TestClient:
     config = write_mcp_config(root, calls if calls is not None else [replay_call(), replay_call()])
     settings = build_settings(root, mcp_config_path=config, **overrides)
-    write_app_config(root, settings.model_dump(mode="json", exclude_none=True))
+    write_app_config(root, app_config_values(root, mcp_config_path=config, **overrides))
     app = create_app(settings)
     # Install the explicitly scripted model after lifespan has assembled the container.
     original_lifespan = app.router.lifespan_context
@@ -96,13 +96,13 @@ def build_client(root: Path, *, calls: list[dict[str, Any]] | None = None,
     @asynccontextmanager
     async def lifespan(instance):
         async with original_lifespan(instance):
-            container = cast(Container, instance.state.container)
             scripted_model = ScriptedChatModelClient(
                 settings.llm.profiles[0],
                 turns=turns if turns is not None else [tool_turn(1), finish_turn(2), tool_turn(3), finish_turn(4)],
             )
-            install_model_client(container, scripted_model)
-            yield
+            with pytest.MonkeyPatch.context() as model_patch:
+                install_model_client(model_patch, scripted_model)
+                yield
 
     app.router.lifespan_context = lifespan
     return TestClient(app)

@@ -65,7 +65,7 @@ function savedPlan(version = 1, userInput: string | null = null, sourceCase = te
       user_input: userInput,
       planning_prompt_fingerprint: "planning-fingerprint-2",
       planning_model: {
-        profile_id: "default", provider: "scripted", model: "deterministic",
+        id: "default", mode: "scripted", model: "deterministic",
         base_url: null, temperature: 0, timeout_seconds: 60,
         context_window_tokens: 32768, max_output_tokens: 2048,
         characters_per_token: 1.5, tokens_per_image: 1024,

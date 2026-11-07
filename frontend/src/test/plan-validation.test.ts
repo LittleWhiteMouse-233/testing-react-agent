@@ -12,8 +12,8 @@ const plan: TestPlan = {
   planning_context: {
     test_case_content: { name: "用例", source_text: "检查页面" },
     planning_model: {
-      profile_id: "default",
-      provider: "scripted",
+      id: "default",
+      mode: "scripted",
       model: "deterministic",
       base_url: null,
       temperature: 0,

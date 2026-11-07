@@ -7,7 +7,8 @@ from collections.abc import Sequence
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, model_validator
 from pydantic_core import ErrorDetails
 
-from app.config import LLMProfileSettings, SettingsContent, SettingsService
+from app.config import SettingsContent, SettingsService
+from app.domain.resources import LLMProfileSettings
 
 from app.domain.ids import PlanningRequestId, TestCaseId, TestPlanId
 from app.domain.planning import TestCase, TestCaseContent, TestPlanContent, TestTaskDefinition
@@ -90,7 +91,6 @@ def api_validation_error(errors: Sequence[ErrorDetails], *, settings_request: bo
 class LLMProfileSettingsResponse(LLMProfileSettings):
     """设置公开投影隐藏已有凭据，并说明是否已配置。"""
 
-    api_key: str | None = Field(default=None, exclude=True, repr=False)
     api_key_configured: bool
 
 
@@ -117,8 +117,8 @@ class SettingsResponse(BaseModel):
     def from_service(cls, service: SettingsService) -> SettingsResponse:
         """集中完成已有凭据不回显这一接口边界转换。"""
         configuration = service.current.model_dump()
-        for profile in configuration["llm"]["profiles"]:
-            profile["api_key_configured"] = bool(profile.pop("api_key"))
+        for profile, profile_values in zip(service.current.llm.profiles, configuration["llm"]["profiles"], strict=True):
+            profile_values["api_key_configured"] = bool(profile.api_key)
         return cls.model_validate({
             "version": service.version,
             "restart_required": service.restart_required,

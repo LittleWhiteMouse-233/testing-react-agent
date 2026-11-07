@@ -410,15 +410,77 @@ export interface components {
         JsonValue: unknown;
         /**
          * LLMProfileSettings
-         * @description 单个模型部署参数；更新请求的空令牌在完整配置校验前合并。
+         * @description 不可变模型部署参数；工作准备时固定副本，公开输出排除令牌。
          */
-        LLMProfileSettings: {
+        "LLMProfileSettings-Input": {
             /**
              * 模型令牌
              * Format: password
              * @description 留空保留已有令牌；新真实模型必须填写。
              */
             api_key?: string | null;
+            /**
+             * 服务地址
+             * @description 真实模型的 OpenAI 兼容 API 基地址。
+             */
+            base_url?: string | null;
+            /**
+             * 每 token 字符数
+             * @description 文字容量估算使用的每 token 字符数。
+             */
+            characters_per_token: number;
+            /**
+             * 上下文安全余量
+             * @description 额外预留的 token 数。
+             */
+            context_safety_margin_tokens: number;
+            /**
+             * 上下文容量
+             * @description 模型完整上下文的 token 容量。
+             */
+            context_window_tokens: number;
+            /**
+             * 模型配置 ID
+             * @description 唯一、稳定的模型配置标识；修改 ID 视为新增模型。
+             */
+            id: string;
+            /**
+             * 最大输出容量
+             * @description 为模型输出预留的 token 数。
+             */
+            max_output_tokens: number;
+            /**
+             * 模型模式
+             * @description real 为真实服务，scripted 仅用于可控测试。
+             * @enum {string}
+             */
+            mode: "scripted" | "real";
+            /**
+             * 模型名称
+             * @description 服务端实际使用的模型名称。
+             */
+            model: string;
+            /**
+             * 生成温度
+             * @description 模型服务的 temperature 请求参数。
+             */
+            temperature: number;
+            /**
+             * 模型请求超时
+             * @description 每次模型调用的超时秒数。
+             */
+            timeout_seconds: number;
+            /**
+             * 每张图片容量
+             * @description 每张图片估算占用的 token 数。
+             */
+            tokens_per_image: number;
+        };
+        /**
+         * LLMProfileSettings
+         * @description 不可变模型部署参数；工作准备时固定副本，公开输出排除令牌。
+         */
+        "LLMProfileSettings-Output": {
             /**
              * 服务地址
              * @description 真实模型的 OpenAI 兼容 API 基地址。
@@ -540,34 +602,6 @@ export interface components {
              */
             tokens_per_image: number;
         };
-        /**
-         * LLMProfileSnapshot
-         * @description 冻结实际模型选择，内存保留认证令牌，持久化及公开输出排除令牌。
-         */
-        LLMProfileSnapshot: {
-            /** Base Url */
-            base_url: string | null;
-            /** Characters Per Token */
-            characters_per_token: number;
-            /** Context Safety Margin Tokens */
-            context_safety_margin_tokens: number;
-            /** Context Window Tokens */
-            context_window_tokens: number;
-            /** Max Output Tokens */
-            max_output_tokens: number;
-            /** Model */
-            model: string;
-            /** Profile Id */
-            profile_id: string;
-            /** Provider */
-            provider: string;
-            /** Temperature */
-            temperature: number;
-            /** Timeout Seconds */
-            timeout_seconds: number;
-            /** Tokens Per Image */
-            tokens_per_image: number;
-        };
         /** LLMSettings[LLMProfileSettingsResponse] */
         LLMSettings_LLMProfileSettingsResponse_: {
             /**
@@ -602,7 +636,7 @@ export interface components {
              * 模型配置列表
              * @description 可以新增、编辑、删除模型；顺序不影响模型选择。
              */
-            profiles: components["schemas"]["LLMProfileSettings"][];
+            profiles: components["schemas"]["LLMProfileSettings-Input"][];
         };
         /**
          * MessageAppendedEvent
@@ -1324,7 +1358,7 @@ export interface components {
          * @description 规划准备时固定的输入与模型审计事实，不参与后续版本覆盖。
          */
         TestPlanPlanningContext: {
-            planning_model: components["schemas"]["LLMProfileSnapshot"];
+            planning_model: components["schemas"]["LLMProfileSettings-Output"];
             /** Planning Prompt Fingerprint */
             planning_prompt_fingerprint: string | null;
             test_case_content: components["schemas"]["TestCaseContent"];
@@ -1400,7 +1434,7 @@ export interface components {
             /** App Version */
             app_version: string;
             execution: components["schemas"]["ExecutionSettings"];
-            execution_model: components["schemas"]["LLMProfileSnapshot"];
+            execution_model: components["schemas"]["LLMProfileSettings-Output"];
             /**
              * Execution Protocol Version
              * @constant

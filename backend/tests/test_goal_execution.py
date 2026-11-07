@@ -93,10 +93,30 @@ def test_goals_count_failures_independently_and_pass_does_not_reset_them(
             assert started[-1]["result"]["reason_code"] == "goal_failure_limit"
 
 
+@pytest.mark.parametrize("goal_limit,verdict,cycle_count", [(1, "BLOCKED", 1), (2, "PASS", 2)])
+def test_goal_uses_its_own_cycle_limit(tmp_path: Path, goal_limit: int, verdict: str, cycle_count: int) -> None:
+    with build_client(tmp_path, turns=[terminal(), tool_turn(1), terminal()], execution={
+        "max_cycles_by_task_type": {"act": 1, "judge": 1, "goal": goal_limit},
+    }) as client:
+        plan = confirmed_plan(client, ["act", "goal"], {2: 1})
+        detail = wait_for_run(client, start_run(client, plan))
+        assert detail["run"]["verdict"] == verdict
+        assert [entry["cycle_count"] for entry in detail["task_runs"]] == [1, cycle_count]
+        goal_run = detail["task_runs"][-1]
+        assert goal_run["result"]["reason_code"] == ("cycle_limit" if goal_limit == 1 else "completed")
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
+        goal_contexts = [json.loads(messages[1].text) for messages in model.invocations[2:]]
+        assert all(context["task"]["definition"]["type"] == "goal" and context["max_cycles"] == goal_limit
+                   for context in goal_contexts)
+
+
 def test_reentered_memory_uses_actual_execution_numbers_and_resets_for_a_new_run(tmp_path: Path) -> None:
     turns = [terminal(), terminal("failed", "Node A has a defect"), terminal("failed", "Branch B remains"),
              terminal(memory="Branch B visited"), terminal(), terminal(), terminal()]
-    with build_client(tmp_path, turns=turns * 2, execution={"goal_max_failures": 2}) as client:
+    with build_client(tmp_path, turns=turns * 2, execution={
+        "goal_max_failures": 2, "max_cycles_by_task_type": {"act": 1, "judge": 2, "goal": 3},
+    }) as client:
         plan = confirmed_plan(client, ["act", "judge", "goal", "act"], {3: 1})
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
         model = cast(ScriptedChatModelClient, execution_model_client(container))
@@ -105,6 +125,8 @@ def test_reentered_memory_uses_actual_execution_numbers_and_resets_for_a_new_run
             detail = wait_for_run(client, start_run(client, plan))
             assert detail["run"]["verdict"] == "FAIL"
             contexts = [json.loads(messages[1].text) for messages in model.invocations[first_invocation:]]
+            assert [context["max_cycles"] for context in contexts] == [1, 2, 3, 1, 2, 3, 1]
+            assert all(entry["cycle_count"] == 1 for entry in detail["task_runs"] if entry["started_at"] is not None)
             memories = [json.loads(context["memory_text"]) for context in contexts]
             assert memories[0] == []
             assert memories[3] == [

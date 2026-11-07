@@ -9,7 +9,7 @@ from langgraph.graph.message import Messages, add_messages
 from pydantic import Field, create_model
 
 from app.domain.errors import ModelContextBudgetExceeded
-from app.domain.resources import LLMProfileSnapshot
+from app.domain.resources import LLMProfileSettings
 from app.execution.model_context import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent import finish_task
 from app.event_stream.projector import project_run_message
@@ -22,10 +22,10 @@ def model_profile(
     characters_per_token: float = 1.5,
     tokens_per_image: int = 1_024,
     context_safety_margin_tokens: int = 512,
-) -> LLMProfileSnapshot:
-    return LLMProfileSnapshot(
-        profile_id="window-test",
-        provider="scripted",
+) -> LLMProfileSettings:
+    return LLMProfileSettings(
+        id="window-test",
+        mode="scripted",
         model="deterministic",
         base_url=None,
         temperature=0,

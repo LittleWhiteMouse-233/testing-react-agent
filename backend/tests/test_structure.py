@@ -39,7 +39,7 @@ from app.domain.planning import (
     TestTaskDefinition as TaskDefinition,
     TestTaskType as TaskType,
 )
-from app.domain.resources import LLMProfileSnapshot, ResourceCatalogSnapshot, ToolCatalogSnapshot
+from app.domain.resources import LLMProfileSettings, ResourceCatalogSnapshot, ToolCatalogSnapshot
 from app.event_stream import EventBus, RunEventWriter, project_run_message
 from app.execution.task_agent import TaskAgentGraphState
 from app.execution import RunExecutor, RunService, TaskAgentFactory
@@ -74,10 +74,10 @@ TASK_RUN_ID = "22222222-2222-4222-8222-222222222222"
 ARTIFACT_ID = "33333333-3333-4333-8333-333333333333"
 
 
-def model_snapshot() -> LLMProfileSnapshot:
-    return LLMProfileSnapshot(
-        profile_id="default",
-        provider="scripted",
+def model_snapshot() -> LLMProfileSettings:
+    return LLMProfileSettings(
+        id="default",
+        mode="scripted",
         model="deterministic",
         base_url=None,
         temperature=0,
@@ -135,6 +135,16 @@ def test_every_business_json_uses_the_central_adapter() -> None:
     assert load_string_list(dump_string_list(strings)) == strings
     snapshot = run_environment_snapshot()
     assert load_test_run_environment_snapshot(dump_test_run_environment_snapshot(snapshot)) == snapshot
+    profile = model_snapshot().model_copy(update={"api_key": "private-persistence-token"})
+    private_context = context.model_copy(update={"planning_model": profile})
+    private_snapshot = snapshot.model_copy(update={"execution_model": profile})
+    context_values = dump_planning_context(private_context)
+    snapshot_values = dump_test_run_environment_snapshot(private_snapshot)
+    assert "api_key" not in context_values["planning_model"]
+    assert "api_key" not in snapshot_values["execution_model"]
+    assert load_planning_context(context_values).planning_model.api_key is None
+    assert load_test_run_environment_snapshot(snapshot_values).execution_model.api_key is None
+    assert profile.api_key == "private-persistence-token"
     result = TaskRunResult(
         reason_code=ReasonCode.COMPLETED,
         summary="done",

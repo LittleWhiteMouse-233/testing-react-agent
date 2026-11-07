@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from app.config import LLMProfileSettings, PROJECT_ROOT, Settings
+import pytest
+
+from app import llm
+from app.config import PROJECT_ROOT, Settings
 from app.domain.activity import AgentActivity
-from app.domain.resources import LLMProfileSnapshot
-from app.llm import ChatModelClient, profile_snapshot_from_settings
-from app.llm import ModelProvider
+from app.domain.resources import LLMProfileSettings
+from app.llm import ChatModelClient
 from app.domain.execution import ExecutionSettings
 
 if TYPE_CHECKING:
@@ -63,22 +65,14 @@ def build_settings(
     return Settings.model_validate(settings_values)
 
 
-def install_model_client(container: Container, model_client: ChatModelClient) -> None:
-    """在真实客户端创建边界回放指定配置，保留其它配置的生产行为。"""
-    create_client = container.model_provider.client_for_profile
+def install_model_client(monkeypatch: pytest.MonkeyPatch, model_client: ChatModelClient) -> None:
+    """在受控测试生命周期内回放指定配置，保留其它配置的生产构造行为。"""
+    create_client = llm.create_model_client
 
-    def client_for_profile(profile: LLMProfileSnapshot) -> ChatModelClient:
+    def client_for_profile(profile: LLMProfileSettings) -> ChatModelClient:
         return model_client if profile == model_client.profile_snapshot else create_client(profile)
 
-    container.model_provider.client_for_profile = client_for_profile
-
-
-def model_provider_with_client(model_client: ChatModelClient) -> ModelProvider:
-    """单任务测试使用真实工厂接口回放指定模型。"""
-    provider = ModelProvider()
-    create_client = provider.client_for_profile
-    provider.client_for_profile = lambda profile: model_client if profile == model_client.profile_snapshot else create_client(profile)
-    return provider
+    monkeypatch.setattr(llm, "create_model_client", client_for_profile)
 
 
 def build_execution_settings(**parameters: object) -> ExecutionSettings:
@@ -88,7 +82,7 @@ def build_execution_settings(**parameters: object) -> ExecutionSettings:
 def execution_model_client(container: Container) -> ChatModelClient:
     """测试从当前配置路由读取客户端以检查实际调用记录。"""
     profile = container.settings_service.current.llm.profile_for_activity(AgentActivity.EXECUTION)
-    return container.model_provider.client_for_profile(profile_snapshot_from_settings(profile))
+    return llm.create_model_client(profile)
 
 
 def write_app_config(root: Path, config_values: dict[str, Any] | None = None) -> Path:
@@ -101,7 +95,7 @@ def write_app_config(root: Path, config_values: dict[str, Any] | None = None) ->
 
     def assignments(parameters: dict[str, Any]) -> str:
         return "\n".join(
-            f"{name} = {json.dumps(value, ensure_ascii=False)}"
+            f"{name} = {json.dumps(value.as_posix() if isinstance(value, Path) else value, ensure_ascii=False)}"
             for name, value in parameters.items()
         )
 

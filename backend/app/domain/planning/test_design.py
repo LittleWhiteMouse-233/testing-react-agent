@@ -14,7 +14,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.ids import TestCaseId, TestPlanId, TestTaskId
-from app.domain.resources import LLMProfileSnapshot
+from app.domain.resources import LLMProfileSettings
 
 
 class TestTaskType(StrEnum):
@@ -132,7 +132,7 @@ class TestPlanPlanningContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     test_case_content: TestCaseContent
-    planning_model: LLMProfileSnapshot
+    planning_model: LLMProfileSettings
     planning_prompt_fingerprint: str | None = Field(min_length=1)
     user_input: str | None = None
 

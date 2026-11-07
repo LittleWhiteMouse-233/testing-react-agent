@@ -34,7 +34,7 @@ from app.domain.execution import (
 )
 from app.domain.ids import TaskRunId
 from app.domain.planning import TestTask, TestTaskType
-from app.execution.task_agent import MESSAGE_PUBLISHING_NODES, TaskAgentContext, TaskAgentFactory, TaskAgentInput
+from app.execution.task_agent import MESSAGE_PUBLISHING_NODES, TaskAgentContext, TaskAgentFactory, TaskAgentBuildParams
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.event_stream.projector import project_run_message
@@ -102,12 +102,11 @@ class RunExecutor:
                         )).id
                         execution_counts[test_task.test_task_id] += 1
                         remaining_after_active_task = test_tasks[task_index + 1 :]
-                        task_input = TaskAgentInput(
+                        build_params = TaskAgentBuildParams(
                             task_context=TaskAgentContext(
                                 task_run_id=active_task_run_id,
                                 task=test_task,
                                 memory_text=serialize_task_memories(task_memories),
-                                max_cycles=environment.execution.max_cycles_by_task_type[test_task.definition.type],
                             ),
                             tools=tools,
                             resource_catalog=environment.resource_catalog,
@@ -116,7 +115,7 @@ class RunExecutor:
                         )
                         completion = await self._execute_task(
                             test_run_id=test_run_id,
-                            task_input=task_input,
+                            build_params=build_params,
                             run_cancellation_event=run_cancellation_event,
                             checkpointer=checkpointer,
                         )
@@ -196,13 +195,13 @@ class RunExecutor:
         self,
         *,
         test_run_id: str,
-        task_input: TaskAgentInput,
+        build_params: TaskAgentBuildParams,
         run_cancellation_event: asyncio.Event,
         checkpointer: BaseCheckpointSaver[Any],
     ) -> TaskAgentCompletion:
-        task_context = task_input.task_context
-        graph, initial, runtime_context = await self.agent_factory.build(
-            task_input=task_input,
+        task_context = build_params.task_context
+        graph, initial_state, runtime_context = await self.agent_factory.build(
+            build_params=build_params,
             run_cancellation_event=run_cancellation_event,
             checkpointer=checkpointer,
             event_recorder=TaskAgentEventRecorder(
@@ -211,10 +210,10 @@ class RunExecutor:
         )
         completion: TaskAgentCompletion | None = None
         async for part in graph.astream(
-            initial,
+            initial_state,
             context=runtime_context,
             config={"configurable": {"thread_id": f"task-run:{task_context.task_run_id}"},
-                    "recursion_limit": task_context.max_cycles * 8 + 20},
+                    "recursion_limit": runtime_context.max_cycles * 8 + 20},
             # LangGraph 1.2.9 re-raises handled errors with custom streams (#8608).
             # Product events are awaited directly; framework State uses updates only.
             stream_mode="updates",

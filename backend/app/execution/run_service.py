@@ -9,7 +9,6 @@ from app.domain.errors import describe_exception
 from app.domain.execution import TestRun, TestRunEnvironmentSnapshot, TestRunStatus
 from app.config import SettingsService
 from app.execution.executor import RunExecutor
-from app.llm import profile_snapshot_from_settings
 from app.persistence.run_repository import (
     ActiveRunExists,
     SqlAlchemyRunRepository,
@@ -133,7 +132,7 @@ class RunService:
     ) -> None:
         settings = self.settings_service.current
         execution_settings = settings.execution.model_copy(deep=True)
-        model_profile = profile_snapshot_from_settings(settings.llm.profile_for_activity(AgentActivity.EXECUTION))
+        model_profile = settings.llm.profile_for_activity(AgentActivity.EXECUTION).model_copy(deep=True)
         await self.repository.validate_test_plan_for_run(test_case_id=test_case_id, test_plan_id=test_plan_id)
         discovery_phase = "MCP configuration loading"
         try:

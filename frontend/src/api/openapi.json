@@ -293,9 +293,9 @@
         "type": "object"
       },
       "JsonValue": {},
-      "LLMProfileSettings": {
+      "LLMProfileSettings-Input": {
         "additionalProperties": false,
-        "description": "单个模型部署参数；更新请求的空令牌在完整配置校验前合并。",
+        "description": "不可变模型部署参数；工作准备时固定副本，公开输出排除令牌。",
         "properties": {
           "api_key": {
             "anyOf": [
@@ -311,6 +311,101 @@
             "title": "模型令牌",
             "writeOnly": true
           },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "真实模型的 OpenAI 兼容 API 基地址。",
+            "title": "服务地址"
+          },
+          "characters_per_token": {
+            "description": "文字容量估算使用的每 token 字符数。",
+            "exclusiveMinimum": 0.0,
+            "title": "每 token 字符数",
+            "type": "number"
+          },
+          "context_safety_margin_tokens": {
+            "description": "额外预留的 token 数。",
+            "minimum": 0.0,
+            "title": "上下文安全余量",
+            "type": "integer"
+          },
+          "context_window_tokens": {
+            "description": "模型完整上下文的 token 容量。",
+            "minimum": 2048.0,
+            "title": "上下文容量",
+            "type": "integer"
+          },
+          "id": {
+            "description": "唯一、稳定的模型配置标识；修改 ID 视为新增模型。",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "模型配置 ID",
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "description": "为模型输出预留的 token 数。",
+            "minimum": 1.0,
+            "title": "最大输出容量",
+            "type": "integer"
+          },
+          "mode": {
+            "description": "real 为真实服务，scripted 仅用于可控测试。",
+            "enum": [
+              "scripted",
+              "real"
+            ],
+            "title": "模型模式",
+            "type": "string"
+          },
+          "model": {
+            "description": "服务端实际使用的模型名称。",
+            "minLength": 1,
+            "title": "模型名称",
+            "type": "string"
+          },
+          "temperature": {
+            "description": "模型服务的 temperature 请求参数。",
+            "title": "生成温度",
+            "type": "number"
+          },
+          "timeout_seconds": {
+            "description": "每次模型调用的超时秒数。",
+            "exclusiveMinimum": 0.0,
+            "title": "模型请求超时",
+            "type": "number"
+          },
+          "tokens_per_image": {
+            "description": "每张图片估算占用的 token 数。",
+            "minimum": 1.0,
+            "title": "每张图片容量",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "mode",
+          "model",
+          "temperature",
+          "timeout_seconds",
+          "context_window_tokens",
+          "max_output_tokens",
+          "characters_per_token",
+          "tokens_per_image",
+          "context_safety_margin_tokens"
+        ],
+        "title": "LLMProfileSettings",
+        "type": "object"
+      },
+      "LLMProfileSettings-Output": {
+        "additionalProperties": false,
+        "description": "不可变模型部署参数；工作准备时固定副本，公开输出排除令牌。",
+        "properties": {
           "base_url": {
             "anyOf": [
               {
@@ -502,88 +597,6 @@
         "title": "LLMProfileSettingsResponse",
         "type": "object"
       },
-      "LLMProfileSnapshot": {
-        "additionalProperties": false,
-        "description": "冻结实际模型选择，内存保留认证令牌，持久化及公开输出排除令牌。",
-        "properties": {
-          "base_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Base Url"
-          },
-          "characters_per_token": {
-            "exclusiveMinimum": 0.0,
-            "title": "Characters Per Token",
-            "type": "number"
-          },
-          "context_safety_margin_tokens": {
-            "minimum": 0.0,
-            "title": "Context Safety Margin Tokens",
-            "type": "integer"
-          },
-          "context_window_tokens": {
-            "exclusiveMinimum": 0.0,
-            "title": "Context Window Tokens",
-            "type": "integer"
-          },
-          "max_output_tokens": {
-            "exclusiveMinimum": 0.0,
-            "title": "Max Output Tokens",
-            "type": "integer"
-          },
-          "model": {
-            "minLength": 1,
-            "title": "Model",
-            "type": "string"
-          },
-          "profile_id": {
-            "maxLength": 100,
-            "minLength": 1,
-            "title": "Profile Id",
-            "type": "string"
-          },
-          "provider": {
-            "minLength": 1,
-            "title": "Provider",
-            "type": "string"
-          },
-          "temperature": {
-            "title": "Temperature",
-            "type": "number"
-          },
-          "timeout_seconds": {
-            "exclusiveMinimum": 0.0,
-            "title": "Timeout Seconds",
-            "type": "number"
-          },
-          "tokens_per_image": {
-            "exclusiveMinimum": 0.0,
-            "title": "Tokens Per Image",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "profile_id",
-          "provider",
-          "model",
-          "base_url",
-          "temperature",
-          "timeout_seconds",
-          "context_window_tokens",
-          "max_output_tokens",
-          "characters_per_token",
-          "tokens_per_image",
-          "context_safety_margin_tokens"
-        ],
-        "title": "LLMProfileSnapshot",
-        "type": "object"
-      },
       "LLMSettings_LLMProfileSettingsResponse_": {
         "additionalProperties": false,
         "properties": {
@@ -659,7 +672,7 @@
           "profiles": {
             "description": "可以新增、编辑、删除模型；顺序不影响模型选择。",
             "items": {
-              "$ref": "#/components/schemas/LLMProfileSettings"
+              "$ref": "#/components/schemas/LLMProfileSettings-Input"
             },
             "minItems": 1,
             "title": "模型配置列表",
@@ -2494,7 +2507,7 @@
         "description": "规划准备时固定的输入与模型审计事实，不参与后续版本覆盖。",
         "properties": {
           "planning_model": {
-            "$ref": "#/components/schemas/LLMProfileSnapshot"
+            "$ref": "#/components/schemas/LLMProfileSettings-Output"
           },
           "planning_prompt_fingerprint": {
             "anyOf": [
@@ -2707,7 +2720,7 @@
             "$ref": "#/components/schemas/ExecutionSettings"
           },
           "execution_model": {
-            "$ref": "#/components/schemas/LLMProfileSnapshot"
+            "$ref": "#/components/schemas/LLMProfileSettings-Output"
           },
           "execution_protocol_version": {
             "const": "11",

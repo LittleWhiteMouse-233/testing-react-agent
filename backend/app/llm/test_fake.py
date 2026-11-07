@@ -10,14 +10,13 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
 from pydantic import PrivateAttr
 
-from app.config import LLMProfileSettings
+from app.domain.resources import LLMProfileSettings
 from app.domain.planning import (
     TestCaseContent,
     TestPlanContent,
     TestTaskDefinition,
     TestTaskType,
 )
-from app.llm.client import profile_snapshot_from_settings
 
 
 PlanDraft = TestPlanContent[TestTaskDefinition]
@@ -167,15 +166,21 @@ class ScriptedChatModelClient:
 
     def __init__(
         self,
-        settings: LLMProfileSettings,
+        profile: LLMProfileSettings,
         *,
         plans: list[PlanDraft | dict[str, Any] | Exception] | None = None,
         turns: list[ScriptedTurn] | None = None,
     ) -> None:
-        self.model_id = settings.id
-        self.timeout_seconds = settings.timeout_seconds
         self._model = ScriptedChatModel(plans=plans, turns=turns)
-        self.profile_snapshot = profile_snapshot_from_settings(settings)
+        self.profile_snapshot = profile
+
+    @property
+    def model_id(self) -> str:
+        return self.profile_snapshot.id
+
+    @property
+    def timeout_seconds(self) -> float:
+        return self.profile_snapshot.timeout_seconds
 
     def create_model(self) -> BaseChatModel:
         return self._model

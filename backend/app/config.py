@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import tomllib
-from typing import Generic, Literal, TypeVar
+from typing import Generic, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -15,37 +15,11 @@ import tomli_w
 from app.domain.execution import ExecutionSettings
 from app.domain.activity import AgentActivity
 from app.domain.ids import ModelProfileId
+from app.domain.resources import LLMProfileSettings
 from app.test_case_lock import TestCaseLock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
-class LLMProfileSettings(BaseModel):
-    """单个模型部署参数；更新请求的空令牌在完整配置校验前合并。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
-
-    id: ModelProfileId = Field(title="模型配置 ID", description="唯一、稳定的模型配置标识；修改 ID 视为新增模型。")
-    mode: Literal["scripted", "real"] = Field(title="模型模式", description="real 为真实服务，scripted 仅用于可控测试。")
-    base_url: str | None = Field(default=None, title="服务地址", description="真实模型的 OpenAI 兼容 API 基地址。")
-    api_key: str | None = Field(default=None, repr=False, title="模型令牌", description="留空保留已有令牌；新真实模型必须填写。", json_schema_extra={"writeOnly": True, "format": "password"})
-    model: str = Field(min_length=1, title="模型名称", description="服务端实际使用的模型名称。")
-    temperature: float = Field(title="生成温度", description="模型服务的 temperature 请求参数。")
-    timeout_seconds: float = Field(gt=0, title="模型请求超时", description="每次模型调用的超时秒数。")
-    context_window_tokens: int = Field(ge=2_048, title="上下文容量", description="模型完整上下文的 token 容量。")
-    max_output_tokens: int = Field(ge=1, title="最大输出容量", description="为模型输出预留的 token 数。")
-    characters_per_token: float = Field(gt=0, title="每 token 字符数", description="文字容量估算使用的每 token 字符数。")
-    tokens_per_image: int = Field(ge=1, title="每张图片容量", description="每张图片估算占用的 token 数。")
-    context_safety_margin_tokens: int = Field(ge=0, title="上下文安全余量", description="额外预留的 token 数。")
-
-    @model_validator(mode="after")
-    def model_parameters_are_valid(self) -> LLMProfileSettings:
-        if self.mode == "real" and not self.base_url:
-            raise ValueError("base_url is required for real model profiles")
-        if self.max_output_tokens + self.context_safety_margin_tokens >= self.context_window_tokens:
-            raise ValueError("max_output_tokens plus context_safety_margin_tokens must be smaller than context_window_tokens")
-        return self
 
 
 TProfile = TypeVar("TProfile", bound=LLMProfileSettings)
@@ -195,16 +169,20 @@ class SettingsService:
             previous_profiles = {profile.id: profile for profile in self._current.llm.profiles}
             candidate_values = content.model_dump()
             candidate_values["config_path"] = self._current.config_path
-            for profile in candidate_values["llm"]["profiles"]:
-                if not profile["api_key"] and profile["id"] in previous_profiles:
-                    profile["api_key"] = previous_profiles[profile["id"]].api_key
+            for profile, profile_values in zip(content.llm.profiles, candidate_values["llm"]["profiles"], strict=True):
+                previous_profile = previous_profiles.get(profile.id)
+                profile_values["api_key"] = profile.api_key or (previous_profile.api_key if previous_profile else None)
             candidate = Settings.model_validate(candidate_values)
             startup_changed = any(
                 getattr(candidate, field_name) != getattr(self._current, field_name)
                 for field_name, field in SettingsContent[LLMProfileSettings].model_fields.items()
                 if not isinstance(field.json_schema_extra, dict) or field.json_schema_extra.get("x-requires-restart", True)
             )
-            contents = tomli_w.dumps(candidate.model_dump(mode="json", exclude_none=True))
+            file_values = candidate.model_dump(mode="json", exclude_none=True)
+            for profile, profile_values in zip(candidate.llm.profiles, file_values["llm"]["profiles"], strict=True):
+                if profile.api_key is not None:
+                    profile_values["api_key"] = profile.api_key
+            contents = tomli_w.dumps(file_values)
             next_version = str(uuid4())
             temporary_path = await asyncio.to_thread(self._write_temporary_file, contents)
             # No await between the file commit and the one in-memory publication.

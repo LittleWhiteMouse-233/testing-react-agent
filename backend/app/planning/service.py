@@ -16,7 +16,7 @@ from app.domain.planning import (
     TestTaskDefinition,
     draft_plan_content,
 )
-from app.llm import ModelProvider, profile_snapshot_from_settings
+from app import llm
 from app.config import SettingsService
 from app.event_stream import EventBus
 from app.persistence.run_repository import SqlAlchemyRunRepository
@@ -33,14 +33,12 @@ class PlanningService:
         repository: SqlAlchemyRunRepository,
         test_case_lock: TestCaseLock,
         planning_graph: PlanningGraph,
-        model_provider: ModelProvider,
         settings_service: SettingsService,
         planning_event_bus: EventBus[PlanningEvent],
     ) -> None:
         self.repository = repository
         self.test_case_lock = test_case_lock
         self.planning_graph = planning_graph
-        self.model_provider = model_provider
         self.settings_service = settings_service
         self.planning_event_bus = planning_event_bus
 
@@ -71,9 +69,10 @@ class PlanningService:
                 user_input = (user_input or "").strip() or None
                 if previous_plan is not None and user_input is None:
                     raise PlanningUserInputRequired("重新规划必须填写本轮额外输入")
-                model_profile = profile_snapshot_from_settings(
-                    self.settings_service.current.llm.profile_for_activity(AgentActivity.PLANNING))
-                model_client = self.model_provider.client_for_profile(model_profile)
+                model_profile = self.settings_service.current.llm.profile_for_activity(
+                    AgentActivity.PLANNING,
+                ).model_copy(deep=True)
+                model_client = llm.create_model_client(model_profile)
                 previous_content = draft_plan_content(previous_plan.content) if previous_plan else None
                 prompt_definition = self.planning_graph.prompt_definition
                 context = TestPlanPlanningContext(

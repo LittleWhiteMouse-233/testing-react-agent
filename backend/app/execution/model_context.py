@@ -10,7 +10,7 @@ from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import BaseTool
 
 from app.domain.errors import ModelContextBudgetExceeded
-from app.domain.resources import LLMProfileSnapshot
+from app.domain.resources import LLMProfileSettings
 from app.resources.static_resources import LOAD_SKILL_TOOL_NAME
 
 
@@ -18,7 +18,7 @@ class ModelContextWindow:
     """Bind the selected client's model profile and complete tools without retaining messages."""
 
     def __init__(
-        self, *, model_profile: LLMProfileSnapshot, tools: tuple[BaseTool, ...],
+        self, *, model_profile: LLMProfileSettings, tools: tuple[BaseTool, ...],
     ) -> None:
         self._model_profile = model_profile
         self._tools = tools

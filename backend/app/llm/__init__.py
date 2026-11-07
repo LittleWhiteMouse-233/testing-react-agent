@@ -1,9 +1,8 @@
 from app.llm.client import (
     ChatModelClient,
     RealChatModelClient,
-    profile_snapshot_from_settings,
+    create_model_client,
 )
-from app.llm.provider import ModelProvider
 from app.llm.test_fake import (
     ScriptedChatModel,
     ScriptedChatModelClient,
@@ -11,9 +10,8 @@ from app.llm.test_fake import (
 
 __all__ = [
     "ChatModelClient",
-    "ModelProvider",
     "RealChatModelClient",
     "ScriptedChatModel",
     "ScriptedChatModelClient",
-    "profile_snapshot_from_settings",
+    "create_model_client",
 ]

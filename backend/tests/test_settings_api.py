@@ -18,7 +18,8 @@ from langchain_openai import ChatOpenAI
 from app.container import Container
 from app.config import get_settings
 from app.main import create_app
-from app.llm import ModelProvider
+from app import llm
+from app.llm import create_model_client
 from config_support import app_config_values, write_app_config
 from mcp_support import build_client, create_plan, finish_turn, start_run, wait_for_run
 
@@ -125,18 +126,19 @@ def test_preparation_of_another_case_rejects_settings_update(tmp_path: Path, ope
 def test_active_run_keeps_old_model_credentials_and_budget_after_model_removal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with build_client(tmp_path, turns=[finish_turn(1), finish_turn(2)]) as client:
+    with build_client(tmp_path, turns=[finish_turn(1), finish_turn(2)]) as client, pytest.MonkeyPatch.context() as model_patch:
         plan = create_plan(client, task_count=2)
         app = cast(FastAPI, client.app)
         container = cast(Container, app.state.container)
 
         async def exercise() -> None:
             entered, release = asyncio.Event(), asyncio.Event()
-            requests: list[tuple[str, str]] = []
+            requests: list[tuple[str, str, int]] = []
 
             async def respond(request: httpx.Request) -> httpx.Response:
                 request_body = json.loads(request.content)
-                requests.append((request.headers["authorization"], request_body["model"]))
+                task_context = json.loads(request_body["messages"][1]["content"])
+                requests.append((request.headers["authorization"], request_body["model"], task_context["max_cycles"]))
                 if len(requests) == 1:
                     entered.set()
                     await release.wait()
@@ -153,9 +155,9 @@ def test_active_run_keeps_old_model_credentials_and_budget_after_model_removal(
 
             async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as model_http:
                 monkeypatch.setattr("app.llm.client.ChatOpenAI", partial(ChatOpenAI, http_async_client=model_http))
-                monkeypatch.setattr(container.model_provider, "client_for_profile", ModelProvider().client_for_profile)
+                model_patch.setattr(llm, "create_model_client", create_model_client)
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
-                    async def save_model(model_id: str, token: str, failures: int) -> None:
+                    async def save_model(model_id: str, token: str, failures: int, cycle_limits: dict[str, int]) -> None:
                         current = (await api.get("/api/settings")).json()
                         draft = current["settings"]
                         profile = draft["llm"]["profiles"][0]
@@ -163,23 +165,32 @@ def test_active_run_keeps_old_model_credentials_and_budget_after_model_removal(
                         profile.update(id=model_id, mode="real", model=model_id, api_key=token, base_url="https://model.invalid/v1")
                         draft["llm"].update(planning_model_id=model_id, execution_model_id=model_id)
                         draft["execution"]["goal_max_failures"] = failures
+                        draft["execution"]["max_cycles_by_task_type"] = cycle_limits
                         response = await api.put("/api/settings", json={"version": current["version"], "settings": draft})
                         assert response.status_code == 200, response.text
 
-                    await save_model("old-model", "old-run-token", 10)
+                    await save_model("old-model", "old-run-token", 10, {"act": 4, "judge": 3, "goal": 2})
                     first = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
                     work = container.run_service._work
                     assert work is not None and work.task is not None
                     try:
                         await asyncio.wait_for(entered.wait(), 5)
-                        await save_model("new-model", "new-run-token", 2)
+                        await save_model("new-model", "new-run-token", 2, {"act": 1, "judge": 2, "goal": 3})
                     finally:
                         release.set()
                     await asyncio.wait_for(work.task, 10)
                     old_report = (await api.get(f"/api/runs/{first.id}")).json()
                     assert old_report["detail"]["run"]["verdict"] == "PASS"
                     assert old_report["detail"]["environment"]["execution"]["goal_max_failures"] == 10
+                    assert old_report["detail"]["environment"]["execution_model"]["id"] == "old-model"
+                    assert old_report["detail"]["environment"]["execution_model"]["mode"] == "real"
                     assert "old-run-token" not in json.dumps(old_report)
+                    for export_format in ("json", "html"):
+                        exported = await api.post(f"/api/runs/{first.id}/exports", json={"format": export_format})
+                        assert exported.status_code == 201, exported.text
+                        downloaded = await api.get(f"/api/artifacts/{exported.json()['id']}")
+                        assert downloaded.status_code == 200
+                        assert "old-run-token" not in downloaded.text and "new-run-token" not in downloaded.text
                     second = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
                     next_work = container.run_service._work
                     assert next_work is not None and next_work.task is not None
@@ -187,7 +198,10 @@ def test_active_run_keeps_old_model_credentials_and_budget_after_model_removal(
                     new_report = (await api.get(f"/api/runs/{second.id}")).json()
                     assert new_report["detail"]["environment"]["execution"]["goal_max_failures"] == 2
                     assert "new-run-token" not in json.dumps(new_report)
-                    assert requests == [("Bearer old-run-token", "old-model")] * 2 + [("Bearer new-run-token", "new-model")] * 2
+                    assert requests == [
+                        ("Bearer old-run-token", "old-model", 4), ("Bearer old-run-token", "old-model", 3),
+                        ("Bearer new-run-token", "new-model", 1), ("Bearer new-run-token", "new-model", 2),
+                    ]
 
         assert client.portal is not None
         client.portal.call(exercise)
@@ -225,8 +239,8 @@ def test_planning_finishes_with_its_original_model_after_settings_change(tmp_pat
                     release.set()
                 old_plan = await asyncio.wait_for(planning, 10)
                 next_plan = await container.planning.generate(test_case_id=case["id"], planning_request_id=str(uuid4()), user_input="Generate using new model")
-                assert old_plan.planning_context.planning_model.profile_id == "default"
-                assert next_plan.planning_context.planning_model.profile_id == "next-model"
+                assert old_plan.planning_context.planning_model.id == "default"
+                assert next_plan.planning_context.planning_model.id == "next-model"
                 assert next_plan.planning_context.planning_model.model == "next-deterministic"
 
         assert client.portal is not None

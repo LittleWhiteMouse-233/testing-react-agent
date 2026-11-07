@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.domain.ids import TaskRunId, TestPlanId, TestRunId, TestTaskId
 from app.domain.planning import TestPlan, TestTask, TestTaskType
-from app.domain.resources import LLMProfileSnapshot, ResourceCatalogSnapshot, ToolCatalogSnapshot
+from app.domain.resources import LLMProfileSettings, ResourceCatalogSnapshot, ToolCatalogSnapshot
 
 
 class ExecutionSettings(BaseModel):
@@ -106,7 +106,7 @@ class TestRunEnvironmentSnapshot(BaseModel):
 
     tool_catalog: ToolCatalogSnapshot
     resource_catalog: ResourceCatalogSnapshot
-    execution_model: LLMProfileSnapshot
+    execution_model: LLMProfileSettings
     execution: ExecutionSettings
     prompt_fingerprints_by_task_type: dict[TestTaskType, Annotated[str, Field(min_length=1)] | None]
     app_version: str = Field(min_length=1)

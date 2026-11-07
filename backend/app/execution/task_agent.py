@@ -40,14 +40,15 @@ from app.domain.execution import (
     TaskRunResult,
     TaskRunStatus,
 )
-from app.domain.resources import LLMProfileSnapshot, ResourceCatalogSnapshot, ResourceDefinitionSnapshot
+from app.domain.resources import LLMProfileSettings, ResourceCatalogSnapshot, ResourceDefinitionSnapshot
 from app.resources.static_resources import top_level_skills
 from app.domain.ids import ArtifactId, TaskRunId
 from app.domain.planning import TestTask, TestTaskType
 from app.execution.model_context import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.artifacts import ArtifactStore
-from app.llm import ChatModelClient, ModelProvider
+from app import llm
+from app.llm import ChatModelClient
 from app.resources.prompts import PromptCatalog, PromptDefinition
 
 
@@ -93,7 +94,7 @@ finish_task.metadata = {"tool_source": "builtin:task_agent"}
 
 @dataclass(frozen=True)
 class TaskAgentContext:
-    """Runtime context projected by the executor from persisted task/environment facts.
+    """Task-local facts prepared by the executor for one TaskRun.
 
     This task-local input is not persisted; the plan, run environment, and
     completed TaskRuns remain authoritative. Live dependencies stay separate.
@@ -102,15 +103,19 @@ class TaskAgentContext:
     task_run_id: TaskRunId
     task: TestTask
     memory_text: str
-    max_cycles: int
 
 
 @dataclass(frozen=True)
 class TaskAgentRuntimeContext:
-    """Per-task framework injection boundary, sharing task facts and live image access."""
+    """Per-task framework context with frozen execution settings and live image access."""
 
     task_context: TaskAgentContext
     artifacts: ArtifactStore
+    execution: ExecutionSettings
+
+    @property
+    def max_cycles(self) -> int:
+        return self.execution.max_cycles_by_task_type[self.task_context.task.definition.type]
 
 
 @tool
@@ -138,40 +143,40 @@ TASK_AGENT_TOOLS = (read_image_artifact, finish_task)
 
 
 @dataclass(frozen=True)
-class TaskAgentInput:
+class TaskAgentBuildParams:
     """Factory input with task facts, external capabilities and the run's model selection."""
 
     task_context: TaskAgentContext
     tools: tuple[BaseTool, ...]
     resource_catalog: ResourceCatalogSnapshot
-    model_profile: LLMProfileSnapshot
+    model_profile: LLMProfileSettings
     execution: ExecutionSettings
 
 
 class TaskAgentFactory:
     def __init__(
-        self, *, artifacts: ArtifactStore, model_provider: ModelProvider,
+        self, *, artifacts: ArtifactStore,
         prompt_catalog: PromptCatalog,
     ) -> None:
         self.artifacts = artifacts
-        self.model_provider = model_provider
         self.prompt_catalog = prompt_catalog
 
     async def build(
-        self, *, task_input: TaskAgentInput,
+        self, *, build_params: TaskAgentBuildParams,
         run_cancellation_event: asyncio.Event, checkpointer: BaseCheckpointSaver[Any] | None,
         event_recorder: TaskAgentEventRecorder,
     ) -> tuple[CompiledStateGraph[TaskAgentGraphState, TaskAgentRuntimeContext], TaskAgentGraphState, TaskAgentRuntimeContext]:
-        model_client = self.model_provider.client_for_profile(task_input.model_profile)
-        prompt = self.prompt_catalog.prompt_for_task_type(task_input.task_context.task.definition.type)
-        runtime_context = TaskAgentRuntimeContext(task_context=task_input.task_context, artifacts=self.artifacts)
+        model_client = llm.create_model_client(build_params.model_profile)
+        prompt = self.prompt_catalog.prompt_for_task_type(build_params.task_context.task.definition.type)
+        runtime_context = TaskAgentRuntimeContext(
+            task_context=build_params.task_context, artifacts=self.artifacts, execution=build_params.execution,
+        )
         runtime = _TaskRuntime(
             runtime_context=runtime_context, run_cancellation_event=run_cancellation_event,
-            model_client=model_client, prompt_definition=prompt, tools=task_input.tools,
-            available_skills=top_level_skills(task_input.resource_catalog),
-            model_context_window=ModelContextWindow(model_profile=model_client.profile_snapshot, tools=task_input.tools),
-            model_image_window=ModelImageWindow(history_rounds=task_input.execution.image_history_rounds),
-            model_response_max_attempts=task_input.execution.model_response_max_attempts,
+            model_client=model_client, prompt_definition=prompt, tools=build_params.tools,
+            available_skills=top_level_skills(build_params.resource_catalog),
+            model_context_window=ModelContextWindow(model_profile=model_client.profile_snapshot, tools=build_params.tools),
+            model_image_window=ModelImageWindow(history_rounds=runtime_context.execution.image_history_rounds),
             event_recorder=event_recorder,
         )
         graph = StateGraph(TaskAgentGraphState, context_schema=TaskAgentRuntimeContext)
@@ -179,13 +184,13 @@ class TaskAgentFactory:
         graph.add_node("cycle_guard", runtime.cycle_guard)
         graph.add_node("model", runtime.call_model, retry_policy=RetryPolicy(
             initial_interval=0.25, backoff_factor=2, max_interval=1,
-            max_attempts=task_input.execution.model_call_max_attempts, jitter=False, retry_on=_retry_model_error,
+            max_attempts=runtime_context.execution.model_call_max_attempts, jitter=False, retry_on=_retry_model_error,
         ))
         graph.add_node("validate", runtime.validate_message)
         graph.add_node("announce_tool", runtime.announce_tool)
         nodes_before_tools = set(graph.nodes)
         graph.add_node(
-            "tools", ToolNode(task_input.tools), timeout=task_input.execution.tool_call_timeout_seconds,
+            "tools", ToolNode(build_params.tools), timeout=runtime_context.execution.tool_call_timeout_seconds,
             # LangGraph 1.2.9 supports NodeError injection but omits it from StateNode's type.
             error_handler=runtime.handle_tool_error,  # type: ignore[reportArgumentType]
         )
@@ -207,9 +212,10 @@ class TaskAgentFactory:
                 f"missing={sorted(publishing_nodes - MESSAGE_PUBLISHING_NODES)}, "
                 f"extra={sorted(MESSAGE_PUBLISHING_NODES - publishing_nodes)}"
             )
-        return graph.compile(checkpointer=checkpointer), {
+        initial_state: TaskAgentGraphState = {
             "messages": [], "cycle_count": 0, "model_response_attempt": 0, "completion": None, "route": "cycle_guard",
-        }, runtime_context
+        }
+        return graph.compile(checkpointer=checkpointer), initial_state, runtime_context
 
 
 def _retry_model_error(exc: Exception) -> bool:
@@ -232,7 +238,6 @@ class _TaskRuntime:
     available_skills: list[ResourceDefinitionSnapshot]
     model_context_window: ModelContextWindow
     model_image_window: ModelImageWindow
-    model_response_max_attempts: int
     event_recorder: TaskAgentEventRecorder
     bound_model: Any = field(default=None, init=False)
 
@@ -241,7 +246,7 @@ class _TaskRuntime:
             SystemMessage(content=self.prompt_definition.text if self.prompt_definition is not None else ""),
             HumanMessage(content=json.dumps({
                 "task": self.runtime_context.task_context.task.model_dump(mode="json"),
-                "max_cycles": self.runtime_context.task_context.max_cycles,
+                "max_cycles": self.runtime_context.max_cycles,
                 "memory_text": self.runtime_context.task_context.memory_text,
                 "available_skills": [entry.model_dump(include={"source_id", "uri", "name", "description"})
                                      for entry in self.available_skills],
@@ -251,7 +256,7 @@ class _TaskRuntime:
     async def cycle_guard(self, state: TaskAgentGraphState) -> dict[str, object]:
         if self.run_cancellation_event.is_set():
             return self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"])
-        if state["cycle_count"] >= self.runtime_context.task_context.max_cycles:
+        if state["cycle_count"] >= self.runtime_context.max_cycles:
             return self._completion(TaskRunStatus.BLOCKED, ReasonCode.CYCLE_LIMIT,
                                     "Decision round limit reached", state["cycle_count"])
         cycle_count = state["cycle_count"] + 1
@@ -300,9 +305,9 @@ class _TaskRuntime:
         if self.run_cancellation_event.is_set():
             return {"messages": repairs,
                     **self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"])}
-        if state["cycle_count"] >= self.runtime_context.task_context.max_cycles:
+        if state["cycle_count"] >= self.runtime_context.max_cycles:
             return {"messages": repairs, "route": "cycle_guard"}
-        if state["model_response_attempt"] >= self.model_response_max_attempts:
+        if state["model_response_attempt"] >= self.runtime_context.execution.model_response_max_attempts:
             return {"messages": repairs,
                     **self._completion(TaskRunStatus.BLOCKED, ReasonCode.INVALID_MODEL_RESPONSE, reason, state["cycle_count"])}
         repairs.append(HumanMessage(content=f"Return one allowed tool call with a new id. {reason}"))
@@ -405,8 +410,8 @@ class _TaskRuntime:
                       TaskRunStatus.FAILED: ReasonCode.GOAL_UNREACHABLE if self.runtime_context.task_context.task.definition.type == TestTaskType.ACT else ReasonCode.ASSERTION_FAILED}[status]
             update.update(self._completion(status, reason, terminal.summary, state["cycle_count"], memory=terminal.memory))
         elif tool_message.status == "error":
-            if (state["cycle_count"] < self.runtime_context.task_context.max_cycles
-                    and state["model_response_attempt"] >= self.model_response_max_attempts):
+            if (state["cycle_count"] < self.runtime_context.max_cycles
+                    and state["model_response_attempt"] >= self.runtime_context.execution.model_response_max_attempts):
                 update.update(self._completion(TaskRunStatus.BLOCKED, ReasonCode.TOOL_FAILED, tool_message.text, state["cycle_count"]))
         else:
             update["model_response_attempt"] = 0

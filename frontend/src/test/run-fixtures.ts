@@ -11,7 +11,7 @@ export function runEvent(sequence: number, event: StoredRunEvent["event"]): Stor
 }
 
 export function runReport(verdict: TestRunVerdict | null = "PASS"): TestRunReport {
-  const profile = { profile_id: "default", provider: "scripted", model: "deterministic", base_url: null,
+  const profile = { id: "default", mode: "scripted" as const, model: "deterministic", base_url: null,
     temperature: 0, timeout_seconds: 60, context_window_tokens: 32768, max_output_tokens: 2048,
     characters_per_token: 1.5, tokens_per_image: 1024, context_safety_margin_tokens: 1024 };
   const status = verdict === "PASS" ? "passed" : verdict === "FAIL" ? "failed" : verdict === "BLOCKED" ? "blocked" : verdict === "CANCELLED" ? "cancelled" : "running";

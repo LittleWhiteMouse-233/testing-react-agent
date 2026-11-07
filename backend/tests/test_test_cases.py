@@ -128,13 +128,13 @@ def test_update_validates_both_fields_without_partial_writes(tmp_path: Path, con
 
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancelled"])
 def test_prepared_planning_allows_edits_and_preserves_its_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
-    with build_client(tmp_path) as client:
+    with build_client(tmp_path) as client, pytest.MonkeyPatch.context() as model_patch:
         container = cast(Container, cast(FastAPI, client.app).state.container)
         assert client.portal is not None
         case = client.post("/api/test-cases", json={"name": "名称", "source_text": "正文"}).json()
         other = client.post("/api/test-cases", json={"name": "其他用例", "source_text": "正文"}).json()
         if outcome == "failure":
-            install_model_client(container, ScriptedChatModelClient(build_model_profile(), plans=[{"title": "缺少任务"}, {"title": "缺少任务"}, {"title": "缺少任务"}]))
+            install_model_client(model_patch, ScriptedChatModelClient(build_model_profile(), plans=[{"title": "缺少任务"}, {"title": "缺少任务"}, {"title": "缺少任务"}]))
         original_generate = container.planning_graph.generate
         entered, release = asyncio.Event(), asyncio.Event()
 
