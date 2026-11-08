@@ -214,8 +214,7 @@ class RunExecutor:
             context=runtime_context,
             config={"configurable": {"thread_id": f"task-run:{task_context.task_run_id}"},
                     "recursion_limit": runtime_context.max_cycles * 8 + 20},
-            # LangGraph 1.2.9 re-raises handled errors with custom streams (#8608).
-            # Product events are awaited directly; framework State uses updates only.
+            # Product events are awaited directly; public messages come from State updates.
             stream_mode="updates",
             version="v2",
             durability="exit",
