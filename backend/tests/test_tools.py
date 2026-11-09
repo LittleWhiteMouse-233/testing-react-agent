@@ -34,7 +34,7 @@ async def test_discovery_closes_sessions_and_tools_use_independent_calls(tmp_pat
     tools = await ToolProvider(await load_mcp_client_provider(config)).discover_tools()
     assert [tool.name for tool in tools] == ["first_inspect", "second_inspect"]
     snapshot = snapshot_tools(tools)
-    assert [tool.source for tool in snapshot.tools] == ["first", "second"]
+    assert [tool.source_id for tool in snapshot.tools] == ["mcp:first", "mcp:second"]
     assert snapshot.tools[0].annotations.readOnlyHint is True
     assert "env" not in snapshot.model_dump_json()
     for server in ("first", "second"):
@@ -84,7 +84,7 @@ async def test_additional_tools_are_frozen_per_discovery_and_snapshotted(tmp_pat
     assert first == second == (extra_tool,)
     snapshot = snapshot_tools(first)
     assert snapshot.tools[0].name == extra_tool.name
-    assert snapshot.tools[0].source == "builtin:fixture"
+    assert snapshot.tools[0].source_id == "builtin:fixture"
     assert snapshot.tools[0].annotations.readOnlyHint is None
 
 

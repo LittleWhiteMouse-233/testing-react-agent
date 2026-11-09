@@ -30,7 +30,7 @@ class ToolProvider:
                     continue
                 for remote_tool in await group.list_tools(cache_mode="bypass"):
                     adapted_tool = await as_langchain_tool(remote_tool, group)
-                    adapted_tool.metadata = {**(adapted_tool.metadata or {}), "tool_source": server_name}
+                    adapted_tool.metadata = {**(adapted_tool.metadata or {}), "tool_source": f"mcp:{server_name}"}
                     loaded_tools.append(adapted_tool)
         loaded_tools.extend(self.additional_tools)
         name_counts = Counter(entry.name for entry in loaded_tools)
@@ -50,7 +50,7 @@ def snapshot_tools(tools: Sequence[BaseTool]) -> ToolCatalogSnapshot:
         definitions.append(ToolDefinitionSnapshot(
             name=entry.name, description=entry.description or "",
             input_schema=schema if isinstance(schema, dict) else model_json_schema(schema),
-            source=str(metadata["tool_source"]),
+            source_id=str(metadata["tool_source"]),
             annotations=ToolAnnotationsSnapshot.model_validate(annotations),
         ))
     return ToolCatalogSnapshot(tools=definitions)

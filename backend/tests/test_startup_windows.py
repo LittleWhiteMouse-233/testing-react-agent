@@ -5,6 +5,7 @@ console, so control events cannot interrupt pytest or the developer's terminal.
 """
 from __future__ import annotations
 
+
 from contextlib import ExitStack, contextmanager
 import ctypes
 import os
@@ -34,9 +35,17 @@ def console_process(command: list[str], log_path: Path, *, env: dict[str, str] |
     startup = subprocess.STARTUPINFO()
     startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startup.wShowWindow = subprocess.SW_HIDE
+    # New consoles inherit Ctrl+C suppression; reset it outside pytest before spawning the target.
+    console_owner = (
+        "import ctypes,signal,subprocess,sys; "
+        "signal.signal(signal.SIGINT, lambda *_: None); "
+        "signal.signal(signal.SIGBREAK, lambda *_: None); "
+        "assert ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False), ctypes.WinError(); "
+        "raise SystemExit(subprocess.call(sys.argv[1:]))"
+    )
     with log_path.open("wb") as output:
         process = subprocess.Popen(
-            command, cwd=ROOT / "backend", env=env,
+            [sys.executable, "-c", console_owner, *command], cwd=ROOT / "backend", env=env,
             stdin=subprocess.PIPE if interactive else subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=startup,
         )
@@ -228,11 +237,11 @@ def test_uvicorn_shutdown_with_open_sse_saves_run_and_closes_mcp(tmp_path: Path,
     with console_process([sys.executable, str(Path(__file__).resolve()), "server", str(tmp_path), str(port), phase], log) as process:
         wait_for_text(log, "Application startup complete", process)
         with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=15, trust_env=False) as client:
-            from mcp_support import create_plan
+            from mcp_support import create_plan, capability_selection
             plan = create_plan(client)  # type: ignore[arg-type]
             run_id: str | None = None
             if phase != "idle":
-                response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True})
+                response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)})
                 assert response.status_code == 201, response.text
                 run_id = response.json()["id"]
                 marker = tmp_path / ("fixture.jsonl" if phase == "tool" else "phase.txt")
@@ -241,7 +250,8 @@ def test_uvicorn_shutdown_with_open_sse_saves_run_and_closes_mcp(tmp_path: Path,
                            f"/api/test-cases/{plan['test_case_id']}/planning/stream")
             with client.stream("GET", stream_path) as response:
                 assert response.status_code == 200, response.text
-                next(response.iter_lines())
+                stream_lines = response.iter_lines()
+                next(stream_lines)
                 console_signal(process)
                 process.wait(timeout=25)
         output = log.read_text(encoding="utf-8", errors="replace")

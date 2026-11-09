@@ -1,5 +1,7 @@
 """Settings HTTP boundaries expose schemas and safe, atomic updates."""
 from __future__ import annotations
+from mcp_support import capability_selection
+
 
 import json
 import asyncio
@@ -104,7 +106,7 @@ def test_runtime_snapshot_is_nested_and_serialized_without_credentials(tmp_path:
         detail = wait_for_run(client, start_run(client, plan))
         assert detail["environment"]["execution"]["goal_max_failures"] == 10
         assert "max_cycles_by_task_type" not in detail["environment"]
-        assert detail["environment"]["execution_protocol_version"] == "11"
+        assert detail["environment"]["execution_protocol_version"] == "12"
 
 
 @pytest.mark.parametrize("operation", ["pre_planning", "pre_running"])
@@ -170,7 +172,7 @@ def test_active_run_keeps_old_model_credentials_and_budget_after_model_removal(
                         assert response.status_code == 200, response.text
 
                     await save_model("old-model", "old-run-token", 10, {"act": 4, "judge": 3, "goal": 2})
-                    first = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+                    first = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
                     work = container.run_service._work
                     assert work is not None and work.task is not None
                     try:
@@ -191,7 +193,7 @@ def test_active_run_keeps_old_model_credentials_and_budget_after_model_removal(
                         downloaded = await api.get(f"/api/artifacts/{exported.json()['id']}")
                         assert downloaded.status_code == 200
                         assert "old-run-token" not in downloaded.text and "new-run-token" not in downloaded.text
-                    second = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+                    second = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
                     next_work = container.run_service._work
                     assert next_work is not None and next_work.task is not None
                     await asyncio.wait_for(next_work.task, 10)
@@ -275,7 +277,7 @@ def test_settings_save_rejects_new_planning_run_and_competing_save(tmp_path: Pat
                     requests = [
                         ("/api/settings", command),
                         (f"/api/test-cases/{plan['test_case_id']}/plans", {"planning_request_id": str(uuid4()), "user_input": "new plan"}),
-                        ("/api/runs", {"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True}),
+                        ("/api/runs", {"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)}),
                     ]
                     for path, request_body in requests:
                         rejected = await (api.put(path, json=request_body) if path == "/api/settings" else api.post(path, json=request_body))

@@ -77,6 +77,7 @@ class ReportService:
             content = self.templates.get_template("report.html").render(
                 report=report_dump,
                 image_data_urls=image_data_urls,
+                capability_catalog=report.detail.environment.capability_catalog,
             ).encode("utf-8")
             artifact_type = ArtifactType.HTML_EXPORT
             mime_type, extension = "text/html; charset=utf-8", "html"

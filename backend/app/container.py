@@ -16,9 +16,7 @@ from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.planning import PlanningGraph, PlanningService
 from app.resources.prompts import PromptCatalog
 from app.reporting import ReportService
-from app.resources.mcp import MCPClientProvider
-from app.resources.static_resources import SkillResourceProvider
-from app.resources.tools import ToolProvider
+from app.resources.catalog import CapabilityProvider
 from app.test_case_lock import TestCaseLock
 
 
@@ -35,11 +33,7 @@ class Container:
             settings.artifacts_dir,
             self.sessions,
         )
-        self.mcp_clients = MCPClientProvider(settings.mcp_config_path)
-        self.skills = SkillResourceProvider(settings.skills_dir, self.mcp_clients)
-        self.tools = ToolProvider(
-            self.mcp_clients, additional_tools=(*self.skills.build_resource_tools(), *TASK_AGENT_TOOLS),
-        )
+        self.capabilities = CapabilityProvider(settings.mcp_config_path, settings.skills_dir, TASK_AGENT_TOOLS)
         prompt_catalog = PromptCatalog()
         self.planning_graph = PlanningGraph(prompt_catalog.prompt_for_activity(AgentActivity.PLANNING))
         self.repository = SqlAlchemyRunRepository(self.sessions, self.run_event_writer)
@@ -66,8 +60,6 @@ class Container:
             settings_service=self.settings_service,
             app_version=settings.app_version,
             prompt_catalog=prompt_catalog,
-            mcp_clients=self.mcp_clients,
-            tools=self.tools,
-            skills=self.skills,
+            capabilities=self.capabilities,
         )
         self.reports = ReportService(partial(read_test_run_report, self.sessions), self.artifacts)

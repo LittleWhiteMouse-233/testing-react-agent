@@ -1,4 +1,6 @@
 from __future__ import annotations
+from mcp_support import capability_selection
+
 
 from config_support import execution_model_client
 
@@ -284,13 +286,13 @@ def test_act_and_judge_share_tools_and_model(tmp_path: Path, monkeypatch: pytest
             detail = wait_for_run(client, run_id)
             assert detail["run"]["verdict"] == "PASS"
             assert [task["cycle_count"] for task in detail["task_runs"]] == [2, 2]
-            snapshots = detail["environment"]["tool_catalog"]["tools"]
+            snapshots = detail["environment"]["capability_catalog"]["tool_catalog"]["tools"]
             assert [entry["name"] for entry in snapshots] == [
                 "fixture_inspect", "load_skill", "read_resource", "list_resources", "read_image_artifact", "finish_task",
             ]
             assert bound_tool_names[-2:] == [tuple(entry["name"] for entry in snapshots)] * 2
-            assert [entry["source"] for entry in snapshots] == [
-                "fixture", *(["builtin:skill"] * 3), *(["builtin:task_agent"] * 2),
+            assert [entry["source_id"] for entry in snapshots] == [
+                "mcp:fixture", *(["builtin:skill"] * 3), *(["builtin:task_agent"] * 2),
             ]
             assert detail["environment"]["prompt_fingerprints_by_task_type"] == {
                 "act": act_prompt.fingerprint, "judge": judge_prompt.fingerprint, "goal": goal_prompt.fingerprint,
@@ -513,6 +515,7 @@ def test_model_can_correct_tool_parameters(tmp_path: Path, failure_kind: str) ->
             "type": "object", "properties": {"wait_seconds": {"type": "integer"}}, "required": ["wait_seconds"],
         }
         scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
+        assert client.post("/api/capabilities/refresh").status_code == 200
         run_id = start_run(client, create_plan(client))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "PASS"
@@ -540,7 +543,7 @@ def test_cancel_waits_for_call_or_timeout_and_never_executes_next_call(tmp_path:
                 break
             time.sleep(0.01)
         assert any(entry["phase"] == "started" for entry in read_records(tmp_path))
-        assert client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True}).status_code == 409
+        assert client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)}).status_code == 409
         assert client.post(f"/api/runs/{run_id}/cancel").status_code == 202
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "CANCELLED"
@@ -561,11 +564,12 @@ def test_cancel_waits_for_call_or_timeout_and_never_executes_next_call(tmp_path:
 
 def test_planning_does_not_connect_to_mcp(tmp_path: Path) -> None:
     with build_client(tmp_path) as client:
+        startup_records = read_records(tmp_path)
         (tmp_path / "mcp.json").write_text("invalid", encoding="utf-8")
         plan = create_plan(client)
         assert plan["content"]["tasks"]
-        assert not read_records(tmp_path)
-        response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True})
+        assert read_records(tmp_path) == startup_records
+        response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)})
         assert response.status_code == 502
         assert response.json()["code"] == "mcp_unavailable"
 
@@ -737,7 +741,7 @@ def test_cycle_is_persisted_while_model_response_is_pending(tmp_path: Path, monk
                 return RunnableLambda(invoke)
 
             monkeypatch.setattr(ScriptedChatModel, "bind_tools", bind_tools)
-            run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+            run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
             work = container.run_service._work
             assert work is not None and work.task is not None
             try:
@@ -860,21 +864,22 @@ def test_run_tools_ignore_config_changes_and_hold_the_single_run_slot(tmp_path: 
         plan = create_plan(client)
         run_id = start_run(client, plan)
         (tmp_path / "mcp.json").write_text("invalid", encoding="utf-8")
-        conflict = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True})
+        conflict = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)})
         assert conflict.status_code == 409
         assert wait_for_run(client, run_id)["run"]["verdict"] == "PASS"
         write_mcp_config(tmp_path, [replay_call(content=[text_block("New target state")])], servers=("updated",))
+        assert client.post("/api/capabilities/refresh").status_code == 200
         next_detail = wait_for_run(client, start_run(client, plan))
         assert next_detail["run"]["verdict"] == "PASS"
-        snapshots = next_detail["environment"]["tool_catalog"]["tools"]
-        assert [tool["source"] for tool in snapshots] == [
-            "updated", *(["builtin:skill"] * 3), *(["builtin:task_agent"] * 2),
+        snapshots = next_detail["environment"]["capability_catalog"]["tool_catalog"]["tools"]
+        assert [tool["source_id"] for tool in snapshots] == [
+            "mcp:updated", *(["builtin:skill"] * 3), *(["builtin:task_agent"] * 2),
         ]
         assert len({tool["name"] for tool in snapshots}) == len(snapshots) == 6
     records = read_records(tmp_path)
-    # Tool and resource capability discovery each close their own session,
-    # followed by the two independent business calls.
-    assert len({entry["pid"] for entry in records}) == 4
+    # Startup discovery and run preparation each close their tool/resource sessions,
+    # followed by the two independent business calls bound to the original batch.
+    assert len({entry["pid"] for entry in records}) == 6
     assert sum(entry["phase"] == "completed" for entry in records) == 2
 
 
@@ -905,10 +910,11 @@ def test_custom_schema_structured_result_and_history_without_online_mcp(tmp_path
                                   "pages": {"type": "array", "items": {"type": "integer"}},
                               }, "required": ["document", "pages"], "additionalProperties": False}}]
         scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
+        assert client.post("/api/capabilities/refresh").status_code == 200
         run_id = start_run(client, create_plan(client))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "PASS"
-        assert detail["environment"]["tool_catalog"]["tools"][0]["input_schema"]["required"] == ["document", "pages"]
+        assert detail["environment"]["capability_catalog"]["tool_catalog"]["tools"][0]["input_schema"]["required"] == ["document", "pages"]
         report = client.get(f"/api/runs/{run_id}").json()
         returned = next(entry["event"]["message"] for entry in report["events"]
                         if entry["event"]["type"] == "message.appended" and entry["event"]["message"].get("name") == turn.tool_calls[0]["name"])

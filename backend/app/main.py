@@ -13,6 +13,7 @@ from app.config import Settings, get_settings
 from app.api.schemas import ApiError, api_validation_error
 from app.container import Container
 from app.persistence.db import ensure_sqlite_database_directory, init_database
+from app.resources.mcp import MCPConnectionError
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,10 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
         instance.state.container = container
         await init_database(container.engine)
         await container.run_service.reconcile_orphaned_runs()
+        try:
+            await container.capabilities.discover(startup_settings.execution.tool_call_timeout_seconds)
+        except MCPConnectionError as exc:
+            logger.warning("Capability preview discovery failed: %s", exc)
         yield
         logger.info("Application shutdown started; waiting for run and resource cleanup")
         await container.run_service.shutdown()

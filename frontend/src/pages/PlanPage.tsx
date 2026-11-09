@@ -6,7 +6,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage } from "../api/client";
 import type { TestCaseContent, TestPlan, TestPlanDraft, TestTaskDefinition } from "../api/contracts";
 import { emptyTask, getGoalsWithInvalidatedJumpTargets, isPlanDraftValid, toPlanDraft, updateTaskOrder } from "../planDraft";
-import { formatTime, runSummary, StatusBadge } from "../runPresentation";
+import CapabilitySelector, { useCapabilitySelection } from "./CapabilitySelector";
 import { usePlanningProgress } from "../api/usePlanningProgress";
 import PlanningProgressDialog from "./PlanningProgressDialog";
 
@@ -19,6 +19,7 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const planning = usePlanningProgress();
+  const capabilitySelection = useCapabilitySelection();
   const progress = planning.requests.get(caseId);
   const planningPending = !!progress && progress.status !== "failed";
   const previousProgress = useRef(progress);
@@ -36,7 +37,6 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   const [caseUpdated, setCaseUpdated] = useState(false);
   const testCase = $api.useQuery("get", "/api/test-cases/{test_case_id}", { params: { path: { test_case_id: caseId } } }, { refetchOnMount: "always" });
   const plans = $api.useQuery("get", "/api/test-cases/{test_case_id}/plans", { params: { path: { test_case_id: caseId } } }, { refetchOnMount: "always" });
-  const runs = $api.useQuery("get", "/api/runs", { params: { query: { test_case_id: caseId, limit: 5 } } });
   const activeRuns = $api.useQuery("get", "/api/runs", { params: { query: { status: ["pending", "running"], limit: 1 } } }, {
     refetchInterval: (query) => query.state.data?.items.length ? 3000 : 30000,
     refetchOnWindowFocus: true
@@ -96,6 +96,7 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
       message.error(apiErrorMessage(error, "启动失败"));
       if (error.code === "run_input_not_found") void testCase.refetch();
       if (error.code === "test_plan_not_startable") { setConfirmed(false); void plans.refetch(); }
+      if (error.code === "capability_catalog_changed") capabilitySelection.markStale();
     }
   });
   const latest = plans.data?.items[0];
@@ -183,16 +184,13 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
           {task.type === "goal" && <p className="muted">未满足时回到任务 {task.jump_back_to_task_no ?? "待选择"}{task.jump_back_to_task_no != null && " · " + draft.tasks.find((target) => target.task_no === task.jump_back_to_task_no)?.title}</p>}
         </div></article>)}</div>
         <div className="plan-start"><Checkbox disabled={busy || dirty || !isLatest} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}>我已确认计划 assumptions、任务目标和成功标准</Checkbox>
-          <Button block size="large" type="primary" icon={<RocketOutlined />} loading={start.isPending} disabled={busy || runOccupied || !valid || dirty || !confirmed || !isLatest}
-            onClick={() => start.mutate({ body: { test_case_id: caseId, test_plan_id: plan.id, assumptions_confirmed: true } })}>启动运行</Button>
+          <Button block size="large" type="primary" icon={<RocketOutlined />} loading={start.isPending} disabled={busy || runOccupied || !valid || dirty || !confirmed || !isLatest || !capabilitySelection.ready}
+            onClick={() => start.mutate({ body: { test_case_id: caseId, test_plan_id: plan.id, assumptions_confirmed: true, selected_columns: capabilitySelection.selectedColumns } })}>启动运行</Button>
           {dirty && <p className="muted">保存为新计划版本后才能启动</p>}
         </div>
       </> : <Empty className="plan-empty" image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未生成计划" />}
-      <div className="recent-runs"><div className="section-heading"><div><small>最近 5 次 · 按时间倒序</small><h3>历史运行 · 本用例</h3></div><Link to={"/runs?case=" + caseId}>查看全部 →</Link></div>
-        {runs.error ? <Alert type="error" title="历史运行加载失败" /> : runs.data?.items.length ? runs.data.items.map((run) => <Link className="recent-run" to={"/runs/" + run.id + "/report"} key={run.id}>
-          <div><span className="mono">{run.id.slice(0, 8)}</span><time>{formatTime(run.created_at)}</time><StatusBadge status={run.verdict ?? run.status} /></div><p>{runSummary(run)}</p>
-        </Link>) : <p className="muted">暂无历史运行</p>}
-      </div>
+      <CapabilitySelector selection={capabilitySelection} disabled={busy || start.isPending} />
+      <Link className="case-history-link" to={"/runs?case=" + caseId}>查看本用例历史记录 →</Link>
     </aside>
     <Modal title="编辑语义计划" open={editing} width={760} onCancel={() => setEditing(false)} footer={null} mask={{ closable: false }}>
       {draft && <Form layout="vertical" disabled={!canEdit}>

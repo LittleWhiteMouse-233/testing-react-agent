@@ -9,6 +9,13 @@ from app.domain.resources.static_resources import (
     ResourceCatalogSnapshot,
     ResourceDefinitionSnapshot,
     ResourceTemplateSnapshot,
+    is_skill_uri,
+    is_resource_in_skill_package,
+    top_level_skills,
+)
+from app.domain.resources.catalog import (
+    CapabilityCatalog, CapabilityCatalogChanged, CapabilityColumnSelection, CapabilityColumnSnapshot,
+    LOCAL_OTHER_COLUMN_ID, build_capability_preview, select_capabilities,
 )
 from app.domain.resources.tools import (
     ToolAnnotationsSnapshot,
@@ -24,4 +31,7 @@ __all__ = [
     "ToolAnnotationsSnapshot",
     "ToolCatalogSnapshot",
     "ToolDefinitionSnapshot",
+    "CapabilityCatalog", "CapabilityCatalogChanged", "CapabilityColumnSelection", "CapabilityColumnSnapshot",
+    "LOCAL_OTHER_COLUMN_ID", "build_capability_preview", "select_capabilities",
+    "is_skill_uri", "is_resource_in_skill_package", "top_level_skills",
 ]

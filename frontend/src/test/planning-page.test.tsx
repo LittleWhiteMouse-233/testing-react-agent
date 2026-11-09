@@ -5,8 +5,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { Link, createMemoryRouter, RouterProvider, Route, Routes } from "react-router-dom";
 import { StrictMode, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TestCase, TestPlan, TestPlanDraft, TestRunListResponse, TestRunReport } from "../api/contracts";
+import type { CapabilityPreview, TestCase, TestPlan, TestPlanDraft, TestRunListResponse, TestRunReport } from "../api/contracts";
 import PlanPage from "../pages/PlanPage";
+import { $api } from "../api/client";
 import CasesPage from "../pages/CasesPage";
 import ReportPage from "../pages/ReportPage";
 import { PlanningProgressProvider } from "../api/usePlanningProgress";
@@ -97,6 +98,8 @@ let archived: boolean;
 let updateResponse: ((request: Request) => Promise<Response>) | undefined;
 let archiveResponse: (() => Promise<Response>) | undefined;
 let startResponse: (() => Promise<Response>) | undefined;
+let capabilities: CapabilityPreview;
+let capabilityFailure: boolean;
 
 beforeEach(() => {
   PlanningEventSource.instances = [];
@@ -109,6 +112,12 @@ beforeEach(() => {
   plansResponse = undefined;
   updateResponse = undefined; archiveResponse = undefined; startResponse = undefined;
   currentCase = { ...testCase, content: { ...testCase.content } }; archived = false;
+  capabilityFailure = false;
+  capabilities = {
+    tool_catalog: { tools: [{ name: "fixture_inspect", source_id: "mcp:fixture", description: "读取观察", input_schema: { type: "object" }, annotations: {} }] },
+    resource_catalog: { local_root: null, resources: [], templates: [] },
+    columns: [{ id: "mcp:fixture", fingerprint: "a".repeat(64) }, { id: "local:other", fingerprint: "b".repeat(64) }]
+  };
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   // Node's Request requires its native signal, whereas jsdom replaces AbortController.
   vi.stubGlobal("AbortController", class {
@@ -129,6 +138,7 @@ beforeEach(() => {
     requests.push(request.clone());
     const path = new URL(request.url).pathname;
     if (request.method === "GET") {
+      if (path === "/api/capabilities") return capabilityFailure ? Response.json({ code: "mcp_unavailable", message: "目录发现失败" }, { status: 502 }) : Response.json(capabilities);
       if (path === "/api/runs") {
         const items = new URL(request.url).searchParams.has("status") ? activeRuns : [];
         return Response.json({ items, total: items.length });
@@ -144,6 +154,7 @@ beforeEach(() => {
       if (path.endsWith("/plans")) return plansResponse ? plansResponse() : Response.json({ items: plans, total: plans.length });
       return Response.json(currentCase);
     }
+    if (path === "/api/capabilities/refresh") return Response.json(capabilities);
     if (request.method === "PATCH") {
       if (updateResponse) return updateResponse(request);
       currentCase = { ...currentCase, content: await request.json() as TestCase["content"] };
@@ -210,6 +221,69 @@ function renderPlanPage() {
     </QueryClientProvider>
   );
 }
+
+it("starts with the checked preview columns without opening the resource selector", async () => {
+  plans = [savedPlan()];
+  renderPlanPage();
+  await screen.findByRole("button", { name: "选择资源与 MCP" });
+  expect(screen.getByRole("link", { name: "查看本用例历史记录 →" })).toHaveAttribute("href", "/runs?case=" + testCase.id);
+  expect(screen.queryByText("最近 5 次 · 按时间倒序")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("checkbox", { name: /我已确认计划/ }));
+  await waitFor(() => expect(screen.getByRole("button", { name: /启动运行/ })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: /启动运行/ }));
+  await waitFor(() => expect(requests.some((request) => request.method === "POST" && new URL(request.url).pathname === "/api/runs")).toBe(true));
+  const request = requests.find((entry) => entry.method === "POST" && new URL(entry.url).pathname === "/api/runs")!;
+  expect((await request.json()).selected_columns).toEqual(capabilities.columns);
+});
+
+it("keeps start disabled when the current preview request fails despite a previously cached directory", async () => {
+  plans = [savedPlan()];
+  queryClient.setQueryData($api.queryOptions("get", "/api/capabilities", {}).queryKey, capabilities);
+  capabilityFailure = true;
+  renderPlanPage();
+  await screen.findByText("目录发现失败");
+  fireEvent.click(screen.getByRole("checkbox", { name: /我已确认计划/ }));
+  expect(screen.getByRole("button", { name: /启动运行/ })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "重试发现" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: /启动运行/ })).toBeEnabled());
+});
+
+it("requires a manual directory refresh after a start scope conflict", async () => {
+  plans = [savedPlan()];
+  startResponse = async () => Response.json({ code: "capability_catalog_changed", message: "所选目录已变化" }, { status: 409 });
+  renderPlanPage();
+  await screen.findByRole("button", { name: "选择资源与 MCP" });
+  fireEvent.click(screen.getByRole("checkbox", { name: /我已确认计划/ }));
+  await waitFor(() => expect(startButton()).toBeEnabled());
+  fireEvent.click(startButton());
+  await screen.findByText("所选目录已变化，请刷新并检查本次选择");
+  expect(startButton()).toBeDisabled();
+  expect(requests.filter((request) => request.method === "POST" && new URL(request.url).pathname === "/api/runs")).toHaveLength(1);
+  capabilities.columns[0]!.fingerprint = "d".repeat(64);
+  fireEvent.click(screen.getByRole("button", { name: "选择资源与 MCP" }));
+  fireEvent.click(await screen.findByRole("button", { name: "刷新目录" }));
+  await waitFor(() => expect(screen.queryByText("所选目录已变化，请刷新并检查本次选择")).not.toBeInTheDocument());
+  fireEvent.click(screen.getByRole("button", { name: /完\s*成/ }));
+  await waitFor(() => expect(startButton()).toBeEnabled());
+});
+
+it("clears external capabilities and preserves choices while newly refreshed columns remain unchecked", async () => {
+  plans = [savedPlan()];
+  renderPlanPage();
+  fireEvent.click(await screen.findByRole("button", { name: "选择资源与 MCP" }));
+  fireEvent.click(await screen.findByRole("button", { name: "全部取消" }));
+  capabilities.columns.push({ id: "mcp:new", fingerprint: "c".repeat(64) });
+  fireEvent.click(screen.getByRole("button", { name: "刷新目录" }));
+  await waitFor(() => expect(screen.getByRole("checkbox", { name: /MCP · new/ })).not.toBeChecked());
+  expect(screen.getByRole("checkbox", { name: /MCP · fixture/ })).not.toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: /完\s*成/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /我已确认计划/ }));
+  await waitFor(() => expect(screen.getByRole("button", { name: /启动运行/ })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: /启动运行/ }));
+  await waitFor(() => expect(requests.some((request) => request.method === "POST" && new URL(request.url).pathname === "/api/runs")).toBe(true));
+  const request = requests.find((entry) => entry.method === "POST" && new URL(entry.url).pathname === "/api/runs")!;
+  expect((await request.json()).selected_columns).toEqual([]);
+});
 
 const planningInput = () => screen.getByRole("textbox", { name: "规划额外输入" });
 const startButton = () => screen.getByRole("button", { name: /启动运行/ });
@@ -365,7 +439,7 @@ describe("planning page", () => {
     expect(screen.getByRole("checkbox")).toBeDisabled();
     expect(startButton()).toBeDisabled();
     expect(planningPosts()).toHaveLength(1);
-    expect(screen.getByRole("link", { name: "查看全部 →" }).closest("[inert]")).not.toBeNull();
+    expect(screen.getByRole("link", { name: "查看本用例历史记录 →" }).closest("[inert]")).not.toBeNull();
 
     plans = [savedPlan(2, "调整计划"), ...plans];
     await act(async () => { completePlanning(Response.json(plans[0], { status: 201 })); });
@@ -700,7 +774,7 @@ describe("planning page", () => {
     const posts = requests.filter((request) => request.method === "POST");
     expect(posts).toHaveLength(1);
     expect(new URL(posts[0]!.url).pathname).toBe("/api/runs");
-    expect(await posts[0]!.json()).toEqual({ test_case_id: plan.test_case_id, test_plan_id: plan.id, assumptions_confirmed: true });
+    expect(await posts[0]!.json()).toEqual({ test_case_id: plan.test_case_id, test_plan_id: plan.id, assumptions_confirmed: true, selected_columns: capabilities.columns });
   });
 
   it("does not carry a plan, extra input or confirmation into another test case", async () => {
@@ -934,9 +1008,9 @@ it("shows the saved planning input in the online report", async () => {
     detail: { test_plan: plan, run: {
       id: "run", test_plan_id: plan.id, status: "finished", verdict: "PASS",
       created_at: plan.created_at, started_at: plan.created_at, finished_at: plan.created_at
-    }, environment: { execution_model: plan.planning_context.planning_model, tool_catalog: { tools: [] },
-      resource_catalog: { local_root: null, resources: [], templates: [] },
-      prompt_fingerprints_by_task_type: { act: "act-v1", judge: "judge-v1", goal: "goal-v1" }, app_version: "0.1.0", execution_protocol_version: "11",
+    }, environment: { execution_model: plan.planning_context.planning_model,
+      capability_catalog: { tool_catalog: { tools: [] }, resource_catalog: { local_root: null, resources: [], templates: [] }, columns: [] },
+      prompt_fingerprints_by_task_type: { act: "act-v1", judge: "judge-v1", goal: "goal-v1" }, app_version: "0.1.0", execution_protocol_version: "12",
       execution: { max_cycles_by_task_type: { act: 30, judge: 10, goal: 10 }, goal_max_failures: 10,
         tool_call_timeout_seconds: 120, image_history_rounds: 3, model_call_max_attempts: 3, model_response_max_attempts: 3 }
     }, task_runs: [] },

@@ -40,8 +40,7 @@ from app.domain.execution import (
     TaskRunResult,
     TaskRunStatus,
 )
-from app.domain.resources import LLMProfileSettings, ResourceCatalogSnapshot, ResourceDefinitionSnapshot
-from app.resources.static_resources import top_level_skills
+from app.domain.resources import LLMProfileSettings, CapabilityCatalog, CapabilityColumnSnapshot, ResourceDefinitionSnapshot, top_level_skills
 from app.domain.ids import ArtifactId, TaskRunId
 from app.domain.planning import TestTask, TestTaskType
 from app.execution.model_context import ModelContextWindow, ModelImageWindow
@@ -112,6 +111,7 @@ class TaskAgentRuntimeContext:
     task_context: TaskAgentContext
     artifacts: ArtifactStore
     execution: ExecutionSettings
+    capability_catalog: CapabilityCatalog[CapabilityColumnSnapshot]
 
     @property
     def max_cycles(self) -> int:
@@ -148,7 +148,7 @@ class TaskAgentBuildParams:
 
     task_context: TaskAgentContext
     tools: tuple[BaseTool, ...]
-    resource_catalog: ResourceCatalogSnapshot
+    capability_catalog: CapabilityCatalog[CapabilityColumnSnapshot]
     model_profile: LLMProfileSettings
     execution: ExecutionSettings
 
@@ -170,11 +170,12 @@ class TaskAgentFactory:
         prompt = self.prompt_catalog.prompt_for_task_type(build_params.task_context.task.definition.type)
         runtime_context = TaskAgentRuntimeContext(
             task_context=build_params.task_context, artifacts=self.artifacts, execution=build_params.execution,
+            capability_catalog=build_params.capability_catalog,
         )
         runtime = _TaskRuntime(
             runtime_context=runtime_context, run_cancellation_event=run_cancellation_event,
             model_client=model_client, prompt_definition=prompt, tools=build_params.tools,
-            available_skills=top_level_skills(build_params.resource_catalog),
+            available_skills=top_level_skills(build_params.capability_catalog.visible_resources()),
             model_context_window=ModelContextWindow(model_profile=model_client.profile_snapshot, tools=build_params.tools),
             model_image_window=ModelImageWindow(history_rounds=runtime_context.execution.image_history_rounds),
             event_recorder=event_recorder,

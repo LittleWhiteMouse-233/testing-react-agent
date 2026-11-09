@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from collections.abc import Sequence
 
 from app.domain.activity import AgentActivity
 from app.domain.errors import describe_exception
@@ -14,9 +15,8 @@ from app.persistence.run_repository import (
     SqlAlchemyRunRepository,
 )
 from app.resources.prompts import PromptCatalog
-from app.resources.tools import ToolProvider, snapshot_tools
-from app.resources.mcp import MCPClientProvider, MCPConnectionError
-from app.resources.static_resources import SkillResourceProvider
+from app.resources.catalog import CapabilityProvider
+from app.domain.resources import CapabilityColumnSelection, select_capabilities
 from app.test_case_lock import TestCaseLock
 
 
@@ -50,9 +50,7 @@ class RunService:
         executor: RunExecutor,
         settings_service: SettingsService,
         prompt_catalog: PromptCatalog,
-        mcp_clients: MCPClientProvider,
-        tools: ToolProvider,
-        skills: SkillResourceProvider,
+        capabilities: CapabilityProvider,
         app_version: str,
     ) -> None:
         self.repository = repository
@@ -60,9 +58,7 @@ class RunService:
         self.executor = executor
         self.settings_service = settings_service
         self.prompt_catalog = prompt_catalog
-        self.tools = tools
-        self.skills = skills
-        self.mcp_clients = mcp_clients
+        self.capabilities = capabilities
         self.app_version = app_version
         self._work: _RunWork | None = None
         self._closing = False
@@ -73,6 +69,7 @@ class RunService:
         test_case_id: str,
         test_plan_id: str,
         assumptions_confirmed: bool,
+        selected_columns: Sequence[CapabilityColumnSelection],
     ) -> TestRun:
         if assumptions_confirmed is not True:
             raise ValueError("plan assumptions must be confirmed")
@@ -87,7 +84,7 @@ class RunService:
         self.test_case_lock.acquire(test_case_id, "running", "pre_running")
         try:
             work.task = asyncio.create_task(
-                self._prepare_and_execute(test_case_id, test_plan_id, prepared_run, work),
+                self._prepare_and_execute(test_case_id, test_plan_id, tuple(selected_columns), prepared_run, work),
                 name=f"prepare-run-{test_plan_id}",
             )
         except BaseException:
@@ -127,31 +124,25 @@ class RunService:
             raise
 
     async def _prepare_and_execute(
-        self, test_case_id: str, test_plan_id: str, prepared_run: asyncio.Future[TestRun],
+        self, test_case_id: str, test_plan_id: str, selected_columns: Sequence[CapabilityColumnSelection],
+        prepared_run: asyncio.Future[TestRun],
         work: _RunWork,
     ) -> None:
         settings = self.settings_service.current
         execution_settings = settings.execution.model_copy(deep=True)
         model_profile = settings.llm.profile_for_activity(AgentActivity.EXECUTION).model_copy(deep=True)
         await self.repository.validate_test_plan_for_run(test_case_id=test_case_id, test_plan_id=test_plan_id)
-        discovery_phase = "MCP configuration loading"
-        try:
-            async with asyncio.timeout(execution_settings.tool_call_timeout_seconds):
-                await self.mcp_clients.load_clients()
-                discovery_phase = "MCP tool discovery"
-                tools = await self.tools.discover_tools()
-                discovery_phase = "Skill and resource discovery"
-                resource_catalog = await self.skills.discover_resources()
-        except Exception as exc:
-            raise MCPConnectionError(describe_exception(exc, phase=discovery_phase)) from exc
+        discovery = await self.capabilities.discover(execution_settings.tool_call_timeout_seconds)
+        capability_catalog = select_capabilities(discovery.catalog, selected_columns)
+        tools = tuple(tool for tool in discovery.tools
+                      if capability_catalog.tool_is_available(str((tool.metadata or {})["tool_source"])))
         environment = TestRunEnvironmentSnapshot(
-            tool_catalog=snapshot_tools(tools),
-            resource_catalog=resource_catalog,
+            capability_catalog=capability_catalog,
             execution_model=model_profile,
             execution=execution_settings,
             prompt_fingerprints_by_task_type=self.prompt_catalog.prompt_fingerprints_by_task_type,
             app_version=self.app_version,
-            execution_protocol_version="11",
+            execution_protocol_version="12",
         )
         try:
             creation = asyncio.create_task(self.repository.create_test_run(

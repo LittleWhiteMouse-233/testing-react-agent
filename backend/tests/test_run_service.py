@@ -1,4 +1,9 @@
 from __future__ import annotations
+from app.resources.tools import ToolProvider
+from app.resources.mcp import MCPClientProvider
+from app.resources.static_resources import SkillResourceProvider
+from mcp_support import capability_selection
+
 
 from app.api import repository as api_repository
 
@@ -32,7 +37,7 @@ def test_competing_starts_are_rejected_during_preparation(
         app = cast(FastAPI, client.app)
         container = cast(Container, app.state.container)
         original_validate_plan = container.repository.validate_test_plan_for_run
-        original_discover = container.tools.discover_tools
+        original_discover = ToolProvider.discover_tools
 
         async def exercise() -> None:
             entered, release = asyncio.Event(), asyncio.Event()
@@ -46,26 +51,26 @@ def test_competing_starts_are_rejected_during_preparation(
                     await release.wait()
                 await original_validate_plan(test_case_id=test_case_id, test_plan_id=test_plan_id)
 
-            async def discover_tools():
+            async def discover_tools(self):
                 nonlocal preparation_calls
                 preparation_calls += 1
                 if blocked_stage == "tools":
                     entered.set()
                     await release.wait()
-                return await original_discover()
+                return await original_discover(self)
 
             monkeypatch.setattr(container.repository, "validate_test_plan_for_run", validate_test_plan_for_run)
-            monkeypatch.setattr(container.tools, "discover_tools", discover_tools)
+            monkeypatch.setattr(ToolProvider, "discover_tools", discover_tools)
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
                 startup = asyncio.create_task(api.post("/api/runs", json={
                     "test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True,
-                }))
+                 "selected_columns": capability_selection(client)}))
                 try:
                     await asyncio.wait_for(entered.wait(), 5)
                     for competing_plan in (plan, other_plan):
                         response = await asyncio.wait_for(api.post("/api/runs", json={
                             "test_case_id": competing_plan["test_case_id"], "test_plan_id": competing_plan["id"], "assumptions_confirmed": True,
-                        }), 1)
+                         "selected_columns": capability_selection(client)}), 1)
                         assert response.status_code == 409, response.text
                         assert response.json() == {
                             "code": "active_run_exists", "message": "Run preparation is already in progress",
@@ -78,8 +83,8 @@ def test_competing_starts_are_rejected_during_preparation(
                     await asyncio.gather(startup, return_exceptions=True)
                 assert container.run_service._work is None
                 monkeypatch.setattr(container.repository, "validate_test_plan_for_run", original_validate_plan)
-                monkeypatch.setattr(container.tools, "discover_tools", original_discover)
-                run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+                monkeypatch.setattr(ToolProvider, "discover_tools", original_discover)
+                run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
                 await container.run_service.cancel(run.id)
                 await container.run_service.shutdown()
 
@@ -104,12 +109,12 @@ def test_rejected_start_releases_run_entry(
                         "test_case_id": plan["test_case_id"],
                         "test_plan_id": str(uuid4()) if rejection == "missing_plan" else plan["id"],
                         "assumptions_confirmed": True,
-                    })
+                     "selected_columns": capability_selection(client)})
                 assert response.status_code == (404 if rejection == "missing_plan" else 409)
                 assert response.json()["code"] == ("run_input_not_found" if rejection == "missing_plan" else "test_case_busy")
                 assert container.run_service._work is None
                 assert (await api.get("/api/runs")).json()["total"] == 0
-                run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+                run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
                 await container.run_service.cancel(run.id)
                 await container.run_service.shutdown()
 
@@ -138,17 +143,17 @@ def test_invalid_run_input_is_rejected_before_external_preparation(
             assert client.post(f"/api/test-plans/{plan_id}/revisions", json={"content": revision}).status_code == 201
 
         preparation_started = False
-        original_load_clients = container.mcp_clients.load_clients
+        original_load_clients = MCPClientProvider.load_clients
 
-        async def load_clients() -> None:
+        async def load_clients(self) -> None:
             nonlocal preparation_started
             preparation_started = True
-            await original_load_clients()
+            await original_load_clients(self)
 
-        monkeypatch.setattr(container.mcp_clients, "load_clients", load_clients)
+        monkeypatch.setattr(MCPClientProvider, "load_clients", load_clients)
         response = client.post("/api/runs", json={
             "test_case_id": case_id, "test_plan_id": plan_id, "assumptions_confirmed": True,
-        })
+         "selected_columns": capability_selection(client)})
         unavailable = invalid_input in {"missing_case", "missing_plan", "archived_case"}
         assert response.status_code == (404 if unavailable else 409), response.text
         assert response.json()["code"] == ("run_input_not_found" if unavailable else "test_plan_not_startable")
@@ -162,7 +167,7 @@ def test_invalid_run_input_is_rejected_before_external_preparation(
 def test_run_start_requires_test_case_id(tmp_path: Path) -> None:
     with build_client(tmp_path, turns=[finish_turn(1)]) as client:
         plan = create_plan(client)
-        response = client.post("/api/runs", json={"test_plan_id": plan["id"], "assumptions_confirmed": True})
+        response = client.post("/api/runs", json={"test_plan_id": plan["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)})
         assert response.status_code == 422, response.text
         assert client.get("/api/runs").json()["total"] == 0
 
@@ -175,7 +180,7 @@ def test_run_admission_precedes_background_task_scheduling(tmp_path: Path) -> No
         async def exercise() -> None:
             startup = asyncio.create_task(container.run_service.start(
                 test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True,
-            ))
+             selected_columns=container.capabilities.preview.columns))
             planning = asyncio.create_task(container.planning.generate(
                 test_case_id=plan["test_case_id"], planning_request_id=str(uuid4()), user_input="随后提交的规划",
             ))
@@ -211,7 +216,7 @@ def test_shutdown_before_background_work_starts_releases_case_occupations(
         async def exercise() -> None:
             startup = asyncio.create_task(container.run_service.start(
                 test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True,
-            ))
+             selected_columns=container.capabilities.preview.columns))
             shutdown = asyncio.create_task(container.run_service.shutdown())
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(startup, 5)
@@ -234,7 +239,7 @@ def test_preparing_run_protects_plan_until_creation_then_allows_new_versions(
         app = cast(FastAPI, client.app)
         container = cast(Container, app.state.container)
         original_prepare = (container.repository.validate_test_plan_for_run if preparation_stage == "plan"
-                            else container.tools.discover_tools if preparation_stage == "discovery"
+                            else ToolProvider.discover_tools if preparation_stage == "discovery"
                             else container.repository.create_test_run)
         original_execute = container.executor.run
 
@@ -255,7 +260,7 @@ def test_preparing_run_protects_plan_until_creation_then_allows_new_versions(
             if preparation_stage == "plan":
                 monkeypatch.setattr(container.repository, "validate_test_plan_for_run", prepare)
             elif preparation_stage == "discovery":
-                monkeypatch.setattr(container.tools, "discover_tools", prepare)
+                monkeypatch.setattr(ToolProvider, "discover_tools", prepare)
             else:
                 monkeypatch.setattr(container.repository, "create_test_run", prepare)
             monkeypatch.setattr(container.executor, "run", execute)
@@ -264,7 +269,7 @@ def test_preparing_run_protects_plan_until_creation_then_allows_new_versions(
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
                 startup = asyncio.create_task(api.post("/api/runs", json={
                     "test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True,
-                }))
+                 "selected_columns": capability_selection(client)}))
                 try:
                     await asyncio.wait_for(preparing.wait(), 5)
                     for url, payload in (
@@ -302,7 +307,7 @@ def test_preparing_run_protects_plan_until_creation_then_allows_new_versions(
                     assert (await api.post("/api/runs", json={
                         "test_case_id": plan["test_case_id"],
                         "test_plan_id": replanned.json()["id"], "assumptions_confirmed": True,
-                    })).status_code == 409
+                     "selected_columns": capability_selection(client)})).status_code == 409
                 finally:
                     release_preparation.set()
                     release_execution.set()
@@ -343,7 +348,7 @@ def test_run_completion_preserves_concurrent_planning(
             monkeypatch.setattr(container.executor, "run", execute)
             await container.run_service.start(
                 test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True,
-            )
+             selected_columns=container.capabilities.preview.columns)
             work = container.run_service._work
             assert work is not None and work.task is not None
             monkeypatch.setattr(planning_owner, planning_method, prepare_or_generate)
@@ -395,7 +400,7 @@ def test_interrupted_plan_lookup_releases_run_entry(
                     cleaned.set()
 
             monkeypatch.setattr(container.repository, "validate_test_plan_for_run", validate_test_plan_for_run)
-            startup = asyncio.create_task(container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True))
+            startup = asyncio.create_task(container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns))
             try:
                 await asyncio.wait_for(entered.wait(), 5)
                 if interruption == "shutdown":
@@ -411,9 +416,9 @@ def test_interrupted_plan_lookup_releases_run_entry(
                 monkeypatch.setattr(container.repository, "validate_test_plan_for_run", original_validate_plan)
                 if interruption == "shutdown":
                     with pytest.raises(RuntimeError, match="shutting down"):
-                        await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+                        await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
                 else:
-                    run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+                    run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
                     await container.run_service.cancel(run.id)
                     await container.run_service.shutdown()
             finally:
@@ -442,7 +447,7 @@ def test_terminal_persistence_keeps_run_and_case_occupied(
                 await original_finish(test_run_id, verdict)
 
             monkeypatch.setattr(container.repository, "finish_run", finish_run)
-            run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+            run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
             work = container.run_service._work
             assert work is not None and work.task is not None
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
@@ -450,7 +455,7 @@ def test_terminal_persistence_keeps_run_and_case_occupied(
                     await asyncio.wait_for(finishing.wait(), 10)
                     response = await asyncio.wait_for(api.post("/api/runs", json={
                         "test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True,
-                    }), 1)
+                     "selected_columns": capability_selection(client)}), 1)
                     assert response.status_code == 409, response.text
                     assert response.json() == {
                         "code": "active_run_exists", "message": f"Run {run.id} is already active",
@@ -483,22 +488,22 @@ def test_one_preparation_timeout_covers_every_stage_and_releases_run_entry(
             if should_block and name == blocked_stage:
                 await asyncio.Event().wait()
 
-        async def load_clients() -> None:
+        async def load_clients(self) -> None:
             await stage("configuration")
 
-        async def discover_tools():
+        async def discover_tools(self):
             await stage("tools")
-            return container.tools.additional_tools
+            return self.additional_tools
 
-        async def discover_resources() -> ResourceCatalogSnapshot:
+        async def discover_resources(self) -> ResourceCatalogSnapshot:
             await stage("resources")
             return ResourceCatalogSnapshot()
 
         async def exercise():
             nonlocal should_block
-            monkeypatch.setattr(container.mcp_clients, "load_clients", load_clients)
-            monkeypatch.setattr(container.tools, "discover_tools", discover_tools)
-            monkeypatch.setattr(container.skills, "discover_resources", discover_resources)
+            monkeypatch.setattr(MCPClientProvider, "load_clients", load_clients)
+            monkeypatch.setattr(ToolProvider, "discover_tools", discover_tools)
+            monkeypatch.setattr(SkillResourceProvider, "discover_resources", discover_resources)
             from app.config import SettingsContent
             from app.domain.resources import LLMProfileSettings
             service = container.settings_service
@@ -506,7 +511,7 @@ def test_one_preparation_timeout_covers_every_stage_and_releases_run_entry(
             draft["execution"]["tool_call_timeout_seconds"] = 0.05
             await service.update(SettingsContent[LLMProfileSettings].model_validate(draft), version=service.version)
             with pytest.raises(MCPConnectionError, match="TimeoutError") as captured:
-                await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+                await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=[])
             expected_phases = {"configuration": "MCP configuration loading", "tools": "MCP tool discovery",
                                "resources": "Skill and resource discovery"}
             assert str(captured.value).startswith(expected_phases[blocked_stage])
@@ -515,7 +520,7 @@ def test_one_preparation_timeout_covers_every_stage_and_releases_run_entry(
             assert container.run_service._work is None
             should_block = False
             stages.clear()
-            run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+            run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=[])
             assert stages == ["configuration", "tools", "resources"]
             await container.run_service.shutdown()
             assert (await container.repository.get_test_run(run.id)).status.value == "finished"
@@ -534,7 +539,7 @@ def test_preparation_errors_are_converted_once_at_the_public_boundary(tmp_path: 
         config.write_text("not json" if invalid_config else json.dumps({
             "mcpServers": {"missing": {"command": "nonexistent-mcp-executable"}},
         }), encoding="utf-8")
-        response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True})
+        response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)})
         assert response.status_code == 502
         assert response.json()["code"] == "mcp_unavailable"
         diagnostic = response.json()["message"]
@@ -549,7 +554,7 @@ def test_tool_failure_blocks_releases_slot_and_allows_another_run(
     with build_client(tmp_path, turns=[tool_turn(1)]) as client:
         plan = create_plan(client, task_count=2)
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        original_discover = container.tools.discover_tools
+        original_discover = ToolProvider.discover_tools
 
         async def fail_tool() -> str:
             if cancelled:
@@ -557,15 +562,16 @@ def test_tool_failure_blocks_releases_slot_and_allows_another_run(
                 container.run_service._work.cancellation.set()
             raise OSError("tool invocation mechanism failed")
 
-        async def discover_tools():
+        async def discover_tools(self):
             return (StructuredTool.from_function(
                 coroutine=fail_tool, name="fixture_inspect", description="Observe target",
-                metadata={"tool_source": "fixture"},
-            ), *container.tools.additional_tools)
+                metadata={"tool_source": "mcp:fixture"},
+            ), *self.additional_tools)
 
         async def exercise():
-            monkeypatch.setattr(container.tools, "discover_tools", discover_tools)
-            run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+            monkeypatch.setattr(ToolProvider, "discover_tools", discover_tools)
+            await container.capabilities.discover(container.settings_service.current.execution.tool_call_timeout_seconds)
+            run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
             work = container.run_service._work
             assert work is not None and work.task is not None
             await asyncio.wait_for(work.task, 10)
@@ -577,8 +583,9 @@ def test_tool_failure_blocks_releases_slot_and_allows_another_run(
             assert sum(entry.event.type == "execution.error" for entry in events) == 1
             assert sum(entry.event.type == "run.finished" for entry in events) == 1
             assert container.run_service._work is None
-            monkeypatch.setattr(container.tools, "discover_tools", original_discover)
-            next_run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+            monkeypatch.setattr(ToolProvider, "discover_tools", original_discover)
+            await container.capabilities.discover(container.settings_service.current.execution.tool_call_timeout_seconds)
+            next_run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
             assert next_run.id != run.id
             assert await container.run_service.cancel(next_run.id)
             await container.run_service.shutdown()
@@ -595,7 +602,7 @@ def test_single_run_slot_and_shutdown_wait_for_active_call(tmp_path: Path) -> No
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
 
         async def exercise():
-            run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+            run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
             async def wait_for_active_call() -> None:
                 while not any(record["phase"] == "started" for record in read_records(tmp_path)):
                     await asyncio.sleep(0.01)
@@ -604,12 +611,12 @@ def test_single_run_slot_and_shutdown_wait_for_active_call(tmp_path: Path) -> No
             # actual execution before asserting the shutdown boundary.
             await asyncio.wait_for(wait_for_active_call(), 15)
             with pytest.raises(RunConflict):
-                await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+                await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
             shutdown = asyncio.create_task(container.run_service.shutdown())
             await asyncio.sleep(0)
             assert not shutdown.done()
             with pytest.raises(RuntimeError, match="shutting down"):
-                await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+                await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
             await asyncio.wait_for(shutdown, 10)
             finished = await container.repository.get_test_run(run.id)
             assert finished.verdict is not None and finished.verdict.value == "CANCELLED"
@@ -660,7 +667,7 @@ def test_unreportable_failure_is_observed_once_without_terminal(
             monkeypatch.setattr(container.repository, "append_event", append_event)
             if report_stage == "terminal":
                 monkeypatch.setattr(container.repository, "finish_run", finish_run)
-            run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True)
+            run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
             work = container.run_service._work
             assert work is not None and work.task is not None
             with pytest.raises(OSError) as captured:
@@ -704,7 +711,7 @@ def test_cancelled_start_after_commit_finishes_run_and_allows_next_run(tmp_path:
                 return run
 
             monkeypatch.setattr(container.repository, 'create_test_run', create_run)
-            startup = asyncio.create_task(container.run_service.start(test_case_id=plan['test_case_id'], test_plan_id=plan['id'], assumptions_confirmed=True))
+            startup = asyncio.create_task(container.run_service.start(test_case_id=plan['test_case_id'], test_plan_id=plan['id'], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns))
             await asyncio.wait_for(committed.wait(), 10)
             startup.cancel()
             await asyncio.sleep(0)
@@ -718,7 +725,7 @@ def test_cancelled_start_after_commit_finishes_run_and_allows_next_run(tmp_path:
             terminals = [entry for entry in events if entry.event.type in {'run.finished', 'run.cancelled'}]
             assert terminals == [events[-1]] and terminals[0].event.type == 'run.cancelled'
             assert not any(entry.event.type == 'execution.error' for entry in events)
-            next_run = await container.run_service.start(test_case_id=plan['test_case_id'], test_plan_id=plan['id'], assumptions_confirmed=True)
+            next_run = await container.run_service.start(test_case_id=plan['test_case_id'], test_plan_id=plan['id'], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
             assert next_run.id != cancelled.id
             assert await container.run_service.cancel(cancelled.id) is False
             assert await container.run_service.cancel(next_run.id) is True
@@ -739,16 +746,16 @@ def test_shutdown_cancels_discovery_before_run_creation(tmp_path: Path, monkeypa
             preparing = asyncio.Event()
             cleaned = asyncio.Event()
 
-            async def discover_tools():
+            async def discover_tools(self):
                 try:
                     preparing.set()
                     await asyncio.Event().wait()
-                    return container.tools.additional_tools
+                    return self.additional_tools
                 finally:
                     cleaned.set()
 
-            monkeypatch.setattr(container.tools, 'discover_tools', discover_tools)
-            startup = asyncio.create_task(container.run_service.start(test_case_id=plan['test_case_id'], test_plan_id=plan['id'], assumptions_confirmed=True))
+            monkeypatch.setattr(ToolProvider, 'discover_tools', discover_tools)
+            startup = asyncio.create_task(container.run_service.start(test_case_id=plan['test_case_id'], test_plan_id=plan['id'], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns))
             await preparing.wait()
             await container.run_service.shutdown()
             with pytest.raises(asyncio.CancelledError):

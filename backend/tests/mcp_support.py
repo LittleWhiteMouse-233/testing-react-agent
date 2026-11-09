@@ -8,14 +8,22 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.graph import StateGraph, MessagesState, START, END
+from langgraph.prebuilt import ToolNode
 
 from app.llm import ScriptedChatModelClient
 from app.main import create_app
-from app.resources.mcp import MCPClientProvider
+from app.resources.mcp import MCPClientProvider, MCPConnectionError
+from app.domain.resources import (
+    CapabilityCatalog, CapabilityColumnSnapshot, ToolCatalogSnapshot, build_capability_preview, select_capabilities,
+)
+from app.resources.static_resources import SkillResourceProvider, ResourceToolContext
+from langgraph.prebuilt import ToolRuntime
 from config_support import app_config_values, build_settings, install_model_client, write_app_config
 
 
@@ -120,9 +128,51 @@ def create_plan(client: TestClient, *, task_count: int = 1) -> dict[str, Any]:
 
 
 def start_run(client: TestClient, plan: dict[str, Any]) -> str:
-    response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True})
+    response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True,
+                                            "selected_columns": capability_selection(client)})
     assert response.status_code == 201, response.text
     return response.json()["id"]
+
+
+def capability_selection(client: Any) -> list[dict[str, str]]:
+    """Simulate a caller selecting its cached preview, without triggering another discovery."""
+    if isinstance(client, TestClient):
+        # Async lifecycle tests construct requests on the app's event loop thread.
+        # Read the same cached preview directly instead of recursively calling its HTTP portal.
+        try:
+            preview = client.app.state.container.capabilities.preview  # type: ignore[attr-defined]
+        except MCPConnectionError:
+            return []
+        return [column.model_dump(mode="json") for column in preview.columns]
+    return client.get("/api/capabilities").json().get("columns", [])
+
+
+@dataclass(frozen=True)
+class ResourceTestContext:
+    capability_catalog: CapabilityCatalog[CapabilityColumnSnapshot]
+
+
+def resource_runtime(provider: SkillResourceProvider, selected_ids: set[str] | None = None) -> ToolRuntime[ResourceToolContext]:
+    """Use the production tool-injection contract for independent resource tests."""
+    preview = build_capability_preview(ToolCatalogSnapshot(tools=[]), provider.catalog,
+                                       [f"mcp:{name}" for name in provider.mcp_clients.clients])
+    selections = [column for column in preview.columns if selected_ids is None or column.id in selected_ids]
+    return ToolRuntime[ResourceToolContext](state={}, context=ResourceTestContext(select_capabilities(preview, selections)),
+                       config={}, stream_writer=lambda _: None, tool_call_id="resource-test", store=None)
+
+
+async def invoke_resource_tool(
+    provider: SkillResourceProvider, name: str, arguments: dict[str, Any], selected_ids: set[str] | None = None,
+) -> ToolMessage:
+    """Invoke with the same public ToolNode context injection used by actual TaskAgents."""
+    graph = StateGraph(MessagesState, context_schema=ResourceTestContext)
+    graph.add_node("tools", ToolNode(provider.build_resource_tools()))
+    graph.add_edge(START, "tools")
+    graph.add_edge("tools", END)
+    result = await graph.compile().ainvoke({"messages": [AIMessage(content="", tool_calls=[{
+        "name": name, "args": arguments, "id": "resource-test",
+    }])]}, context=ResourceTestContext(resource_runtime(provider, selected_ids).context.capability_catalog))
+    return result["messages"][-1]
 
 
 def wait_for_run(client: TestClient, run_id: str) -> dict[str, Any]:

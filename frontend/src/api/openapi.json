@@ -145,6 +145,99 @@
         "title": "ArtifactType",
         "type": "string"
       },
+      "CapabilityCatalog_CapabilityColumnSelection_": {
+        "additionalProperties": false,
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/CapabilityColumnSelection"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "resource_catalog": {
+            "$ref": "#/components/schemas/ResourceCatalogSnapshot"
+          },
+          "tool_catalog": {
+            "$ref": "#/components/schemas/ToolCatalogSnapshot"
+          }
+        },
+        "required": [
+          "tool_catalog",
+          "resource_catalog",
+          "columns"
+        ],
+        "title": "CapabilityCatalog[CapabilityColumnSelection]",
+        "type": "object"
+      },
+      "CapabilityCatalog_CapabilityColumnSnapshot_": {
+        "additionalProperties": false,
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/CapabilityColumnSnapshot"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "resource_catalog": {
+            "$ref": "#/components/schemas/ResourceCatalogSnapshot"
+          },
+          "tool_catalog": {
+            "$ref": "#/components/schemas/ToolCatalogSnapshot"
+          }
+        },
+        "required": [
+          "tool_catalog",
+          "resource_catalog",
+          "columns"
+        ],
+        "title": "CapabilityCatalog[CapabilityColumnSnapshot]",
+        "type": "object"
+      },
+      "CapabilityColumnSelection": {
+        "additionalProperties": false,
+        "description": "API consistency token: identifies one selected column and its preview definition.",
+        "properties": {
+          "fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "fingerprint"
+        ],
+        "title": "CapabilityColumnSelection",
+        "type": "object"
+      },
+      "CapabilityColumnSnapshot": {
+        "additionalProperties": false,
+        "description": "Persisted access decision for one discovered column, including unselected ones.",
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "selected": {
+            "title": "Selected",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "selected"
+        ],
+        "title": "CapabilityColumnSnapshot",
+        "type": "object"
+      },
       "CycleStartedEvent": {
         "additionalProperties": false,
         "description": "TaskAgent 在首次模型请求前开始逻辑决策轮；开始即计轮，传输重试不另计。",
@@ -2621,6 +2714,13 @@
             "title": "Assumptions Confirmed",
             "type": "boolean"
           },
+          "selected_columns": {
+            "items": {
+              "$ref": "#/components/schemas/CapabilityColumnSelection"
+            },
+            "title": "Selected Columns",
+            "type": "array"
+          },
           "test_case_id": {
             "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
             "title": "Test Case Id",
@@ -2635,7 +2735,8 @@
         "required": [
           "test_case_id",
           "test_plan_id",
-          "assumptions_confirmed"
+          "assumptions_confirmed",
+          "selected_columns"
         ],
         "title": "TestRunCreateRequest",
         "type": "object"
@@ -2716,6 +2817,9 @@
             "title": "App Version",
             "type": "string"
           },
+          "capability_catalog": {
+            "$ref": "#/components/schemas/CapabilityCatalog_CapabilityColumnSnapshot_"
+          },
           "execution": {
             "$ref": "#/components/schemas/ExecutionSettings"
           },
@@ -2723,7 +2827,7 @@
             "$ref": "#/components/schemas/LLMProfileSettings-Output"
           },
           "execution_protocol_version": {
-            "const": "11",
+            "const": "12",
             "title": "Execution Protocol Version",
             "type": "string"
           },
@@ -2744,17 +2848,10 @@
             },
             "title": "Prompt Fingerprints By Task Type",
             "type": "object"
-          },
-          "resource_catalog": {
-            "$ref": "#/components/schemas/ResourceCatalogSnapshot"
-          },
-          "tool_catalog": {
-            "$ref": "#/components/schemas/ToolCatalogSnapshot"
           }
         },
         "required": [
-          "tool_catalog",
-          "resource_catalog",
+          "capability_catalog",
           "execution_model",
           "execution",
           "prompt_fingerprints_by_task_type",
@@ -3158,9 +3255,9 @@
             "title": "Name",
             "type": "string"
           },
-          "source": {
+          "source_id": {
             "minLength": 1,
-            "title": "Source",
+            "title": "Source Id",
             "type": "string"
           }
         },
@@ -3168,7 +3265,7 @@
           "name",
           "description",
           "input_schema",
-          "source",
+          "source_id",
           "annotations"
         ],
         "title": "ToolDefinitionSnapshot",
@@ -3291,6 +3388,102 @@
           }
         },
         "summary": "Get Artifact"
+      }
+    },
+    "/api/capabilities": {
+      "get": {
+        "operationId": "read_capabilities_api_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilityCatalog_CapabilityColumnSelection_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          }
+        },
+        "summary": "Read Capabilities"
+      }
+    },
+    "/api/capabilities/refresh": {
+      "post": {
+        "operationId": "refresh_capabilities_api_capabilities_refresh_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilityCatalog_CapabilityColumnSelection_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          }
+        },
+        "summary": "Refresh Capabilities"
       }
     },
     "/api/runs": {

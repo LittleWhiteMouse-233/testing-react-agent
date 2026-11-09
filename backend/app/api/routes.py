@@ -33,6 +33,7 @@ from app.domain.execution import Artifact, TestRun, TestRunStatus
 from app.domain.ids import ArtifactId, TestCaseId, TestPlanId, TestRunId
 from app.domain.errors import PlanningUserInputRequired, TestCaseBusy, TestCaseHasActiveRun, TestCasePlanning, TestPlanNotLatest
 from app.domain.planning import PlanningEvent, TestCase, TestCaseContent, TestPlan
+from app.domain.resources import CapabilityCatalog, CapabilityColumnSelection, CapabilityCatalogChanged
 from app.reporting import TestRunReport
 from app.execution.run_service import RunConflict
 from app.resources.mcp import MCPConnectionError
@@ -74,6 +75,24 @@ def problem(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(
         status_code=status_code, detail={"code": code, "message": message}
     )
+
+
+@router.get("/capabilities", response_model=CapabilityCatalog[CapabilityColumnSelection], responses=BAD_GATEWAY_RESPONSE)
+async def read_capabilities(request: Request) -> CapabilityCatalog[CapabilityColumnSelection]:
+    try:
+        return container(request).capabilities.preview
+    except MCPConnectionError as exc:
+        raise problem(502, "mcp_unavailable", str(exc)) from exc
+
+
+@router.post("/capabilities/refresh", response_model=CapabilityCatalog[CapabilityColumnSelection], responses=BAD_GATEWAY_RESPONSE)
+async def refresh_capabilities(request: Request) -> CapabilityCatalog[CapabilityColumnSelection]:
+    app = container(request)
+    try:
+        discovery = await app.capabilities.discover(app.settings_service.current.execution.tool_call_timeout_seconds)
+        return discovery.catalog
+    except MCPConnectionError as exc:
+        raise problem(502, "mcp_unavailable", str(exc)) from exc
 
 
 @router.get("/settings", response_model=SettingsResponse)
@@ -253,7 +272,10 @@ async def create_test_run(
             test_case_id=payload.test_case_id,
             test_plan_id=payload.test_plan_id,
             assumptions_confirmed=payload.assumptions_confirmed,
+            selected_columns=payload.selected_columns,
         )
+    except CapabilityCatalogChanged as exc:
+        raise problem(409, "capability_catalog_changed", str(exc)) from exc
     except SettingsBusy as exc:
         raise problem(409, "settings_busy", str(exc)) from exc
     except MCPConnectionError as exc:

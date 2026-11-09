@@ -1,4 +1,5 @@
 """UI read contracts: source-backed counts, pagination and Shanghai day boundaries."""
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
@@ -7,7 +8,9 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import event
+from sqlalchemy.pool import AsyncAdaptedQueuePool
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.types import Message, Scope
 
 from app.api import repository as api_repository
 from app.api.schemas import TestRunFilterQuery as RunFilterQuery, TestRunPageQuery as RunPageQuery
@@ -16,10 +19,12 @@ from app.container import Container
 from app.domain.execution import ReasonCode, TaskRunResult, TaskRunStatus, TestRunStatus as RunStatus, TestRunVerdict as RunVerdict
 from app.domain.planning import TestPlanOrigin as PlanOrigin
 from app.event_stream import EventBus, RunEventWriter
+from app.main import create_app
 from app.persistence.db import build_engine, build_session_factory, init_database
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.persistence.models import TestRunRow as RunRow
 from mcp_support import build_client, create_plan, read_records, start_run, wait_for_run
+from config_support import build_settings
 from test_structure import plan_draft, planning_context, run_environment_snapshot
 
 
@@ -246,6 +251,60 @@ async def test_response_keeps_one_snapshot_during_committed_run_changes(
         assert current.events[-1].event.type == "run.cancelled"
     finally:
         await engine.dispose()
+
+
+async def test_run_stream_disconnect_returns_connections_before_reconnect(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    container = Container(settings)
+    app = create_app(settings)
+    app.state.container = container
+    await init_database(container.engine)
+    repository = container.repository
+    case = await api_repository.create_test_case(container.sessions, planning_context().test_case_content)
+    plan = await repository.create_plan(test_case_id=case.id, draft=plan_draft(),
+        planning_context=planning_context(), origin=PlanOrigin.PLANNING)
+    run = await repository.create_test_run(test_plan_id=plan.id, environment=run_environment_snapshot())
+    pool = container.engine.pool
+    assert isinstance(pool, AsyncAdaptedQueuePool)
+    # Uvicorn's ASGI 2.3 path cancels the response task on http.disconnect.
+    scope: Scope = {
+        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "method": "GET", "path": f"/api/runs/{run.id}/stream", "query_string": b"",
+        "headers": [], "scheme": "http", "server": ("test", 80),
+    }
+    try:
+        for _ in range(2):
+            event_query_started = asyncio.Event()
+
+            def disconnect_during_event_query(
+                connection: object, cursor: object, statement: str, parameters: object,
+                context: object, executemany: bool,
+            ) -> None:
+                if "FROM run_events" in statement:
+                    event_query_started.set()
+
+            async def receive() -> Message:
+                await event_query_started.wait()
+                return {"type": "http.disconnect"}
+
+            async def send(message: Message) -> None:
+                pass
+
+            event.listen(container.engine.sync_engine, "before_cursor_execute", disconnect_during_event_query)
+            try:
+                async with asyncio.timeout(5):
+                    await app(scope, receive, send)
+            finally:
+                event.remove(container.engine.sync_engine, "before_cursor_execute", disconnect_during_event_query)
+            connections_in_use_after_disconnect = pool.checkedout()
+            resumed_run = await repository.get_test_run(run.id)
+            assert event_query_started.is_set()
+            assert connections_in_use_after_disconnect == 0
+            assert resumed_run.status == RunStatus.PENDING
+        await repository.start_run(run.id)
+        assert (await repository.get_test_run(run.id)).status == RunStatus.RUNNING
+    finally:
+        await container.engine.dispose()
 
 
 def test_run_list_omits_environment_and_skips_empty_page_aggregates(tmp_path: Path) -> None:

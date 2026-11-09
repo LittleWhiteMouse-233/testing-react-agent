@@ -3,6 +3,9 @@ import type { components } from "./schema";
 type Schemas = components["schemas"];
 
 export type ApiError = Schemas["ApiError"];
+export type CapabilityPreview = Schemas["CapabilityCatalog_CapabilityColumnSelection_"];
+export type CapabilitySnapshot = Schemas["CapabilityCatalog_CapabilityColumnSnapshot_"];
+export type CapabilityColumnSelection = Schemas["CapabilityColumnSelection"];
 export type ApiValidationError = Schemas["ApiValidationError"];
 export type SettingsResponse = Schemas["SettingsResponse"];
 export type SettingsUpdateRequest = Schemas["SettingsUpdateRequest"];

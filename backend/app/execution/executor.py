@@ -109,7 +109,7 @@ class RunExecutor:
                                 memory_text=serialize_task_memories(task_memories),
                             ),
                             tools=tools,
-                            resource_catalog=environment.resource_catalog,
+                            capability_catalog=environment.capability_catalog,
                             model_profile=environment.execution_model,
                             execution=environment.execution,
                         )

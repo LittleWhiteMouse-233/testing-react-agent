@@ -21,6 +21,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Capabilities */
+        get: operations["read_capabilities_api_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/capabilities/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Refresh Capabilities */
+        post: operations["refresh_capabilities_api_capabilities_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs": {
         parameters: {
             query?: never;
@@ -334,6 +368,40 @@ export interface components {
          * @enum {string}
          */
         ArtifactType: "image" | "json_export" | "html_export";
+        /** CapabilityCatalog[CapabilityColumnSelection] */
+        CapabilityCatalog_CapabilityColumnSelection_: {
+            /** Columns */
+            columns: components["schemas"]["CapabilityColumnSelection"][];
+            resource_catalog: components["schemas"]["ResourceCatalogSnapshot"];
+            tool_catalog: components["schemas"]["ToolCatalogSnapshot"];
+        };
+        /** CapabilityCatalog[CapabilityColumnSnapshot] */
+        CapabilityCatalog_CapabilityColumnSnapshot_: {
+            /** Columns */
+            columns: components["schemas"]["CapabilityColumnSnapshot"][];
+            resource_catalog: components["schemas"]["ResourceCatalogSnapshot"];
+            tool_catalog: components["schemas"]["ToolCatalogSnapshot"];
+        };
+        /**
+         * CapabilityColumnSelection
+         * @description API consistency token: identifies one selected column and its preview definition.
+         */
+        CapabilityColumnSelection: {
+            /** Fingerprint */
+            fingerprint: string;
+            /** Id */
+            id: string;
+        };
+        /**
+         * CapabilityColumnSnapshot
+         * @description Persisted access decision for one discovered column, including unselected ones.
+         */
+        CapabilityColumnSnapshot: {
+            /** Id */
+            id: string;
+            /** Selected */
+            selected: boolean;
+        };
         /**
          * CycleStartedEvent
          * @description TaskAgent 在首次模型请求前开始逻辑决策轮；开始即计轮，传输重试不另计。
@@ -1393,6 +1461,8 @@ export interface components {
              * @constant
              */
             assumptions_confirmed: true;
+            /** Selected Columns */
+            selected_columns: components["schemas"]["CapabilityColumnSelection"][];
             /** Test Case Id */
             test_case_id: string;
             /** Test Plan Id */
@@ -1433,19 +1503,18 @@ export interface components {
         TestRunEnvironmentSnapshot: {
             /** App Version */
             app_version: string;
+            capability_catalog: components["schemas"]["CapabilityCatalog_CapabilityColumnSnapshot_"];
             execution: components["schemas"]["ExecutionSettings"];
             execution_model: components["schemas"]["LLMProfileSettings-Output"];
             /**
              * Execution Protocol Version
              * @constant
              */
-            execution_protocol_version: "11";
+            execution_protocol_version: "12";
             /** Prompt Fingerprints By Task Type */
             prompt_fingerprints_by_task_type: {
                 [key: string]: string | null;
             };
-            resource_catalog: components["schemas"]["ResourceCatalogSnapshot"];
-            tool_catalog: components["schemas"]["ToolCatalogSnapshot"];
         };
         /**
          * TestRunListResponse
@@ -1599,8 +1668,8 @@ export interface components {
             };
             /** Name */
             name: string;
-            /** Source */
-            source: string;
+            /** Source Id */
+            source_id: string;
         };
         /**
          * ToolStartedEvent
@@ -1670,6 +1739,100 @@ export interface operations {
             };
             /** @description Internal Server Error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    read_capabilities_api_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityCatalog_CapabilityColumnSelection_"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    refresh_capabilities_api_capabilities_refresh_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityCatalog_CapabilityColumnSelection_"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -1,5 +1,7 @@
 """TaskAgent timeout feedback and image processing contracts."""
 from __future__ import annotations
+from app.domain.resources import CapabilityCatalog, CapabilityColumnSnapshot, ToolCatalogSnapshot, ResourceCatalogSnapshot
+
 
 from config_support import build_execution_settings, install_model_client
 
@@ -57,7 +59,7 @@ def task_runtime() -> _TaskRuntime:
         runtime_context=TaskAgentRuntimeContext(
             task_context=task_context, artifacts=create_autospec(ArtifactStore, instance=True),
             execution=build_execution_settings(image_history_rounds=1, max_cycles_by_task_type={"act": 3, "judge": 3, "goal": 3}),
-        ),
+         capability_catalog=CapabilityCatalog[CapabilityColumnSnapshot](tool_catalog=ToolCatalogSnapshot(tools=[]), resource_catalog=ResourceCatalogSnapshot(), columns=[])),
         run_cancellation_event=asyncio.Event(),
         tools=model_tools, model_client=model_client,
         available_skills=[],
@@ -105,7 +107,7 @@ async def test_message_publication_contract_is_checked_during_build(
         await factory.build(
             build_params=TaskAgentBuildParams(
                 task_context=task_runtime.runtime_context.task_context, tools=TASK_AGENT_TOOLS,
-                resource_catalog=ResourceCatalogSnapshot(), model_profile=model.profile_snapshot, execution=build_execution_settings(),
+                capability_catalog=CapabilityCatalog[CapabilityColumnSnapshot](tool_catalog=ToolCatalogSnapshot(tools=[]), resource_catalog=ResourceCatalogSnapshot(), columns=[]), model_profile=model.profile_snapshot, execution=build_execution_settings(),
             ),
             run_cancellation_event=asyncio.Event(), checkpointer=None, event_recorder=task_runtime.event_recorder,
         )
@@ -117,7 +119,7 @@ def test_image_tool_snapshot_contains_only_model_visible_arguments() -> None:
 
     snapshots = snapshot_tools(task_agent.TASK_AGENT_TOOLS)
     image_tool = next(entry for entry in snapshots.tools if entry.name == "read_image_artifact")
-    assert image_tool.source == "builtin:task_agent"
+    assert image_tool.source_id == "builtin:task_agent"
     assert set(image_tool.input_schema["properties"]) == {"artifact_id"}
     assert image_tool.input_schema["required"] == ["artifact_id"]
 
@@ -159,7 +161,7 @@ async def test_executor_captures_completion_independently_and_waits_for_stream_e
             test_run_id=str(uuid4()),
             build_params=TaskAgentBuildParams(
                 task_context=task_runtime.runtime_context.task_context, tools=TASK_AGENT_TOOLS,
-                resource_catalog=ResourceCatalogSnapshot(), model_profile=task_runtime.model_client.profile_snapshot, execution=build_execution_settings(),
+                capability_catalog=CapabilityCatalog[CapabilityColumnSnapshot](tool_catalog=ToolCatalogSnapshot(tools=[]), resource_catalog=ResourceCatalogSnapshot(), columns=[]), model_profile=task_runtime.model_client.profile_snapshot, execution=build_execution_settings(),
             ),
             run_cancellation_event=asyncio.Event(), checkpointer=checkpointer,
         )
@@ -219,7 +221,7 @@ async def test_cancellation_at_model_or_event_boundary_prevents_further_calls(
         build_params=TaskAgentBuildParams(
             task_context=task_runtime.runtime_context.task_context,
             tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"), *TASK_AGENT_TOOLS),
-            resource_catalog=ResourceCatalogSnapshot(),
+            capability_catalog=CapabilityCatalog[CapabilityColumnSnapshot](tool_catalog=ToolCatalogSnapshot(tools=[]), resource_catalog=ResourceCatalogSnapshot(), columns=[]),
             model_profile=model.profile_snapshot, execution=build_execution_settings(),
         ),
         run_cancellation_event=task_runtime.run_cancellation_event, checkpointer=None,
@@ -265,7 +267,7 @@ async def test_native_timeout_returns_to_model_without_waiting_for_late_result(
         build_params=TaskAgentBuildParams(
             task_context=task_runtime.runtime_context.task_context,
             tools=(StructuredTool.from_function(coroutine=observe, description="Observe target"), *TASK_AGENT_TOOLS),
-            resource_catalog=ResourceCatalogSnapshot(),
+            capability_catalog=CapabilityCatalog[CapabilityColumnSnapshot](tool_catalog=ToolCatalogSnapshot(tools=[]), resource_catalog=ResourceCatalogSnapshot(), columns=[]),
             model_profile=model.profile_snapshot, execution=build_execution_settings(tool_call_timeout_seconds=0.05, image_history_rounds=1),
         ),
         run_cancellation_event=task_runtime.run_cancellation_event, checkpointer=None,

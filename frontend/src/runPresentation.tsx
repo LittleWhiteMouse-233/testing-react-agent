@@ -127,20 +127,24 @@ export function EventTimeline({ events, controls = false }: { events: StoredRunE
 
 export function RunResources({ report }: { report: TestRunReport }) {
   const { environment, test_plan: plan } = report.detail;
+  const catalog = environment.capability_catalog;
+  const availableTools = catalog.tool_catalog.tools.filter((tool) => tool.source_id.startsWith("builtin:") ||
+    catalog.columns.some((column) => column.id === tool.source_id && column.selected));
   return <div className="resource-grid">
-    <section className="resource-card"><h3>工具目录 <span>{environment.tool_catalog.tools.length} 个</span></h3>
-      <div className="resource-tools">{environment.tool_catalog.tools.map((tool) => <details key={tool.name}><summary>{tool.name}<small>{tool.source}</small></summary>
+    <section className="resource-card"><h3>工具目录 <span>{availableTools.length} 个可用 / {catalog.tool_catalog.tools.length} 个已发现</span></h3>
+      <div className="resource-tools">{catalog.tool_catalog.tools.map((tool) => <details key={tool.name}><summary>{tool.name}<small>{tool.source_id} · {availableTools.includes(tool) ? "可用" : "未启用"}</small></summary>
         <p>{tool.description}</p><pre>{JSON.stringify(tool.input_schema, null, 2)}</pre>
       </details>)}</div>
     </section>
     <section className="resource-card"><h3>Skill 与静态资源</h3>
-      {environment.resource_catalog.local_root && <p>本地根目录：<code>{environment.resource_catalog.local_root}</code></p>}
-      <div className="resource-tools">{environment.resource_catalog.resources.map((resource) => <details key={`${resource.source_id}:${resource.uri}`}>
+      {catalog.resource_catalog.local_root && <p>本地根目录：<code>{catalog.resource_catalog.local_root}</code></p>}
+      {catalog.columns.map((column) => <p key={column.id}><strong>{column.selected ? "已选" : "未选"}</strong> · <code>{column.id}</code></p>)}
+      <div className="resource-tools">{catalog.resource_catalog.resources.map((resource) => <details key={`${resource.source_id}:${resource.uri}`}>
         <summary>{resource.name}<small>{resource.source_id}</small></summary>
         <code>{resource.uri}</code>{resource.description && <p>{resource.description}</p>}
         {resource.mime_type && <p>{resource.mime_type}</p>}
       </details>)}
-      {environment.resource_catalog.templates.map((template) => <details key={`${template.source_id}:${template.uri_template}`}>
+      {catalog.resource_catalog.templates.map((template) => <details key={`${template.source_id}:${template.uri_template}`}>
         <summary>{template.name}<small>{template.source_id}</small></summary>
         <code>{template.uri_template}</code>{template.description && <p>{template.description}</p>}
       </details>)}</div>

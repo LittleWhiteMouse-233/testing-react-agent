@@ -1,4 +1,6 @@
 from __future__ import annotations
+from mcp_support import capability_selection
+
 
 from uuid import uuid4
 
@@ -77,7 +79,7 @@ def test_complete_message_first_run_and_exports() -> None:
                 json={
                     "test_case_id": plan["test_case_id"], "test_plan_id": plan["id"],
                     "assumptions_confirmed": True,
-                },
+                 "selected_columns": capability_selection(client)},
             )
             assert run_response.status_code == 201, run_response.text
             pending = run_response.json()
@@ -93,7 +95,7 @@ def test_complete_message_first_run_and_exports() -> None:
                 "passed",
                 "passed",
             ]
-            assert detail["environment"]["execution_protocol_version"] == "11"
+            assert detail["environment"]["execution_protocol_version"] == "12"
             assert "planning_model" not in detail["environment"]
 
             events_response = client.get(
@@ -275,7 +277,7 @@ def test_only_latest_plan_can_start() -> None:
                 json={
                     "test_case_id": first["test_case_id"], "test_plan_id": first["id"],
                     "assumptions_confirmed": True,
-                },
+                 "selected_columns": capability_selection(client)},
             )
             assert response.status_code == 409
             assert response.json()["code"] == "test_plan_not_startable"

@@ -4,11 +4,11 @@ from datetime import date
 from typing import Generic, Literal, TypeVar
 from collections.abc import Sequence
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, model_validator, field_validator
 from pydantic_core import ErrorDetails
 
 from app.config import SettingsContent, SettingsService
-from app.domain.resources import LLMProfileSettings
+from app.domain.resources import LLMProfileSettings, CapabilityColumnSelection
 
 from app.domain.ids import PlanningRequestId, TestCaseId, TestPlanId
 from app.domain.planning import TestCase, TestCaseContent, TestPlanContent, TestTaskDefinition
@@ -43,6 +43,14 @@ class TestRunCreateRequest(BaseModel):
     test_case_id: TestCaseId
     test_plan_id: TestPlanId
     assumptions_confirmed: Literal[True]
+    selected_columns: list[CapabilityColumnSelection]
+
+    @field_validator("selected_columns")
+    @classmethod
+    def columns_are_unique(cls, columns: list[CapabilityColumnSelection]) -> list[CapabilityColumnSelection]:
+        if len({column.id for column in columns}) != len(columns):
+            raise ValueError("Selected capability columns must be unique")
+        return columns
 
 
 class ReportExportRequest(BaseModel):

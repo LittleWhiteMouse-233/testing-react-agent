@@ -111,11 +111,13 @@ dd { margin-left: 0; font-size: 12px; white-space: pre-wrap; }
 .plan-start { display: grid; gap: 14px; margin: 20px 0 26px; }
 .plan-start .ant-checkbox-wrapper { font-size: 11px; color: #555; }
 .plan-start .ant-btn { border-radius: 12px; height: 46px; }
-.recent-runs { border-top: 1px solid #e8e8ed; padding-top: 20px; }
-.recent-run { display: block; color: #555; padding: 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 9px; }
-.recent-run > div { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
-.recent-run time { font-size: 10px; }
-.recent-run p { font-size: 11px; margin: 7px 0 0; }
+.capability-card { border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin: 20px 0 12px; background: white; }
+.capability-card h3 { margin: 0; }
+.capability-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.capability-column { border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 12px 0; }
+.capability-column .ant-checkbox-wrapper { font-size: 15px; font-weight: 600; }
+.capability-column code { overflow-wrap: anywhere; }
+.case-history-link { display: inline-block; margin-bottom: 20px; }
 .planning-welcome { grid-column: span 2; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px; text-align: center; color: var(--muted); min-height: 480px; }
 .welcome-mark { width: 52px; height: 52px; border-radius: 14px; font-size: 28px; margin-bottom: 24px; }
 .planning-welcome h2 { color: #333; margin-bottom: 12px; }

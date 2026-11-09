@@ -22,7 +22,7 @@ class ToolDefinitionSnapshot(BaseModel):
     name: str = Field(min_length=1)
     description: str
     input_schema: dict[str, Any]
-    source: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
     annotations: ToolAnnotationsSnapshot
 
 

@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.domain.ids import TaskRunId, TestPlanId, TestRunId, TestTaskId
 from app.domain.planning import TestPlan, TestTask, TestTaskType
-from app.domain.resources import LLMProfileSettings, ResourceCatalogSnapshot, ToolCatalogSnapshot
+from app.domain.resources import LLMProfileSettings, CapabilityCatalog, CapabilityColumnSnapshot
 
 
 class ExecutionSettings(BaseModel):
@@ -104,13 +104,12 @@ class TestRunEnvironmentSnapshot(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    tool_catalog: ToolCatalogSnapshot
-    resource_catalog: ResourceCatalogSnapshot
+    capability_catalog: CapabilityCatalog[CapabilityColumnSnapshot]
     execution_model: LLMProfileSettings
     execution: ExecutionSettings
     prompt_fingerprints_by_task_type: dict[TestTaskType, Annotated[str, Field(min_length=1)] | None]
     app_version: str = Field(min_length=1)
-    execution_protocol_version: Literal["11"]
+    execution_protocol_version: Literal["12"]
 
     @model_validator(mode="after")
     def task_types_are_complete(self) -> "TestRunEnvironmentSnapshot":

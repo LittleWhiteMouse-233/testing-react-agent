@@ -31,14 +31,23 @@
         {% if task.definition.type == 'goal' %}<p>未满足时回到任务 {{ task.definition.jump_back_to_task_no }}</p>{% endif %}
       </li>
     {% endfor %}</ol>
-    <h3>Skill 与静态资源</h3>
-    {% if report.detail.environment.resource_catalog.local_root %}<p>本地根目录：{{ report.detail.environment.resource_catalog.local_root }}</p>{% endif %}
-    {% for resource in report.detail.environment.resource_catalog.resources %}
-      <p><strong>{{ resource.name }}</strong> · {{ resource.source_id }} · <code>{{ resource.uri }}</code></p>
-      {% if resource.description %}<p>{{ resource.description }}</p>{% endif %}
+    <h3>工具目录</h3>
+    {% for tool in capability_catalog.tool_catalog.tools %}
+      <details><summary>{{ tool.name }} · {{ tool.source_id }} · {{ '可用' if capability_catalog.tool_is_available(tool.source_id) else '未启用' }}</summary>
+        <p>{{ tool.description }}</p><pre>{{ tool.input_schema | tojson(indent=2) }}</pre>
+      </details>
     {% endfor %}
-    {% for template in report.detail.environment.resource_catalog.templates %}
-      <p>{{ template.name }} · {{ template.source_id }} · <code>{{ template.uri_template }}</code></p>
+    <h3>Skill 与静态资源</h3>
+    {% if capability_catalog.resource_catalog.local_root %}<p>本地根目录：{{ capability_catalog.resource_catalog.local_root }}</p>{% endif %}
+    {% for column in capability_catalog.columns %}
+      <h4>{{ '已选' if column.selected else '未选' }} · {{ column.id }}</h4>
+      {% for resource in capability_catalog.resource_catalog.resources if capability_catalog.resource_column_id(resource.source_id, resource.uri) == column.id %}
+        <p><strong>{{ resource.name }}</strong> · {{ resource.source_id }} · <code>{{ resource.uri }}</code></p>
+        {% if resource.description %}<p>{{ resource.description }}</p>{% endif %}
+      {% endfor %}
+      {% for template in capability_catalog.resource_catalog.templates if template.source_id == column.id %}
+        <p>{{ template.name }} · {{ template.source_id }} · <code>{{ template.uri_template }}</code></p>
+      {% endfor %}
     {% endfor %}
   </section>
   <section>
