@@ -13,7 +13,7 @@ from app.domain.resources.static_resources import (
     is_resource_in_skill_package,
     top_level_skills,
 )
-from app.domain.resources.catalog import (
+from app.domain.resources.capabilities import (
     CapabilityCatalog, CapabilityCatalogChanged, CapabilityColumnSelection, CapabilityColumnSnapshot,
     LOCAL_OTHER_COLUMN_ID, build_capability_preview, select_capabilities,
 )

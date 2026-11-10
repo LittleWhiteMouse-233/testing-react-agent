@@ -20,7 +20,8 @@ from app.llm import ScriptedChatModelClient
 from app.main import create_app
 from app.resources.mcp import MCPClientProvider, MCPConnectionError
 from app.domain.resources import (
-    CapabilityCatalog, CapabilityColumnSnapshot, ToolCatalogSnapshot, build_capability_preview, select_capabilities,
+    CapabilityCatalog, CapabilityColumnSnapshot, ResourceCatalogSnapshot, ToolCatalogSnapshot,
+    build_capability_preview, select_capabilities,
 )
 from app.resources.static_resources import SkillResourceProvider, ResourceToolContext
 from langgraph.prebuilt import ToolRuntime
@@ -152,9 +153,11 @@ class ResourceTestContext:
     capability_catalog: CapabilityCatalog[CapabilityColumnSnapshot]
 
 
-def resource_runtime(provider: SkillResourceProvider, selected_ids: set[str] | None = None) -> ToolRuntime[ResourceToolContext]:
+def resource_runtime(
+    provider: SkillResourceProvider, selected_ids: set[str] | None = None, *, resource_catalog: ResourceCatalogSnapshot,
+) -> ToolRuntime[ResourceToolContext]:
     """Use the production tool-injection contract for independent resource tests."""
-    preview = build_capability_preview(ToolCatalogSnapshot(tools=[]), provider.catalog,
+    preview = build_capability_preview(ToolCatalogSnapshot(tools=[]), resource_catalog,
                                        [f"mcp:{name}" for name in provider.mcp_clients.clients])
     selections = [column for column in preview.columns if selected_ids is None or column.id in selected_ids]
     return ToolRuntime[ResourceToolContext](state={}, context=ResourceTestContext(select_capabilities(preview, selections)),
@@ -163,6 +166,7 @@ def resource_runtime(provider: SkillResourceProvider, selected_ids: set[str] | N
 
 async def invoke_resource_tool(
     provider: SkillResourceProvider, name: str, arguments: dict[str, Any], selected_ids: set[str] | None = None,
+    *, resource_catalog: ResourceCatalogSnapshot,
 ) -> ToolMessage:
     """Invoke with the same public ToolNode context injection used by actual TaskAgents."""
     graph = StateGraph(MessagesState, context_schema=ResourceTestContext)
@@ -171,7 +175,7 @@ async def invoke_resource_tool(
     graph.add_edge("tools", END)
     result = await graph.compile().ainvoke({"messages": [AIMessage(content="", tool_calls=[{
         "name": name, "args": arguments, "id": "resource-test",
-    }])]}, context=ResourceTestContext(resource_runtime(provider, selected_ids).context.capability_catalog))
+    }])]}, context=ResourceTestContext(resource_runtime(provider, selected_ids, resource_catalog=resource_catalog).context.capability_catalog))
     return result["messages"][-1]
 
 

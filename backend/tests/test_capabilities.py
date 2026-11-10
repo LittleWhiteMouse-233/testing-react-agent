@@ -176,8 +176,8 @@ async def test_local_other_scope_blocks_package_aliases_before_reading_bytes(tmp
     secret.write_text("unselected secret", encoding="utf-8")
     (tmp_path / "a.md").write_text("Read [B](b/secret.md)", encoding="utf-8")
     provider = SkillResourceProvider(tmp_path, MCPClientProvider(tmp_path / "unused.json"))
-    await provider.discover_resources()
-    runtime = resource_runtime(provider, {"local:other"})
+    catalog = await provider.discover_resources()
+    runtime = resource_runtime(provider, {"local:other"}, resource_catalog=catalog)
     reads: list[Path] = []
     read_bytes = Path.read_bytes
 
@@ -209,14 +209,14 @@ async def test_unselected_mcp_is_neither_listed_nor_contacted_by_resource_tools(
     config = write_mcp_config(tmp_path, [], tools_enabled=False,
                              resource_contents={uri: [{"uri": uri, "text": "same-source hidden content"}]})
     provider = SkillResourceProvider(tmp_path / "skills", await load_mcp_client_provider(config))
-    await provider.discover_resources()
+    catalog = await provider.discover_resources()
     before = read_records(tmp_path)
-    denied = await invoke_resource_tool(provider, "read_resource", {"source_id": "mcp:fixture", "uri": uri}, set())
+    denied = await invoke_resource_tool(provider, "read_resource", {"source_id": "mcp:fixture", "uri": uri}, set(), resource_catalog=catalog)
     assert denied.status == "error" and "Resource not found" in denied.text
-    listing = await invoke_resource_tool(provider, "list_resources", {}, set())
+    listing = await invoke_resource_tool(provider, "list_resources", {}, set(), resource_catalog=catalog)
     assert json.loads(listing.text) == {"resources": [], "templates": []}
     assert read_records(tmp_path) == before
-    allowed = await invoke_resource_tool(provider, "read_resource", {"source_id": "mcp:fixture", "uri": uri}, {"mcp:fixture"})
+    allowed = await invoke_resource_tool(provider, "read_resource", {"source_id": "mcp:fixture", "uri": uri}, {"mcp:fixture"}, resource_catalog=catalog)
     assert allowed.status == "success" and "same-source hidden content" in allowed.text
 
 
@@ -226,7 +226,7 @@ async def test_refresh_does_not_replace_clients_bound_to_an_existing_batch(tmp_p
     from langgraph.graph import StateGraph, MessagesState, START, END
     from langgraph.prebuilt import ToolNode
     from app.domain.resources import select_capabilities
-    from app.resources.catalog import CapabilityProvider, CapabilityDiscovery
+    from app.resources.capabilities import CapabilityProvider, CapabilityDiscovery
     from mcp_support import write_mcp_config, ResourceTestContext
 
     uri = "doc://manual"

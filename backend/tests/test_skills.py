@@ -43,22 +43,22 @@ async def test_local_nested_skills_disclose_only_roots_and_list_child_files(tmp_
     provider = SkillResourceProvider(root, MCPClientProvider(tmp_path / "mcp.json"))
     catalog = await provider.discover_resources()
     assert {entry.name for entry in top_level_skills(catalog)} == {"Parent", "Other"}
-    parent_listing = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("local", (parent / "SKILL.md").as_uri(), runtime=resource_runtime(provider)))
+    parent_listing = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("local", (parent / "SKILL.md").as_uri(), runtime=resource_runtime(provider, resource_catalog=catalog)))
     assert {entry.uri for entry in parent_listing.resources} == {
         (parent / name).as_uri() for name in (
             "SKILL.md", "guide.md", "child/SKILL.md", "child/assets/example.png",
         )
     }
-    child_listing = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("local", (parent / "child" / "SKILL.md").as_uri(), runtime=resource_runtime(provider)))
+    child_listing = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("local", (parent / "child" / "SKILL.md").as_uri(), runtime=resource_runtime(provider, resource_catalog=catalog)))
     assert {entry.uri for entry in child_listing.resources} == {
         (parent / "child" / name).as_uri() for name in ("SKILL.md", "assets/example.png")
     }
     parent_entry = next(entry for entry in parent_listing.resources if entry.uri == (parent / "SKILL.md").as_uri())
     assert (parent_entry.name, parent_entry.description) == ("Parent", "Parent instructions")
     (parent / "new.md").write_text("Created after discovery", encoding="utf-8")
-    listing = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("local", runtime=resource_runtime(provider)))
+    listing = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("local", runtime=resource_runtime(provider, resource_catalog=catalog)))
     assert (parent / "new.md").as_uri() not in {entry.uri for entry in listing.resources}
-    loaded = await provider.load_skill("local", (parent / "child" / "SKILL.md").as_uri(), runtime=resource_runtime(provider))
+    loaded = await provider.load_skill("local", (parent / "child" / "SKILL.md").as_uri(), runtime=resource_runtime(provider, resource_catalog=catalog))
     text = "\n".join(block["text"] for block in loaded if block["type"] == "text")
     assert "![example](assets/example.png)" in text
     assert not any(block["type"] == "image" for block in loaded)
@@ -72,23 +72,23 @@ async def test_relative_reads_are_explicit_dynamic_and_confined(tmp_path: Path) 
     root = tmp_path / "skills"
     parent = write_nested_skills(root)
     provider = SkillResourceProvider(root, MCPClientProvider(tmp_path / "mcp.json"))
-    await provider.discover_resources()
+    catalog = await provider.discover_resources()
     base = (parent / "child" / "SKILL.md").as_uri()
-    image = await provider.read_resource("local", "assets/example.png", base, runtime=resource_runtime(provider))
+    image = await provider.read_resource("local", "assets/example.png", base, runtime=resource_runtime(provider, resource_catalog=catalog))
     assert any(block["type"] == "image" and block.get("mime_type") == "image/png" for block in image)
     (parent / "guide.md").write_text("Updated guide", encoding="utf-8")
     for reference, base_uri in (("../guide.md", base), ("guide.md", parent.as_uri() + "/"),
                                 ((parent / "guide.md").as_uri(), "invalid base")):
-        blocks = await provider.read_resource("local", reference, base_uri, runtime=resource_runtime(provider))
+        blocks = await provider.read_resource("local", reference, base_uri, runtime=resource_runtime(provider, resource_catalog=catalog))
         assert any(block.get("text") == "Updated guide" for block in blocks)
     with pytest.raises(ToolException, match="base_uri"):
-        await provider.read_resource("local", "guide.md", runtime=resource_runtime(provider))
+        await provider.read_resource("local", "guide.md", runtime=resource_runtime(provider, resource_catalog=catalog))
     with pytest.raises(ToolException):
-        await provider.read_resource("local", (tmp_path / "outside.md").as_uri(), runtime=resource_runtime(provider))
+        await provider.read_resource("local", (tmp_path / "outside.md").as_uri(), runtime=resource_runtime(provider, resource_catalog=catalog))
     with pytest.raises(ToolException):
-        await provider.read_resource("local", "missing.png", base, runtime=resource_runtime(provider))
+        await provider.read_resource("local", "missing.png", base, runtime=resource_runtime(provider, resource_catalog=catalog))
     (parent / "中文 文档.md").write_text("Encoded reference", encoding="utf-8")
-    blocks = await provider.read_resource("local", "%E4%B8%AD%E6%96%87%20%E6%96%87%E6%A1%A3.md", parent.as_uri() + "/", runtime=resource_runtime(provider))
+    blocks = await provider.read_resource("local", "%E4%B8%AD%E6%96%87%20%E6%96%87%E6%A1%A3.md", parent.as_uri() + "/", runtime=resource_runtime(provider, resource_catalog=catalog))
     assert any(block.get("text") == "Encoded reference" for block in blocks)
 
 
@@ -97,11 +97,11 @@ async def test_resource_tools_return_model_visible_read_errors(tmp_path: Path) -
     from app.resources.static_resources import SkillResourceProvider
 
     provider = SkillResourceProvider(tmp_path, MCPClientProvider(tmp_path / "mcp.json"))
-    await provider.discover_resources()
+    catalog = await provider.discover_resources()
     tools = {entry.name: entry for entry in provider.build_resource_tools()}
-    result = await invoke_resource_tool(provider, "read_resource", {"source_id": "local", "uri": "missing.md"})
+    result = await invoke_resource_tool(provider, "read_resource", {"source_id": "local", "uri": "missing.md"}, resource_catalog=catalog)
     assert result.status == "error" and "base_uri" in result.text
-    result = await invoke_resource_tool(provider, "list_resources", {})
+    result = await invoke_resource_tool(provider, "list_resources", {}, resource_catalog=catalog)
     assert json.loads(result.text)["resources"] == []
 
 
@@ -115,9 +115,9 @@ async def test_malformed_resource_addresses_are_model_visible_errors(tmp_path: P
 
     clients = await load_mcp_client_provider(write_mcp_config(tmp_path, [], tools_enabled=False)) if source_id != "local" else MCPClientProvider(tmp_path / "mcp.json")
     provider = SkillResourceProvider(tmp_path, clients)
-    await provider.discover_resources()
+    catalog = await provider.discover_resources()
     tools = {entry.name: entry for entry in provider.build_resource_tools()}
-    result = await invoke_resource_tool(provider, tool_name, {"source_id": source_id, "uri": f"{'file' if source_id == 'local' else 'skill'}://[broken/SKILL.md"})
+    result = await invoke_resource_tool(provider, tool_name, {"source_id": source_id, "uri": f"{'file' if source_id == 'local' else 'skill'}://[broken/SKILL.md"}, resource_catalog=catalog)
     assert result.status == "error"
 
 
@@ -127,7 +127,8 @@ async def test_invalid_local_file_addresses_are_model_visible_errors(tmp_path: P
     from app.resources.static_resources import SkillResourceProvider
 
     provider = SkillResourceProvider(tmp_path, MCPClientProvider(tmp_path / "mcp.json"))
-    result = await invoke_resource_tool(provider, "read_resource", {"source_id": "local", "uri": tmp_path.as_uri() + "/" + filename})
+    catalog = await provider.discover_resources()
+    result = await invoke_resource_tool(provider, "read_resource", {"source_id": "local", "uri": tmp_path.as_uri() + "/" + filename}, resource_catalog=catalog)
     assert result.status == "error"
 
 
@@ -162,11 +163,12 @@ async def test_mcp_manifest_nested_resources_and_source_bound_reads(tmp_path: Pa
     assert await ToolProvider(await load_mcp_client_provider(config)).discover_tools() == ()
     provider = SkillResourceProvider(tmp_path / "skills", await load_mcp_client_provider(config))
     catalog = await provider.discover_resources()
+    catalog_before_reads = catalog.model_dump_json()
     assert {entry.name for entry in top_level_skills(catalog)} == {"Parent", "Other"}
     assert [record["uri"] for record in read_records(tmp_path) if record["phase"] == "resource.read"] == [
         "skill://parent/_manifest", "skill://parent/child/_manifest",
     ]
-    parent_listing = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("mcp:fixture", "skill://parent/SKILL.md", runtime=resource_runtime(provider)))
+    parent_listing = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("mcp:fixture", "skill://parent/SKILL.md", runtime=resource_runtime(provider, resource_catalog=catalog)))
     assert {entry.uri for entry in parent_listing.resources} == {
         "skill://parent/SKILL.md", "skill://parent/_manifest", "skill://parent/guide.md",
         "skill://parent/child/SKILL.md", "skill://parent/child/assets/example.png",
@@ -174,7 +176,7 @@ async def test_mcp_manifest_nested_resources_and_source_bound_reads(tmp_path: Pa
     }
     advertised_parent = next(entry for entry in parent_listing.resources if entry.uri == "skill://parent/SKILL.md")
     assert (advertised_parent.name, advertised_parent.description, advertised_parent.mime_type) == ("Parent", "Wrapped summary", "text/markdown")
-    child = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("mcp:fixture", "skill://parent/child/SKILL.md", runtime=resource_runtime(provider)))
+    child = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("mcp:fixture", "skill://parent/child/SKILL.md", runtime=resource_runtime(provider, resource_catalog=catalog)))
     assert {entry.uri for entry in child.resources} == {
         "skill://parent/child/SKILL.md", "skill://parent/child/assets/example.png",
         "skill://parent/child/_manifest",
@@ -183,15 +185,15 @@ async def test_mcp_manifest_nested_resources_and_source_bound_reads(tmp_path: Pa
         "skill://parent/_manifest", "skill://parent/child/_manifest",
     ]
     assert len(child.templates) == 1
-    loaded = await provider.load_skill("mcp:fixture", "skill://parent/child/SKILL.md", runtime=resource_runtime(provider))
+    loaded = await provider.load_skill("mcp:fixture", "skill://parent/child/SKILL.md", runtime=resource_runtime(provider, resource_catalog=catalog))
     assert any(block.get("text") == "![example](assets/example.png)" for block in loaded)
-    images = await provider.read_resource("mcp:fixture", "assets/example.png", "skill://parent/child/SKILL.md", runtime=resource_runtime(provider))
+    images = await provider.read_resource("mcp:fixture", "assets/example.png", "skill://parent/child/SKILL.md", runtime=resource_runtime(provider, resource_catalog=catalog))
     assert any(block["type"] == "image" and block.get("base64") == PNG_BASE64 for block in images)
-    assert any(block.get("text") == "Manual text" for block in await provider.read_resource("mcp:fixture", "doc://manual", runtime=resource_runtime(provider)))
-    assert "Unsupported binary" in str(await provider.read_resource("mcp:fixture", "doc://binary", runtime=resource_runtime(provider)))
+    assert any(block.get("text") == "Manual text" for block in await provider.read_resource("mcp:fixture", "doc://manual", runtime=resource_runtime(provider, resource_catalog=catalog)))
+    assert "Unsupported binary" in str(await provider.read_resource("mcp:fixture", "doc://binary", runtime=resource_runtime(provider, resource_catalog=catalog)))
     with pytest.raises(ToolException):
-        await provider.read_resource("mcp:fixture", "skill://parent/missing.png", runtime=resource_runtime(provider))
-    assert provider.catalog == catalog
+        await provider.read_resource("mcp:fixture", "skill://parent/missing.png", runtime=resource_runtime(provider, resource_catalog=catalog))
+    assert catalog.model_dump_json() == catalog_before_reads
 
 
 @pytest.mark.asyncio
@@ -210,9 +212,9 @@ async def test_resource_connection_failure_propagates_instead_of_becoming_a_read
         with pytest.raises(MCPError):
             await provider.discover_resources()
     else:
-        await provider.discover_resources()
+        catalog = await provider.discover_resources()
         with pytest.raises(MCPError):
-            await provider.read_resource("mcp:fixture", uri, runtime=resource_runtime(provider))
+            await provider.read_resource("mcp:fixture", uri, runtime=resource_runtime(provider, resource_catalog=catalog))
 
 
 @pytest.mark.asyncio
@@ -228,8 +230,8 @@ async def test_mcp_package_templates_use_uri_path_and_preserve_source_boundaries
         templates=[{"uriTemplate": "skill://parent/assets/{path*}", "name": "attachments"},
                    {"uriTemplate": "skill://parent-other/{path*}", "name": "unrelated"}])
     provider = SkillResourceProvider(tmp_path / "skills", await load_mcp_client_provider(config))
-    await provider.discover_resources()
-    listing = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("mcp:first", skill_uri, runtime=resource_runtime(provider)))
+    catalog = await provider.discover_resources()
+    listing = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("mcp:first", skill_uri, runtime=resource_runtime(provider, resource_catalog=catalog)))
     assert [(entry.source_id, entry.uri) for entry in listing.resources] == [("mcp:first", skill_uri)]
     assert [(entry.source_id, entry.uri_template) for entry in listing.templates] == [
         ("mcp:first", "skill://parent/assets/{path*}"),
@@ -260,10 +262,10 @@ async def test_mcp_fallback_reads_only_top_level_and_templates_do_not_invent_fil
     summaries = top_level_skills(catalog)
     assert [(entry.name, entry.description) for entry in summaries] == [("Wrapped name", "Recovered summary")]
     assert [entry["uri"] for entry in read_records(tmp_path) if entry["phase"] == "resource.read"] == ["skill://parent/SKILL.md"]
-    listing = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("mcp:fixture", "skill://parent/SKILL.md", runtime=resource_runtime(provider)))
+    listing = ResourceCatalogSnapshot.model_validate_json(await provider.list_resources("mcp:fixture", "skill://parent/SKILL.md", runtime=resource_runtime(provider, resource_catalog=catalog)))
     assert {entry.uri for entry in listing.resources} == {"skill://parent/SKILL.md", "skill://parent/child/SKILL.md"}
     assert len(listing.templates) == 1
-    assert any(block.get("text") == "Hidden reference" for block in await provider.read_resource("mcp:fixture", "skill://parent/hidden.md", runtime=resource_runtime(provider)))
+    assert any(block.get("text") == "Hidden reference" for block in await provider.read_resource("mcp:fixture", "skill://parent/hidden.md", runtime=resource_runtime(provider, resource_catalog=catalog)))
 
 
 def test_skill_ancestry_is_scoped_to_its_source() -> None:
@@ -284,13 +286,13 @@ async def test_known_unsupported_local_mime_does_not_read_bytes(tmp_path: Path, 
     document = tmp_path / "manual.pdf"
     document.write_bytes(b"binary document")
     provider = SkillResourceProvider(tmp_path, MCPClientProvider(tmp_path / "mcp.json"))
-    await provider.discover_resources()
+    catalog = await provider.discover_resources()
 
     def unexpected_read(path: Path) -> bytes:
         pytest.fail("Known unsupported resource must not read file bytes")
 
     monkeypatch.setattr(Path, "read_bytes", unexpected_read)
-    result = await provider.read_resource("local", document.as_uri(), runtime=resource_runtime(provider))
+    result = await provider.read_resource("local", document.as_uri(), runtime=resource_runtime(provider, resource_catalog=catalog))
     assert "application/pdf" in str(result) and "Unsupported" in str(result)
 
 
@@ -306,8 +308,8 @@ async def test_unsupported_mcp_mime_stops_at_the_first_known_boundary(tmp_path: 
         resources=[{"uri": uri, "name": "Manual", "mimeType": "application/pdf"}] if advertised else [],
         resource_contents={uri: [{"uri": uri, "mimeType": "application/pdf", "text": "Do not expose unsupported content"}]})
     provider = SkillResourceProvider(tmp_path / "skills", await load_mcp_client_provider(config))
-    await provider.discover_resources()
-    result = str(await provider.read_resource("mcp:fixture", uri, runtime=resource_runtime(provider)))
+    catalog = await provider.discover_resources()
+    result = str(await provider.read_resource("mcp:fixture", uri, runtime=resource_runtime(provider, resource_catalog=catalog)))
     assert "Unsupported" in result and "Do not expose unsupported content" not in result
     reads = [record for record in read_records(tmp_path) if record["phase"] == "resource.read"]
     assert len(reads) == (0 if advertised else 1)
@@ -342,8 +344,8 @@ async def test_unsupported_manifest_mime_is_listed_without_reading_it(tmp_path: 
         "_meta": {"fastmcp": {"skill": {"is_manifest": True}}},
     }])
     provider = SkillResourceProvider(tmp_path / "skills", await load_mcp_client_provider(config))
-    await provider.discover_resources()
-    listing = json.loads(await provider.list_resources("mcp:fixture", runtime=resource_runtime(provider)))
+    catalog = await provider.discover_resources()
+    listing = json.loads(await provider.list_resources("mcp:fixture", runtime=resource_runtime(provider, resource_catalog=catalog)))
     assert listing["resources"][0]["uri"] == uri
     assert not any(record["phase"] == "resource.read" for record in read_records(tmp_path))
 
@@ -363,8 +365,8 @@ async def test_supported_mime_accepts_parameters_and_case_variants(tmp_path: Pat
         resources=[{"uri": uri, "name": "Observation", "mimeType": mime_type}] if advertised else [],
         resource_contents={uri: [content]})
     provider = SkillResourceProvider(tmp_path / "skills", await load_mcp_client_provider(config))
-    await provider.discover_resources()
-    result = await provider.read_resource("mcp:fixture", uri, runtime=resource_runtime(provider))
+    catalog = await provider.discover_resources()
+    result = await provider.read_resource("mcp:fixture", uri, runtime=resource_runtime(provider, resource_catalog=catalog))
     assert any(block.get("text") == observed for block in result)
     metadata = result[0]
     assert metadata["type"] == "text"

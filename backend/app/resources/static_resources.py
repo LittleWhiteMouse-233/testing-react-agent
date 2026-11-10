@@ -78,7 +78,6 @@ class SkillResourceProvider:
     def __init__(self, local_root: Path, mcp_clients: MCPClientProvider) -> None:
         self.local_root = local_root.resolve()
         self.mcp_clients = mcp_clients
-        self.catalog = ResourceCatalogSnapshot(local_root=str(self.local_root))
 
     def _scan_local_resource(self) -> list[ResourceDefinitionSnapshot]:
         return [ResourceDefinitionSnapshot(
@@ -151,10 +150,9 @@ class SkillResourceProvider:
                         if entry.source_id == "local" else entry.name or (name if isinstance(name, str) else "SKILL.md"),
                     "description": entry.description or (description if isinstance(description, str) else None),
                 })
-        self.catalog = catalog.model_copy(update={"resources": [
+        return catalog.model_copy(update={"resources": [
             summaries.get((entry.source_id, entry.uri), entry) for entry in resources
         ]})
-        return self.catalog
 
     async def _expand_manifests(self, resources: list[ResourceDefinitionSnapshot]) -> list[ResourceDefinitionSnapshot]:
         expanded: list[ResourceDefinitionSnapshot] = []

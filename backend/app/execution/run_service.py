@@ -15,7 +15,7 @@ from app.persistence.run_repository import (
     SqlAlchemyRunRepository,
 )
 from app.resources.prompts import PromptCatalog
-from app.resources.catalog import CapabilityProvider
+from app.resources.capabilities import CapabilityProvider
 from app.domain.resources import CapabilityColumnSelection, select_capabilities
 from app.test_case_lock import TestCaseLock
 

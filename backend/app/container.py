@@ -16,7 +16,7 @@ from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.planning import PlanningGraph, PlanningService
 from app.resources.prompts import PromptCatalog
 from app.reporting import ReportService
-from app.resources.catalog import CapabilityProvider
+from app.resources.capabilities import CapabilityProvider
 from app.test_case_lock import TestCaseLock
 
 
