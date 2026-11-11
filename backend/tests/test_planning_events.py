@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from mcp_support import capability_selection
+
 from config_support import install_model_client
 
 import asyncio
@@ -18,7 +20,7 @@ from app.container import Container
 from app.domain.errors import PlanningFailure, TestPlanNotLatest as PlanNotLatest
 from app.llm import ScriptedChatModelClient
 from app.persistence.models import RunEventRow
-from mcp_support import build_client
+from mcp_support import build_client, tool_turn
 from config_support import build_model_profile
 
 
@@ -44,11 +46,12 @@ def test_planning_stream_ready_precedes_work_and_has_no_history(tmp_path: Path) 
             assert "event: ready" in await anext(stream)
             # The real route remains subscribed before the POST begins, even for a fast model.
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
-                result = await api.post(f"/api/test-cases/{case_id}/plans", json={"planning_request_id": request_id})
+                result = await api.post(f"/api/test-cases/{case_id}/plans", json={"selected_columns": capability_selection(client), "planning_request_id": request_id})
             assert result.status_code == 201
-            events = [json.loads((await anext(stream)).removeprefix("data: ")) for _ in range(6)]
+            events = [json.loads((await anext(stream)).removeprefix("data: ")) for _ in range(8)]
             assert [event["type"] for event in events] == [
-                "planning.started", "planning.input_ready", "planning.attempt_started",
+                "planning.started", "planning.input_ready", "planning.cycle_started",
+                "planning.tool_started", "planning.tool_completed",
                 "planning.validated", "planning.saving", "planning.succeeded",
             ]
             assert all(event["planning_request_id"] == request_id and event["test_case_id"] == case_id for event in events)
@@ -70,7 +73,7 @@ def test_planning_attempt_events_and_failed_plan_is_not_saved(tmp_path: Path, in
     with build_client(tmp_path) as client, pytest.MonkeyPatch.context() as model_patch:
         container = cast(Container, cast(FastAPI, client.app).state.container)
         install_model_client(model_patch, ScriptedChatModelClient(build_model_profile(),
-            plans=[{"title": "缺少任务"} for _ in range(invalid_attempts)],
+            planning_turns=[tool_turn(index, "finish_plan", {"title": "缺少任务"}) for index in range(invalid_attempts)],
         ))
         case_id = client.post("/api/test-cases", json={"name": "重试", "source_text": "检查设置"}).json()["id"]
 
@@ -78,15 +81,15 @@ def test_planning_attempt_events_and_failed_plan_is_not_saved(tmp_path: Path, in
             async with container.planning_event_bus.subscribe(case_id) as queue:
                 if invalid_attempts == 3:
                     with pytest.raises(PlanningFailure):
-                        await container.planning.generate(test_case_id=case_id, planning_request_id=str(uuid4()))
+                        await container.planning.generate(selected_columns=container.capabilities.preview.columns, test_case_id=case_id, planning_request_id=str(uuid4()))
                     assert await container.repository.get_latest_test_plan(case_id) is None
                 else:
-                    await container.planning.generate(test_case_id=case_id, planning_request_id=str(uuid4()))
+                    await container.planning.generate(selected_columns=container.capabilities.preview.columns, test_case_id=case_id, planning_request_id=str(uuid4()))
                 events = [queue.get_nowait() for _ in range(queue.qsize())]
-                failures = [event for event in events if event is not None and event.type == "planning.attempt_failed"]
+                failures = [event for event in events if event is not None and event.type == "planning.tool_completed" and event.status == "error"]
                 assert len(failures) == invalid_attempts
-                assert all("校验失败" in event.reason for event in failures)
-                assert [event.attempt for event in failures] == list(range(1, invalid_attempts + 1))
+                assert all(event.reason for event in failures)
+                assert [event.cycle_count for event in failures] == list(range(1, invalid_attempts + 1))
                 assert events[-1] is not None
                 assert events[-1].type == ("planning.failed" if invalid_attempts == 3 else "planning.succeeded")
 
@@ -110,7 +113,7 @@ def test_disconnected_subscription_does_not_cancel_planning_and_save_conflict_fa
 
         async def exercise() -> None:
             async with container.planning_event_bus.subscribe(case_id):
-                planning = asyncio.create_task(container.planning.generate(test_case_id=case_id, planning_request_id=str(uuid4())))
+                planning = asyncio.create_task(container.planning.generate(selected_columns=container.capabilities.preview.columns, test_case_id=case_id, planning_request_id=str(uuid4())))
                 await asyncio.wait_for(entered.wait(), 5)
             release.set()
             plan = await planning
@@ -123,7 +126,7 @@ def test_disconnected_subscription_does_not_cancel_planning_and_save_conflict_fa
             monkeypatch.setattr(container.repository, "create_plan", conflict)
             async with container.planning_event_bus.subscribe(case_id) as queue:
                 with pytest.raises(PlanNotLatest):
-                    await container.planning.generate(test_case_id=case_id, planning_request_id=str(uuid4()), user_input="细化")
+                    await container.planning.generate(selected_columns=container.capabilities.preview.columns, test_case_id=case_id, planning_request_id=str(uuid4()), user_input="细化")
                 events = [queue.get_nowait() for _ in range(queue.qsize())]
                 assert not any(event and event.type == "planning.succeeded" for event in events)
                 assert events[-1] is not None and events[-1].type == "planning.failed"
@@ -138,6 +141,6 @@ def test_planning_request_requires_valid_correlation_id(tmp_path: Path) -> None:
     with build_client(tmp_path) as client:
         case_id = client.post("/api/test-cases", json={"name": "输入", "source_text": "检查设置"}).json()["id"]
         url = f"/api/test-cases/{case_id}/plans"
-        for payload in [{}, {"planning_request_id": "invalid"}]:
+        for payload in [{}, {"selected_columns": capability_selection(client), "planning_request_id": "invalid"}]:
             assert client.post(url, json=payload).status_code == 422
         assert client.get(f"/api/test-cases/{uuid4()}/planning/stream").status_code == 404

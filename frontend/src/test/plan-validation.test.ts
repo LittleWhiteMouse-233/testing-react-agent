@@ -11,6 +11,8 @@ const plan: TestPlan = {
   derived_from_plan_id: null,
   planning_context: {
     test_case_content: { name: "用例", source_text: "检查页面" },
+    planning_setting: { max_cycles: 20, model_response_max_attempts: 3, model_call_max_attempts: 3, tool_call_timeout_seconds: 120 },
+    capability_catalog: { tool_catalog: { tools: [] }, resource_catalog: { local_root: null, resources: [], templates: [] }, columns: [] },
     planning_model: {
       id: "default",
       mode: "scripted",

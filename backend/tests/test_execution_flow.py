@@ -562,12 +562,21 @@ def test_cancel_waits_for_call_or_timeout_and_never_executes_next_call(tmp_path:
     assert sum(entry["phase"] == "completed" for entry in records) == (1 if delay < 5 else 0)
 
 
-def test_planning_does_not_connect_to_mcp(tmp_path: Path) -> None:
+def test_planning_and_execution_report_discovery_failure_without_changing_saved_plan(tmp_path: Path) -> None:
+    from uuid import uuid4
+
     with build_client(tmp_path) as client:
+        plan = create_plan(client)
         startup_records = read_records(tmp_path)
         (tmp_path / "mcp.json").write_text("invalid", encoding="utf-8")
-        plan = create_plan(client)
-        assert plan["content"]["tasks"]
+        plans_url = f"/api/test-cases/{plan['test_case_id']}/plans"
+        before = client.get(plans_url).json()
+        failed = client.post(plans_url, json={
+            "planning_request_id": str(uuid4()), "user_input": "补充观察要求",
+            "selected_columns": capability_selection(client),
+        })
+        assert failed.status_code == 502 and failed.json()["code"] == "mcp_unavailable"
+        assert client.get(plans_url).json() == before
         assert read_records(tmp_path) == startup_records
         response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)})
         assert response.status_code == 502
@@ -877,9 +886,9 @@ def test_run_tools_ignore_config_changes_and_hold_the_single_run_slot(tmp_path: 
         ]
         assert len({tool["name"] for tool in snapshots}) == len(snapshots) == 6
     records = read_records(tmp_path)
-    # Startup discovery and run preparation each close their tool/resource sessions,
+    # Startup, planning and run preparation each close tool/resource sessions,
     # followed by the two independent business calls bound to the original batch.
-    assert len({entry["pid"] for entry in records}) == 6
+    assert len({entry["pid"] for entry in records}) == 8
     assert sum(entry["phase"] == "completed" for entry in records) == 2
 
 

@@ -1,4 +1,4 @@
-"""Task-local model request budgeting and State image retention policies."""
+"""Model request capacity selection and context image retention policies."""
 
 from __future__ import annotations
 

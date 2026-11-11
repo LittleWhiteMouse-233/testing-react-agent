@@ -22,7 +22,9 @@ export function runReport(verdict: TestRunVerdict | null = "PASS"): TestRunRepor
         created_at: createdAt, started_at: createdAt, finished_at: verdict ? "2026-09-14T02:23:47Z" : null },
       test_plan: { id: runId, test_case_id: caseId, version_number: 1, origin: "planning", derived_from_plan_id: null, created_at: createdAt,
         planning_context: { test_case_content: { name: "设置页面验证", source_text: "进入设置并检查固件版本完整显示" },
-          planning_model: profile, planning_prompt_fingerprint: "planning-fingerprint", user_input: "检查版本号完整显示" },
+          planning_model: profile, planning_prompt_fingerprint: "planning-fingerprint", user_input: "检查版本号完整显示",
+          planning_setting: { max_cycles: 20, model_response_max_attempts: 3, model_call_max_attempts: 3, tool_call_timeout_seconds: 120 },
+          capability_catalog: { tool_catalog: { tools: [] }, resource_catalog: { local_root: null, resources: [], templates: [] }, columns: [] } },
         content: { title: "设置页面计划", setup_steps: ["准备测试环境"], assumptions: ["电视已开机"],
           tasks: [{ test_task_id: runId, definition: { task_no: 1, title: "检查固件版本", type: "judge", goal: "确认版本信息", success_criteria: ["版本号完整可见"] } }] } },
       environment: { capability_catalog: {

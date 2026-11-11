@@ -58,7 +58,7 @@ export default function SettingsPage() {
   }
 
   return <div className="page settings-page">
-    <div className="page-header"><div><h1>设置</h1><p>管理应用配置、模型与执行参数</p></div>
+    <div className="page-header"><div><h1>设置</h1><p>管理应用配置、模型、规划与执行参数</p></div>
       <div className="settings-actions">
         <Button aria-label="重新加载" icon={<ReloadOutlined />} disabled={save.isPending} loading={query.isFetching} onClick={async () => {
           const response = await query.refetch();

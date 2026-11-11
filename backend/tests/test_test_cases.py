@@ -3,7 +3,7 @@ from __future__ import annotations
 from app.resources.tools import ToolProvider
 from app.resources.mcp import MCPClientProvider
 from app.resources.static_resources import SkillResourceProvider
-from mcp_support import capability_selection
+from mcp_support import capability_selection, tool_turn
 
 
 from config_support import install_model_client
@@ -65,7 +65,7 @@ def test_update_and_archive_preserve_all_plan_versions_runs_and_images(tmp_path:
         for action, payload in [("/api/runs", {"test_case_id": first_plan["test_case_id"], "test_plan_id": first_plan["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)}),
                                 (f"/api/test-plans/{first_plan['id']}/revisions", {"content": revision_content})]:
             assert client.post(action, json=payload).status_code == 409
-        replanned = client.post(case_url + "/plans", json={"planning_request_id": str(uuid4()), "user_input": "采用新的名称和描述"}).json()
+        replanned = client.post(case_url + "/plans", json={"selected_columns": capability_selection(client), "planning_request_id": str(uuid4()), "user_input": "采用新的名称和描述"}).json()
         assert replanned["planning_context"]["test_case_content"] == updated_content
 
         listed = client.get("/api/runs", params={"test_case_id": case_id}).json()
@@ -97,7 +97,7 @@ def test_update_and_archive_preserve_all_plan_versions_runs_and_images(tmp_path:
             assert client.get(url).status_code == 404
         assert client.patch(case_url, json=updated_content).status_code == 404
         assert client.post(case_url + "/archive").status_code == 404
-        assert client.post(case_url + "/plans", json={"planning_request_id": str(uuid4()), "user_input": "不能规划"}).status_code == 404
+        assert client.post(case_url + "/plans", json={"selected_columns": capability_selection(client), "planning_request_id": str(uuid4()), "user_input": "不能规划"}).status_code == 404
         assert client.post(f"/api/test-plans/{replanned['id']}/revisions", json={"content": revision_content}).status_code == 404
         mcp_before = read_records(tmp_path)
         assert client.post("/api/runs", json={"test_case_id": replanned["test_case_id"], "test_plan_id": replanned["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)}).status_code == 404
@@ -139,7 +139,7 @@ def test_prepared_planning_allows_edits_and_preserves_its_input(tmp_path: Path, 
         case = client.post("/api/test-cases", json={"name": "名称", "source_text": "正文"}).json()
         other = client.post("/api/test-cases", json={"name": "其他用例", "source_text": "正文"}).json()
         if outcome == "failure":
-            install_model_client(model_patch, ScriptedChatModelClient(build_model_profile(), plans=[{"title": "缺少任务"}, {"title": "缺少任务"}, {"title": "缺少任务"}]))
+            install_model_client(model_patch, ScriptedChatModelClient(build_model_profile(), planning_turns=[tool_turn(index, 'finish_plan', {'title': '缺少任务'}) for index in range(3)]))
         original_generate = container.planning_graph.generate
         entered, release = asyncio.Event(), asyncio.Event()
 
@@ -151,11 +151,11 @@ def test_prepared_planning_allows_edits_and_preserves_its_input(tmp_path: Path, 
         monkeypatch.setattr(container.planning_graph, "generate", blocked_generate)
 
         async def exercise() -> None:
-            first = asyncio.create_task(container.planning.generate(test_case_id=case["id"], planning_request_id=str(uuid4())))
+            first = asyncio.create_task(container.planning.generate(selected_columns=container.capabilities.preview.columns, test_case_id=case["id"], planning_request_id=str(uuid4())))
             await asyncio.wait_for(entered.wait(), 5)
             # Rejecting another request must not release the first's occupation.
             with pytest.raises(CaseBusy):
-                await container.planning.generate(test_case_id=case["id"], planning_request_id=str(uuid4()))
+                await container.planning.generate(selected_columns=container.capabilities.preview.columns, test_case_id=case["id"], planning_request_id=str(uuid4()))
             with container.test_case_lock.hold(case["id"], "editing"):
                 await container.repository.update_test_case(case["id"], CaseContent(name="修改", source_text="修改"))
             with pytest.raises(CaseBusy):
@@ -193,7 +193,6 @@ def test_plan_page_writes_reject_incompatible_operations(
 ) -> None:
     with build_client(tmp_path) as client:
         plan = create_plan(client)
-        startup_records = read_records(tmp_path)
         app = cast(FastAPI, client.app)
         container = cast(Container, app.state.container)
         assert client.portal is not None
@@ -203,7 +202,7 @@ def test_plan_page_writes_reject_incompatible_operations(
         revision_content = {**plan["content"], "tasks": [task["definition"] for task in plan["content"]["tasks"]]}
         requests = {
             "editing": ("PATCH", case_url, {"name": "修改", "source_text": "新正文"}),
-            "planning": ("POST", case_url + "/plans", {"planning_request_id": str(uuid4()), "user_input": "调整计划"}),
+            "planning": ("POST", case_url + "/plans", {"selected_columns": capability_selection(client), "planning_request_id": str(uuid4()), "user_input": "调整计划"}),
             "revising": ("POST", f"/api/test-plans/{plan['id']}/revisions", {"content": revision_content}),
             "running": ("POST", "/api/runs", {"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)}),
         }
@@ -225,6 +224,7 @@ def test_plan_page_writes_reject_incompatible_operations(
                 pending = asyncio.create_task(api.request(method, url, json=payload))
                 try:
                     await asyncio.wait_for(entered.wait(), 5)
+                    occupied_records = read_records(tmp_path)
                     conflicting = {
                         "editing": {"editing", "planning"},
                         "planning": {"planning", "revising", "running"},
@@ -237,7 +237,7 @@ def test_plan_page_writes_reject_incompatible_operations(
                         assert response.status_code == 409, response.text
                         assert response.json()["code"] == "test_case_busy"
                     assert (await api.get(case_url + "/plans")).json()["items"] == original_plans
-                    assert read_records(tmp_path) == startup_records
+                    assert read_records(tmp_path) == occupied_records
                     assert (await api.get(f"/api/test-cases/{other['id']}")).status_code == 200
                     # Another case may still take a write occupation.
                     with container.test_case_lock.hold(other["id"], "editing"):
@@ -278,6 +278,7 @@ def test_planning_reserves_inputs_before_reading_case(tmp_path: Path, monkeypatc
             case_url = f"/api/test-cases/{plan['test_case_id']}"
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
                 planning = asyncio.create_task(api.post(case_url + "/plans", json={
+                    "selected_columns": capability_selection(client),
                     "planning_request_id": str(uuid4()), "user_input": "固定输入",
                 }))
                 try:
@@ -397,7 +398,7 @@ def test_archive_reserves_case_before_database_work_and_releases_on_cancellation
                     ("GET", case_url, None), ("GET", case_url + "/plans", None),
                     ("GET", case_url + "/planning/stream", None),
                     ("PATCH", case_url, {"name": "不能修改", "source_text": "归档占用中"}),
-                    ("POST", case_url + "/plans", {"planning_request_id": str(uuid4()), "user_input": "不能规划"}),
+                    ("POST", case_url + "/plans", {"selected_columns": capability_selection(client), "planning_request_id": str(uuid4()), "user_input": "不能规划"}),
                     ("POST", f"/api/test-plans/{plan['id']}/revisions", {"content": revision_content}),
                     ("POST", "/api/runs", {"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)}),
                 ]

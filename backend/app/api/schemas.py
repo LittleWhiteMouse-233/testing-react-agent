@@ -18,6 +18,13 @@ from app.domain.execution import TaskRunStatus, TestRun, TestRunStatus, TestRunV
 T = TypeVar("T")
 
 
+def validate_selected_columns(columns: list[CapabilityColumnSelection]) -> list[CapabilityColumnSelection]:
+    """Shared HTTP input invariant; domain selection also validates internal callers."""
+    if len({column.id for column in columns}) != len(columns):
+        raise ValueError("Selected capability columns must be unique")
+    return columns
+
+
 class TestCaseCreateRequest(TestCaseContent):
     """Command name over the canonical TestCase content fields."""
 
@@ -29,6 +36,9 @@ class TestPlanGenerateRequest(BaseModel):
 
     planning_request_id: PlanningRequestId
     user_input: str | None = None
+    selected_columns: list[CapabilityColumnSelection]
+
+    _columns_are_unique = field_validator("selected_columns")(validate_selected_columns)
 
 
 class ReviseTestPlanRequest(BaseModel):
@@ -45,12 +55,7 @@ class TestRunCreateRequest(BaseModel):
     assumptions_confirmed: Literal[True]
     selected_columns: list[CapabilityColumnSelection]
 
-    @field_validator("selected_columns")
-    @classmethod
-    def columns_are_unique(cls, columns: list[CapabilityColumnSelection]) -> list[CapabilityColumnSelection]:
-        if len({column.id for column in columns}) != len(columns):
-            raise ValueError("Selected capability columns must be unique")
-        return columns
+    _columns_are_unique = field_validator("selected_columns")(validate_selected_columns)
 
 
 class ReportExportRequest(BaseModel):

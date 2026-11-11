@@ -28,6 +28,25 @@ def settings_service(root: Path):
     return service, case_lock, config_path
 
 
+async def test_planning_and_discovery_settings_update_without_restart(tmp_path: Path) -> None:
+    service, _, config_path = settings_service(tmp_path)
+    original = service.current
+    draft = original.model_dump()
+    draft["planning"] = {
+        "max_cycles": 7, "model_response_max_attempts": 2,
+        "model_call_max_attempts": 4, "tool_call_timeout_seconds": 15,
+    }
+    draft["capability_discovery_timeout_seconds"] = 25
+    await service.update(config.SettingsContent[LLMProfileSettings].model_validate(draft), version=service.version)
+    assert service.current.planning.max_cycles == 7
+    assert service.current.planning.model_call_max_attempts == 4
+    assert service.current.capability_discovery_timeout_seconds == 25
+    assert original.planning.max_cycles == 20
+    assert original.capability_discovery_timeout_seconds == 120
+    assert config.get_settings(config_path).planning == service.current.planning
+    assert service.restart_required is False
+
+
 @pytest.mark.parametrize("token_update", [{}, {"api_key": None}, {"api_key": ""}])
 async def test_save_preserves_credentials_and_publishes_only_after_file_commit(
     tmp_path: Path, token_update: dict[str, str | None],

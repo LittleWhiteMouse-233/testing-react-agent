@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable, Sequence
+import json
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -49,18 +50,18 @@ def _default_plan(request: TestCaseContent) -> PlanDraft:
 
 
 class ScriptedChatModel(BaseChatModel):
-    _plans: deque[Any] = PrivateAttr()
+    _planning_turns: deque[ScriptedTurn] = PrivateAttr()
     _turns: deque[ScriptedTurn] = PrivateAttr()
     _invocations: list[list[BaseMessage]] = PrivateAttr()
 
     def __init__(
         self,
         *,
-        plans: list[PlanDraft | dict[str, Any] | Exception] | None = None,
+        planning_turns: list[ScriptedTurn] | None = None,
         turns: list[ScriptedTurn] | None = None,
     ) -> None:
         super().__init__()
-        self._plans = deque(plans or [])
+        self._planning_turns = deque(planning_turns or [])
         self._turns = deque(turns or [])
         self._invocations = []
 
@@ -81,15 +82,20 @@ class ScriptedChatModel(BaseChatModel):
     ) -> ChatResult:
         return ChatResult(generations=[ChatGeneration(message=self._next_turn(messages))])
 
-    def _next_turn(self, messages: list[BaseMessage]) -> AIMessage:
-        value: Any = (
-            self._turns.popleft()
-            if self._turns
-            else {
+    def _next_turn(self, messages: list[BaseMessage], *, planning: bool = False) -> AIMessage:
+        scripted_turns = self._planning_turns if planning else self._turns
+        if scripted_turns:
+            value = scripted_turns.popleft()
+        elif planning:
+            value = AIMessage(content="", tool_calls=[{
+                "name": "finish_plan", "args": _default_plan(_request_from_messages(messages)).model_dump(mode="json"),
+                "id": "finish-plan", "type": "tool_call",
+            }])
+        else:
+            value = {
                 "status": "blocked",
                 "summary": "No execution turns were configured for the scripted model",
             }
-        )
         if isinstance(value, Exception):
             raise value
         if callable(value):
@@ -125,40 +131,21 @@ class ScriptedChatModel(BaseChatModel):
         tool_choice: dict | str | bool | None = None,
         **kwargs: Any,
     ) -> Runnable[Any, AIMessage]:
+        planning = any(getattr(bound_tool, "name", None) == "finish_plan" for bound_tool in tools)
+
         async def invoke(messages: list[BaseMessage]) -> AIMessage:
             self._invocations.append(list(messages))
-            return self._next_turn(messages)
-
-        return RunnableLambda(invoke)
-
-    def with_structured_output(
-        self,
-        schema: dict[str, Any] | type | None = None,
-        **kwargs: Any,
-    ) -> Runnable[Any, Any]:
-        async def invoke(messages: Any) -> PlanDraft:
-            self._invocations.append(list(messages))
-            if self._plans:
-                value = self._plans.popleft()
-                if isinstance(value, Exception):
-                    raise value
-                return (
-                    value
-                    if isinstance(value, TestPlanContent)
-                    else PlanDraft.model_validate(value)
-                )
-            return _default_plan(_request_from_messages(messages))
+            return self._next_turn(messages, planning=planning)
 
         return RunnableLambda(invoke)
 
 
 def _request_from_messages(messages: list[BaseMessage]) -> TestCaseContent:
-    # Planning always supplies the original case immediately after the system
-    # prompt. Later user input may itself be JSON and must not replace the case.
+    # The fixed planning input owns the case, even when extra input is JSON text.
     content = messages[1].content
     if not isinstance(content, str):
         raise TypeError("Planning test case message must contain JSON text")
-    return TestCaseContent.model_validate_json(content)
+    return TestCaseContent.model_validate(json.loads(content)["test_case_content"])
 
 
 class ScriptedChatModelClient:
@@ -168,10 +155,10 @@ class ScriptedChatModelClient:
         self,
         profile: LLMProfileSettings,
         *,
-        plans: list[PlanDraft | dict[str, Any] | Exception] | None = None,
+        planning_turns: list[ScriptedTurn] | None = None,
         turns: list[ScriptedTurn] | None = None,
     ) -> None:
-        self._model = ScriptedChatModel(plans=plans, turns=turns)
+        self._model = ScriptedChatModel(planning_turns=planning_turns, turns=turns)
         self.profile_snapshot = profile
 
     @property

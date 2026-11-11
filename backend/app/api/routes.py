@@ -89,7 +89,7 @@ async def read_capabilities(request: Request) -> CapabilityCatalog[CapabilityCol
 async def refresh_capabilities(request: Request) -> CapabilityCatalog[CapabilityColumnSelection]:
     app = container(request)
     try:
-        discovery = await app.capabilities.discover(app.settings_service.current.execution.tool_call_timeout_seconds)
+        discovery = await app.capabilities.discover()
         return discovery.catalog
     except MCPConnectionError as exc:
         raise problem(502, "mcp_unavailable", str(exc)) from exc
@@ -204,7 +204,12 @@ async def generate_plan(
         return await container(request).planning.generate(
             test_case_id=test_case_id, user_input=payload.user_input,
             planning_request_id=payload.planning_request_id,
+            selected_columns=payload.selected_columns,
         )
+    except CapabilityCatalogChanged as exc:
+        raise problem(409, "capability_catalog_changed", str(exc)) from exc
+    except MCPConnectionError as exc:
+        raise problem(502, "mcp_unavailable", str(exc)) from exc
     except SettingsBusy as exc:
         raise problem(409, "settings_busy", str(exc)) from exc
     except PlanningUserInputRequired as exc:

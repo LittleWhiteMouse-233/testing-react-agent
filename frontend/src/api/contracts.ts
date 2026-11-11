@@ -15,6 +15,7 @@ export type TestCase = Schemas["TestCase"];
 export type TestCaseContent = Schemas["TestCaseContent"];
 export type TestCaseCreateRequest = Schemas["TestCaseCreateRequest"];
 export type TestPlan = Schemas["TestPlan"];
+export type TestPlanGenerateRequest = Schemas["TestPlanGenerateRequest"];
 export type TestPlanDraft = Schemas["TestPlanContent_TestTaskDefinition_"];
 export type TestTaskDefinition = Schemas["TestTaskDefinition"];
 export type TestRunReport = Schemas["TestRunReport"];

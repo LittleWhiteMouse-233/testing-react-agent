@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Checkbox, Modal, Spin } from "antd";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { $api, apiErrorMessage } from "../api/client";
 import type { CapabilityColumnSelection, CapabilityPreview } from "../api/contracts";
 import { capabilityColumnContent, capabilityColumnTitle } from "../capabilities";
@@ -29,29 +29,53 @@ export function useCapabilitySelection() {
     }
   });
   const error = refresh.error ?? catalog.error;
+  const markStale = useCallback(() => setStale(true), []);
   return {
-    preview, selectedColumns, setSelectedColumns, stale, markStale: () => setStale(true),
+    preview, selectedColumns, setSelectedColumns, stale, markStale,
     ready: preview !== null && !refresh.isPending && !error && !stale,
     refreshing: refresh.isPending, error,
     refresh: () => refresh.mutate({})
   };
 }
 
-export default function CapabilitySelector({ selection, disabled }: {
+export function PlanningCapabilitySelector({ selection, disabled }: {
   selection: ReturnType<typeof useCapabilitySelection>; disabled: boolean;
+}) {
+  return <div>
+    <div className="planning-capabilities">
+      <CapabilitySelector selection={selection} disabled={disabled} planningColumnKind="mcp" />
+      <CapabilitySelector selection={selection} disabled={disabled} planningColumnKind="local" />
+    </div>
+    {selection.error && <Alert type="error" title={"规划参考目录发现失败：" + apiErrorMessage(selection.error, "请重试")}
+      action={<Button disabled={disabled || selection.refreshing} onClick={selection.refresh}>重试规划目录发现</Button>} />}
+    {selection.stale && <Alert type="warning" title="规划参考目录已变化，请刷新并检查选择" />}
+  </div>;
+}
+
+export default function CapabilitySelector({ selection, disabled, planningColumnKind }: {
+  selection: ReturnType<typeof useCapabilitySelection>; disabled: boolean;
+  planningColumnKind?: "mcp" | "local";
 }) {
   const [open, setOpen] = useState(false);
   const { preview, selectedColumns } = selection;
   const busy = disabled || selection.refreshing;
+  const planning = planningColumnKind !== undefined;
+  const title = planning ? planningColumnKind === "mcp" ? "MCP" : "本地资源" : "资源与 MCP";
+  const buttonLabel = planning ? "选择规划" + (planningColumnKind === "mcp" ? " MCP" : "本地资源") : "选择资源与 MCP";
+  const columns = preview?.columns.filter((column) => !planning || column.id.startsWith("mcp:") === (planningColumnKind === "mcp")) ?? [];
+  const selectColumns = (checked: boolean) => selection.setSelectedColumns((previous) => [
+    ...previous.filter((selected) => !columns.some((column) => column.id === selected.id)),
+    ...(checked ? columns : [])
+  ]);
   const content = <>
     {selection.error && <Alert type="error" title={apiErrorMessage(selection.error, "目录发现失败")} action={<Button disabled={busy} onClick={selection.refresh}>重试发现</Button>} />}
     {selection.stale && <Alert type="warning" title="所选目录已变化，请刷新并检查本次选择" />}
     {!preview && !selection.error && <Spin />}
     {preview && <>
-      <div className="capability-actions"><Button disabled={busy} onClick={() => selection.setSelectedColumns(preview.columns)}>全选</Button>
-        <Button disabled={busy} onClick={() => selection.setSelectedColumns([])}>全部取消</Button>
+      <div className="capability-actions"><Button disabled={busy} onClick={() => selectColumns(true)}>全选</Button>
+        <Button disabled={busy} onClick={() => selectColumns(false)}>全部取消</Button>
         <Button loading={selection.refreshing} disabled={disabled} onClick={selection.refresh}>刷新目录</Button></div>
-      {preview.columns.map((column) => {
+      {columns.map((column) => {
         const entries = capabilityColumnContent(preview, column.id);
         return <section className="capability-column" key={column.id}>
           <Checkbox disabled={busy} checked={selectedColumns.some((selected) => selected.id === column.id)}
@@ -68,16 +92,16 @@ export default function CapabilitySelector({ selection, disabled }: {
         </section>;
       })}
     </>}
-    <p className="muted">仅影响本次运行。内置结束、资源读取和图片重读工具始终可用。</p>
+    <p className="muted">{planning ? "仅影响本轮规划。MCP 工具说明用于参考，规划仅能读取所选资源；任务以目标和成功标准描述。" : "仅影响本次运行。内置结束、资源读取和图片重读工具始终可用。"}</p>
   </>;
   return <section className="capability-card">
-    <div className="section-heading"><div><small>本次运行</small><h3>资源与 MCP</h3></div>
-      <Button aria-label="选择资源与 MCP" disabled={disabled} onClick={() => setOpen(true)}>选择资源与 MCP</Button></div>
-    {preview && <p>已选 {selectedColumns.length} / {preview.columns.length} 个栏目</p>}
-    {!open && selection.error && <Alert type="error" title={apiErrorMessage(selection.error, "目录发现失败")} action={<Button disabled={busy} onClick={selection.refresh}>重试发现</Button>} />}
-    {!open && selection.stale && <Alert type="warning" title="所选目录已变化，请刷新并检查本次选择" />}
+    <div className="section-heading"><div><small>{planning ? "本轮规划" : "本次运行"}</small><h3>{title}</h3></div>
+      <Button aria-label={buttonLabel} disabled={disabled} onClick={() => setOpen(true)}>{planning ? "选择栏目" : buttonLabel}</Button></div>
+    {preview && <p>已选 {columns.filter((column) => selectedColumns.some((selected) => selected.id === column.id)).length} / {columns.length} 个栏目</p>}
+    {!planning && !open && selection.error && <Alert type="error" title={apiErrorMessage(selection.error, "目录发现失败")} action={<Button disabled={busy} onClick={selection.refresh}>重试发现</Button>} />}
+    {!planning && !open && selection.stale && <Alert type="warning" title="所选目录已变化，请刷新并检查本次选择" />}
     {!preview && !selection.error && <Spin />}
-    <Modal title="本次运行的资源与 MCP" open={open} width={860} onCancel={() => setOpen(false)}
+    <Modal title={planning ? "本轮规划的 " + title : "本次运行的资源与 MCP"} open={open} width={860} onCancel={() => setOpen(false)}
       footer={<Button onClick={() => setOpen(false)}>完成</Button>}>{content}</Modal>
   </section>;
 }

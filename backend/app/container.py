@@ -33,7 +33,7 @@ class Container:
             settings.artifacts_dir,
             self.sessions,
         )
-        self.capabilities = CapabilityProvider(settings.mcp_config_path, settings.skills_dir, TASK_AGENT_TOOLS)
+        self.capabilities = CapabilityProvider(settings.mcp_config_path, settings.skills_dir, TASK_AGENT_TOOLS, settings_service=self.settings_service)
         prompt_catalog = PromptCatalog()
         self.planning_graph = PlanningGraph(prompt_catalog.prompt_for_activity(AgentActivity.PLANNING))
         self.repository = SqlAlchemyRunRepository(self.sessions, self.run_event_writer)
@@ -43,6 +43,7 @@ class Container:
             repository=self.repository,
             planning_graph=self.planning_graph,
             settings_service=self.settings_service,
+            capabilities=self.capabilities,
         )
         self.agent_factory = TaskAgentFactory(
             artifacts=self.artifacts,

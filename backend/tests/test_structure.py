@@ -122,10 +122,15 @@ def plan_draft(task_count: int = 1) -> PlanContent[TaskDefinition]:
 
 
 def planning_context() -> PlanningContext:
+    from config_support import build_planning_settings
     return PlanningContext(
         test_case_content=CaseContent(name="Case", source_text="Check TV"),
         planning_model=model_snapshot(),
         planning_prompt_fingerprint="planning-fingerprint",
+        planning_setting=build_planning_settings(),
+        capability_catalog=CapabilityCatalog[CapabilityColumnSnapshot](
+            tool_catalog=ToolCatalogSnapshot(tools=[]), resource_catalog=ResourceCatalogSnapshot(), columns=[],
+        ),
     )
 
 

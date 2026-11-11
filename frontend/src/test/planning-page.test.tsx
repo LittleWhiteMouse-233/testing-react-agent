@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { Link, createMemoryRouter, RouterProvider, Route, Routes } from "react-router-dom";
 import { StrictMode, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CapabilityPreview, TestCase, TestPlan, TestPlanDraft, TestRunListResponse, TestRunReport } from "../api/contracts";
+import type { CapabilityPreview, TestCase, TestPlan, TestPlanDraft, TestPlanGenerateRequest, TestRunListResponse, TestRunReport } from "../api/contracts";
 import PlanPage from "../pages/PlanPage";
 import { $api } from "../api/client";
 import CasesPage from "../pages/CasesPage";
@@ -65,6 +65,8 @@ function savedPlan(version = 1, userInput: string | null = null, sourceCase = te
       test_case_content: sourceCase.content,
       user_input: userInput,
       planning_prompt_fingerprint: "planning-fingerprint-2",
+      planning_setting: { max_cycles: 20, model_response_max_attempts: 3, model_call_max_attempts: 3, tool_call_timeout_seconds: 120 },
+      capability_catalog: { ...capabilities, columns: capabilities.columns.map(({ id }) => ({ id, selected: true })) },
       planning_model: {
         id: "default", mode: "scripted", model: "deterministic",
         base_url: null, temperature: 0, timeout_seconds: 60,
@@ -167,9 +169,12 @@ beforeEach(() => {
     }
     if (path.endsWith("/plans")) {
       if (generateResponse) return generateResponse(request);
-      const body = await request.json() as { user_input: string | null };
+      const body = await request.json() as TestPlanGenerateRequest;
       const isOtherCase = path === `/api/test-cases/${otherCase.id}/plans`;
-      const plan = savedPlan((isOtherCase ? otherPlans : plans).length + 1, body.user_input, isOtherCase ? otherCase : currentCase);
+      const plan = savedPlan((isOtherCase ? otherPlans : plans).length + 1, body.user_input ?? null, isOtherCase ? otherCase : currentCase);
+      plan.planning_context.capability_catalog.columns.forEach((column) => {
+        column.selected = body.selected_columns.some((selected) => selected.id === column.id);
+      });
       if (isOtherCase) otherPlans = [plan, ...otherPlans];
       else plans = [plan, ...plans];
       return Response.json(plan, { status: 201 });
@@ -289,6 +294,54 @@ const planningInput = () => screen.getByRole("textbox", { name: "规划额外输
 const startButton = () => screen.getByRole("button", { name: /启动运行/ });
 const planningPosts = () => requests.filter((request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/plans"));
 
+it("keeps the two planning cards and execution choices independent", async () => {
+  renderPlanPage();
+  fireEvent.click(await screen.findByRole("button", { name: "选择规划 MCP" }));
+  fireEvent.click(await screen.findByRole("button", { name: "全部取消" }));
+  fireEvent.click(screen.getByRole("button", { name: /完\s*成/ }));
+  fireEvent.click(screen.getByRole("button", { name: "选择规划本地资源" }));
+  expect(await screen.findByRole("checkbox", { name: /其他本地资源/ })).toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: /完\s*成/ }));
+  fireEvent.click(screen.getByRole("button", { name: "生成计划" }));
+  await screen.findByText("计划 1");
+  expect((await planningPosts()[0]!.json()).selected_columns).toEqual([capabilities.columns[1]]);
+  fireEvent.click(screen.getByRole("checkbox", { name: /我已确认计划/ }));
+  await waitFor(() => expect(startButton()).toBeEnabled());
+  fireEvent.click(startButton());
+  await waitFor(() => expect(requests.some((request) => request.method === "POST" && new URL(request.url).pathname === "/api/runs")).toBe(true));
+  const runRequest = requests.find((request) => request.method === "POST" && new URL(request.url).pathname === "/api/runs")!;
+  expect((await runRequest.json()).selected_columns).toEqual(capabilities.columns);
+});
+
+it("retains a planning conflict across pages and refreshes only the planning selection", async () => {
+  plans = [savedPlan()];
+  generateResponse = async () => Response.json({ code: "capability_catalog_changed", message: "规划所选目录已变化" }, { status: 409 });
+  renderPlanPage();
+  await screen.findByText("计划 1");
+  fireEvent.change(planningInput(), { target: { value: "保留规划要求" } });
+  fireEvent.click(screen.getByRole("button", { name: "重新规划" }));
+  await screen.findByText("规划所选目录已变化");
+  fireEvent.click(screen.getByRole("link", { name: "切换历史页面" }));
+  fireEvent.click(await screen.findByRole("link", { name: "返回原用例" }));
+  fireEvent.click(await screen.findByRole("button", { name: "关闭" }));
+  expect(await screen.findByText("规划参考目录已变化，请刷新并检查选择")).toBeInTheDocument();
+  expect(planningInput()).toHaveValue("保留规划要求");
+  expect(screen.getByRole("button", { name: "重新规划" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("checkbox", { name: /我已确认计划/ }));
+  await waitFor(() => expect(startButton()).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "选择规划 MCP" }));
+  fireEvent.click(await screen.findByRole("button", { name: "全部取消" }));
+  capabilities.columns.push({ id: "mcp:new", fingerprint: "c".repeat(64) });
+  fireEvent.click(screen.getByRole("button", { name: "刷新目录" }));
+  await waitFor(() => expect(screen.getByRole("checkbox", { name: /MCP · new/ })).not.toBeChecked());
+  expect(screen.getByRole("checkbox", { name: /MCP · fixture/ })).not.toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: /完\s*成/ }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "重新规划" })).toBeEnabled());
+  expect(screen.queryByText("规划参考目录已变化，请刷新并检查选择")).not.toBeInTheDocument();
+  expect(startButton()).toBeEnabled();
+  expect(planningPosts()).toHaveLength(1);
+});
+
 describe("planning page", () => {
   it.each([true, false])("cleans a pending subscription on unmount without submitting when online=%s", async (online) => {
     PlanningEventSource.autoReady = false;
@@ -313,31 +366,34 @@ describe("planning page", () => {
 
   it("waits for ready, submits once, filters logs and succeeds without a terminal SSE event", async () => {
     PlanningEventSource.autoReady = false;
+    const selectedColumns = capabilities.columns.map((column) => ({ ...column }));
     let complete!: (response: Response) => void;
     generateResponse = () => new Promise((resolve) => { complete = resolve; });
     renderPlanPage();
     fireEvent.click(await screen.findByRole("button", { name: "生成计划" }));
     expect(await screen.findByRole("dialog", { name: "规划进度" })).toHaveAttribute("aria-busy", "true");
     expect(planningPosts()).toHaveLength(0);
+    capabilities.columns[0]!.fingerprint = "d".repeat(64);
     expect(screen.queryByRole("button", { name: "关闭" })).not.toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     const stream = PlanningEventSource.instances[0]!;
     act(() => { stream.dispatchEvent(new Event("ready")); stream.dispatchEvent(new Event("ready")); });
     await waitFor(() => expect(planningPosts()).toHaveLength(1));
+    expect((await planningPosts()[0]!.clone().json()).selected_columns).toEqual(selectedColumns);
     const { planning_request_id } = await planningPosts()[0]!.clone().json();
-    const event = { test_case_id: testCase.id, planning_request_id, occurred_at: "2026-01-01T00:00:00Z", type: "planning.attempt_started", attempt: 1 };
+    const event = { test_case_id: testCase.id, planning_request_id, occurred_at: "2026-01-01T00:00:00Z", type: "planning.cycle_started", cycle_count: 1, max_cycles: 7 };
     act(() => {
-      stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ ...event, planning_request_id: "99999999-9999-4999-8999-999999999999", attempt: 2 }) }));
-      stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ ...event, test_case_id: "99999999-9999-4999-8999-999999999999", attempt: 3 }) }));
+      stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ ...event, planning_request_id: "99999999-9999-4999-8999-999999999999", cycle_count: 2 }) }));
+      stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ ...event, test_case_id: "99999999-9999-4999-8999-999999999999", cycle_count: 3 }) }));
       stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) }));
       stream.onerror?.(new Event("error"));
       stream.onopen?.(new Event("open"));
       stream.dispatchEvent(new Event("ready"));
     });
-    expect(screen.getByRole("log")).toHaveTextContent("第 1/3 次生成");
-    expect(screen.getByRole("log")).not.toHaveTextContent("第 2/3 次生成");
-    expect(screen.getByRole("log")).not.toHaveTextContent("第 3/3 次生成");
+    expect(screen.getByRole("log")).toHaveTextContent("第 1/7 轮决策");
+    expect(screen.getByRole("log")).not.toHaveTextContent("第 2/7 轮决策");
+    expect(screen.getByRole("log")).not.toHaveTextContent("第 3/7 轮决策");
     expect(screen.getByText(/日志连接已恢复/)).toBeInTheDocument();
     expect(planningPosts()).toHaveLength(1);
     plans = [savedPlan()];
@@ -426,12 +482,12 @@ describe("planning page", () => {
     fireEvent.click(screen.getByRole("link", { name: "切换历史页面" }));
     await screen.findByText("历史页面");
     act(() => stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify({
-      type: "planning.attempt_started", attempt: 1, test_case_id: testCase.id,
+      type: "planning.cycle_started", cycle_count: 1, max_cycles: 7, test_case_id: testCase.id,
       planning_request_id, occurred_at: "2026-01-01T00:00:00Z"
     }) })));
     fireEvent.click(screen.getByRole("link", { name: "返回原用例" }));
     await screen.findByRole("heading", { name: testCase.content.name });
-    expect(screen.getByRole("log")).toHaveTextContent("第 1/3 次生成");
+    expect(screen.getByRole("log")).toHaveTextContent("第 1/7 轮决策");
     expect(requests.filter((request) => request.method === "GET" && new URL(request.url).pathname === `/api/test-cases/${testCase.id}`).length).toBeGreaterThan(initialReads);
     expect(await screen.findByRole("button", { name: /编辑用例/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /编辑计划/ })).toBeDisabled();
@@ -597,12 +653,12 @@ describe("planning page", () => {
       const { planning_request_id } = await request.clone().json();
       const caseId = index === 0 ? testCase.id : otherCase.id;
       act(() => PlanningEventSource.instances[index]!.onmessage?.(new MessageEvent("message", { data: JSON.stringify({
-        type: "planning.attempt_started", attempt: index + 1, test_case_id: caseId,
+        type: "planning.cycle_started", cycle_count: index + 1, max_cycles: 7, test_case_id: caseId,
         planning_request_id, occurred_at: "2026-01-01T00:00:00Z"
       }) })));
     }
-    expect(screen.getByRole("log")).toHaveTextContent("第 2/3 次生成");
-    expect(screen.getByRole("log")).not.toHaveTextContent("第 1/3 次生成");
+    expect(screen.getByRole("log")).toHaveTextContent("第 2/7 轮决策");
+    expect(screen.getByRole("log")).not.toHaveTextContent("第 1/7 轮决策");
     plans = [savedPlan(1, "原用例输入")];
     await act(async () => completions.get(`/api/test-cases/${testCase.id}/plans`)!(Response.json(plans[0], { status: 201 })));
     expect(screen.getByRole("dialog")).toHaveAttribute("aria-busy", "true");
@@ -658,7 +714,7 @@ describe("planning page", () => {
     expect(generate).toBeEnabled();
     fireEvent.click(generate);
     await screen.findByRole("button", { name: "重新规划" });
-    expect(await planningPosts()[0]?.json()).toEqual({ planning_request_id: expect.any(String), user_input: userInput || null });
+    expect(await planningPosts()[0]?.json()).toEqual({ planning_request_id: expect.any(String), user_input: userInput || null, selected_columns: capabilities.columns });
     expect(planningInput()).toHaveValue("");
     expect(screen.getByRole("checkbox")).not.toBeChecked();
   });
@@ -680,7 +736,7 @@ describe("planning page", () => {
     expect(planningInput()).toHaveValue("");
     expect(screen.getByRole("checkbox")).not.toBeChecked();
     expect(startButton()).toBeDisabled();
-    expect(await planningPosts()[0]?.json()).toEqual({ planning_request_id: expect.any(String), user_input: "细化成功标准" });
+    expect(await planningPosts()[0]?.json()).toEqual({ planning_request_id: expect.any(String), user_input: "细化成功标准", selected_columns: capabilities.columns });
   });
 
   it.each([502, 409])("retains input after HTTP %s and does not automatically replan", async (status) => {

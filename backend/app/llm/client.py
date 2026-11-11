@@ -6,9 +6,18 @@ from typing import Protocol
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
+from langgraph.types import default_retry_on  # type: ignore[reportPrivateImportUsage]
 
+from app.domain.errors import ModelContextBudgetExceeded
 from app.domain.resources import LLMProfileSettings
 from app.llm.test_fake import ScriptedChatModelClient
+
+
+def should_retry_model_call(exception: Exception) -> bool:
+    """Use the framework transport policy and application timeout/capacity boundaries."""
+    if isinstance(exception, ModelContextBudgetExceeded):
+        return False
+    return isinstance(exception, TimeoutError) or default_retry_on(exception)
 
 
 class ChatModelClient(Protocol):

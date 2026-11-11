@@ -232,10 +232,14 @@ async def test_refresh_does_not_replace_clients_bound_to_an_existing_batch(tmp_p
     uri = "doc://manual"
     original = write_mcp_config(tmp_path / "original", [], resource_contents={uri: [{"uri": uri, "text": "original source"}]})
     replacement = write_mcp_config(tmp_path / "replacement", [], resource_contents={uri: [{"uri": uri, "text": "replacement source"}]})
-    provider = CapabilityProvider(original, tmp_path / "skills", ())
-    first = await provider.discover(30)
+    from app.config import SettingsService
+    from app.test_case_lock import TestCaseLock
+    from config_support import build_settings
+
+    provider = CapabilityProvider(original, tmp_path / "skills", (), settings_service=SettingsService(build_settings(tmp_path), TestCaseLock()))
+    first = await provider.discover()
     original.write_text(replacement.read_text("utf-8"), encoding="utf-8")
-    second = await provider.discover(30)
+    second = await provider.discover()
 
     async def read_from(discovery: CapabilityDiscovery) -> str:
         graph = StateGraph(MessagesState, context_schema=ResourceTestContext)
@@ -250,3 +254,37 @@ async def test_refresh_does_not_replace_clients_bound_to_an_existing_batch(tmp_p
 
     assert "original source" in await read_from(first)
     assert "replacement source" in await read_from(second)
+
+
+async def test_discovery_reads_updated_timeout_without_replacing_inflight_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+    from app.config import SettingsService, SettingsContent
+    from app.domain.resources import LLMProfileSettings
+    from app.resources.capabilities import CapabilityProvider
+    from app.resources.mcp import MCPClientProvider, MCPConnectionError
+    from app.test_case_lock import TestCaseLock
+    from config_support import build_settings
+    from mcp_support import write_mcp_config
+
+    mcp_config = write_mcp_config(tmp_path, [])
+    service = SettingsService(build_settings(tmp_path, capability_discovery_timeout_seconds=0.2), TestCaseLock())
+    provider = CapabilityProvider(mcp_config, tmp_path / "skills", (), settings_service=service)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_load = MCPClientProvider.load_clients
+
+    async def delayed_load(clients: MCPClientProvider) -> None:
+        entered.set()
+        await release.wait()
+        await original_load(clients)
+
+    monkeypatch.setattr(MCPClientProvider, "load_clients", delayed_load)
+    first = asyncio.create_task(provider.discover())
+    await asyncio.wait_for(entered.wait(), 2)
+    updated = service.current.model_dump()
+    updated["capability_discovery_timeout_seconds"] = 30
+    await service.update(SettingsContent[LLMProfileSettings].model_validate(updated), version=service.version)
+    with pytest.raises(MCPConnectionError):
+        await first
+    assert service.restart_required is False
+    release.set()
+    assert (await provider.discover()).catalog.columns

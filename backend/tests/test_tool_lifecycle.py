@@ -25,7 +25,7 @@ from app.domain.resources import ResourceCatalogSnapshot
 from app.domain.planning import TestTask as PlanTask, TestTaskDefinition as TaskDefinition, TestTaskType as TaskType
 from app.domain.execution import Artifact, ArtifactType, ReasonCode, TaskAgentCompletion, TaskRunResult, TaskRunStatus
 from app.domain.errors import ToolCallError, describe_exception
-from app.execution.model_context import ModelContextWindow, ModelImageWindow
+from app.llm import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent import (
     TASK_AGENT_TOOLS, TaskAgentContext, TaskAgentFactory, TaskAgentGraphState,
     TaskAgentBuildParams, TaskAgentRuntimeContext, _TaskRuntime, finish_task,

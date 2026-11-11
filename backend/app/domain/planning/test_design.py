@@ -14,7 +14,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.ids import TestCaseId, TestPlanId, TestTaskId
-from app.domain.resources import LLMProfileSettings
+from app.domain.resources import LLMProfileSettings, CapabilityCatalog, CapabilityColumnSnapshot
 
 
 class TestTaskType(StrEnum):
@@ -31,6 +31,17 @@ class TestPlanOrigin(StrEnum):
     PLANNING = "planning"
     REPLANNING = "replanning"
     MANUAL_REVISION = "manual_revision"
+
+
+class PlanningSettings(BaseModel):
+    """配置与不可变规划背景共用的决策限额及交互参数。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    max_cycles: int = Field(ge=1, le=100, title="规划决策轮次上限", description="每次规划允许的模型决策轮数，包含资源读取及最终提交。")
+    model_response_max_attempts: int = Field(ge=1, le=10, title="规划连续纠错次数", description="连续无效模型响应和可纠正工具错误共用的次数。")
+    model_call_max_attempts: int = Field(ge=1, le=10, title="规划模型传输尝试次数", description="单轮模型传输的最多尝试次数，包含首次。")
+    tool_call_timeout_seconds: float = Field(gt=0, title="规划工具交互超时", description="每次规划工具完整交互的超时秒数。")
 
 
 class TestCaseContent(BaseModel):
@@ -134,6 +145,8 @@ class TestPlanPlanningContext(BaseModel):
     test_case_content: TestCaseContent
     planning_model: LLMProfileSettings
     planning_prompt_fingerprint: str | None = Field(min_length=1)
+    planning_setting: PlanningSettings
+    capability_catalog: CapabilityCatalog[CapabilityColumnSnapshot]
     user_input: str | None = None
 
 

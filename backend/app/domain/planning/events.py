@@ -1,4 +1,4 @@
-"""临时规划进度契约；请求归属由服务拥有，Graph 仅产生尝试进度。"""
+"""临时规划进度契约；服务拥有请求归属，Graph 产生决策与工具事实。"""
 
 from datetime import datetime, timezone
 from typing import Annotated, Literal
@@ -24,19 +24,42 @@ class PlanningStageEvent(PlanningEventBase):
     type: Literal["planning.started", "planning.input_ready", "planning.saving", "planning.succeeded"]
 
 
-class PlanningAttemptEvent(PlanningEventBase):
-    """模型尝试开始或校验完成，需要明确本次尝试序号。"""
+class PlanningCycleEvent(PlanningEventBase):
+    """实际决策轮次开始或有效计划提交，额度只用于进度。"""
 
-    type: Literal["planning.attempt_started", "planning.validated"]
-    attempt: int = Field(ge=1, le=3)
+    type: Literal["planning.cycle_started", "planning.validated"]
+    cycle_count: int = Field(ge=1)
+    max_cycles: int = Field(ge=1)
 
 
-class PlanningAttemptFailedEvent(PlanningEventBase):
-    """可重试的单次模型失败，与整个请求失败具有不同生命周期。"""
+class PlanningResponseInvalidEvent(PlanningEventBase):
+    """模型未给出一个可用工具调用，应用反馈后继续决策。"""
 
-    type: Literal["planning.attempt_failed"] = "planning.attempt_failed"
-    attempt: int = Field(ge=1, le=3)
+    type: Literal["planning.response_invalid"] = "planning.response_invalid"
+    cycle_count: int = Field(ge=1)
     reason: str = Field(min_length=1)
+
+
+class PlanningToolEventBase(PlanningEventBase):
+    """调用开始和结果事件共用的调用身份及所属决策轮次。"""
+
+    cycle_count: int = Field(ge=1)
+    tool_call_id: str = Field(min_length=1)
+    tool_name: str = Field(min_length=1)
+
+
+class PlanningToolStartedEvent(PlanningToolEventBase):
+    """工具实际开始的独立 SSE 边界，尚无结果状态。"""
+
+    type: Literal["planning.tool_started"] = "planning.tool_started"
+
+
+class PlanningToolCompletedEvent(PlanningToolEventBase):
+    """调用结果 SSE 边界，在同一调用身份上增加实际状态。"""
+
+    type: Literal["planning.tool_completed"] = "planning.tool_completed"
+    status: Literal["success", "error"]
+    reason: str | None = None
 
 
 class PlanningFailedEvent(PlanningEventBase):
@@ -47,7 +70,7 @@ class PlanningFailedEvent(PlanningEventBase):
 
 
 type PlanningEvent = Annotated[
-    PlanningStageEvent | PlanningAttemptEvent | PlanningAttemptFailedEvent | PlanningFailedEvent,
+    PlanningStageEvent | PlanningCycleEvent | PlanningResponseInvalidEvent | PlanningToolStartedEvent | PlanningToolCompletedEvent | PlanningFailedEvent,
     Field(discriminator="type"),
 ]
 

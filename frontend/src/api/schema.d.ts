@@ -471,7 +471,7 @@ export interface components {
             model_response_max_attempts: number;
             /**
              * 工具交互超时
-             * @description 外部能力准备及每次工具完整交互的超时秒数。
+             * @description 执行期间每次工具完整交互的超时秒数。
              */
             tool_call_timeout_seconds: number;
         };
@@ -773,12 +773,14 @@ export interface components {
             total: number;
         };
         /**
-         * PlanningAttemptEvent
-         * @description 模型尝试开始或校验完成，需要明确本次尝试序号。
+         * PlanningCycleEvent
+         * @description 实际决策轮次开始或有效计划提交，额度只用于进度。
          */
-        PlanningAttemptEvent: {
-            /** Attempt */
-            attempt: number;
+        PlanningCycleEvent: {
+            /** Cycle Count */
+            cycle_count: number;
+            /** Max Cycles */
+            max_cycles: number;
             /**
              * Occurred At
              * Format: date-time
@@ -792,33 +794,9 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            type: "planning.attempt_started" | "planning.validated";
+            type: "planning.cycle_started" | "planning.validated";
         };
-        /**
-         * PlanningAttemptFailedEvent
-         * @description 可重试的单次模型失败，与整个请求失败具有不同生命周期。
-         */
-        PlanningAttemptFailedEvent: {
-            /** Attempt */
-            attempt: number;
-            /**
-             * Occurred At
-             * Format: date-time
-             */
-            occurred_at: string;
-            /** Planning Request Id */
-            planning_request_id: string;
-            /** Reason */
-            reason: string;
-            /** Test Case Id */
-            test_case_id: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "planning.attempt_failed";
-        };
-        PlanningEvent: components["schemas"]["PlanningStageEvent"] | components["schemas"]["PlanningAttemptEvent"] | components["schemas"]["PlanningAttemptFailedEvent"] | components["schemas"]["PlanningFailedEvent"];
+        PlanningEvent: components["schemas"]["PlanningStageEvent"] | components["schemas"]["PlanningCycleEvent"] | components["schemas"]["PlanningResponseInvalidEvent"] | components["schemas"]["PlanningToolStartedEvent"] | components["schemas"]["PlanningToolCompletedEvent"] | components["schemas"]["PlanningFailedEvent"];
         /**
          * PlanningFailedEvent
          * @description 规划请求失败；原因也可能来自输入准备或计划保存。
@@ -842,6 +820,56 @@ export interface components {
             type: "planning.failed";
         };
         /**
+         * PlanningResponseInvalidEvent
+         * @description 模型未给出一个可用工具调用，应用反馈后继续决策。
+         */
+        PlanningResponseInvalidEvent: {
+            /** Cycle Count */
+            cycle_count: number;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Planning Request Id */
+            planning_request_id: string;
+            /** Reason */
+            reason: string;
+            /** Test Case Id */
+            test_case_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "planning.response_invalid";
+        };
+        /**
+         * PlanningSettings
+         * @description 配置与不可变规划背景共用的决策限额及交互参数。
+         */
+        PlanningSettings: {
+            /**
+             * 规划决策轮次上限
+             * @description 每次规划允许的模型决策轮数，包含资源读取及最终提交。
+             */
+            max_cycles: number;
+            /**
+             * 规划模型传输尝试次数
+             * @description 单轮模型传输的最多尝试次数，包含首次。
+             */
+            model_call_max_attempts: number;
+            /**
+             * 规划连续纠错次数
+             * @description 连续无效模型响应和可纠正工具错误共用的次数。
+             */
+            model_response_max_attempts: number;
+            /**
+             * 规划工具交互超时
+             * @description 每次规划工具完整交互的超时秒数。
+             */
+            tool_call_timeout_seconds: number;
+        };
+        /**
          * PlanningStageEvent
          * @description 输入准备与持久化阶段；不复制计划内容或数据库版本事实。
          */
@@ -860,6 +888,65 @@ export interface components {
              * @enum {string}
              */
             type: "planning.input_ready" | "planning.saving" | "planning.started" | "planning.succeeded";
+        };
+        /**
+         * PlanningToolCompletedEvent
+         * @description 调用结果 SSE 边界，在同一调用身份上增加实际状态。
+         */
+        PlanningToolCompletedEvent: {
+            /** Cycle Count */
+            cycle_count: number;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Planning Request Id */
+            planning_request_id: string;
+            /** Reason */
+            reason: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "success" | "error";
+            /** Test Case Id */
+            test_case_id: string;
+            /** Tool Call Id */
+            tool_call_id: string;
+            /** Tool Name */
+            tool_name: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "planning.tool_completed";
+        };
+        /**
+         * PlanningToolStartedEvent
+         * @description 工具实际开始的独立 SSE 边界，尚无结果状态。
+         */
+        PlanningToolStartedEvent: {
+            /** Cycle Count */
+            cycle_count: number;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Planning Request Id */
+            planning_request_id: string;
+            /** Test Case Id */
+            test_case_id: string;
+            /** Tool Call Id */
+            tool_call_id: string;
+            /** Tool Name */
+            tool_name: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "planning.tool_started";
         };
         /**
          * ReasonCode
@@ -1086,6 +1173,11 @@ export interface components {
              */
             app_version: string;
             /**
+             * 能力目录发现超时
+             * @description 每次完整目录发现的超时秒数，对下一次发现生效。
+             */
+            capability_discovery_timeout_seconds: number;
+            /**
              * 检查点文件
              * @description 留空时使用数据目录内的 checkpoints.db。
              */
@@ -1128,6 +1220,11 @@ export interface components {
              */
             mcp_config_path: string;
             /**
+             * 规划参数
+             * @description 新规划使用的决策限额和交互参数。
+             */
+            planning: components["schemas"]["PlanningSettings"];
+            /**
              * 资料目录
              * Format: path
              * @description 本地 Skill 和静态资料的根目录。
@@ -1146,6 +1243,11 @@ export interface components {
              * @description 后端及运行记录使用的应用版本。
              */
             app_version: string;
+            /**
+             * 能力目录发现超时
+             * @description 每次完整目录发现的超时秒数，对下一次发现生效。
+             */
+            capability_discovery_timeout_seconds: number;
             /**
              * 检查点文件
              * @description 留空时使用数据目录内的 checkpoints.db。
@@ -1188,6 +1290,11 @@ export interface components {
              * @description 独立外部服务的连接配置路径。
              */
             mcp_config_path: string;
+            /**
+             * 规划参数
+             * @description 新规划使用的决策限额和交互参数。
+             */
+            planning: components["schemas"]["PlanningSettings"];
             /**
              * 资料目录
              * Format: path
@@ -1412,6 +1519,8 @@ export interface components {
         TestPlanGenerateRequest: {
             /** Planning Request Id */
             planning_request_id: string;
+            /** Selected Columns */
+            selected_columns: components["schemas"]["CapabilityColumnSelection"][];
             /** User Input */
             user_input?: string | null;
         };
@@ -1426,9 +1535,11 @@ export interface components {
          * @description 规划准备时固定的输入与模型审计事实，不参与后续版本覆盖。
          */
         TestPlanPlanningContext: {
+            capability_catalog: components["schemas"]["CapabilityCatalog_CapabilityColumnSnapshot_"];
             planning_model: components["schemas"]["LLMProfileSettings-Output"];
             /** Planning Prompt Fingerprint */
             planning_prompt_fingerprint: string | null;
+            planning_setting: components["schemas"]["PlanningSettings"];
             test_case_content: components["schemas"]["TestCaseContent"];
             /** User Input */
             user_input?: string | null;

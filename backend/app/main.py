@@ -32,7 +32,7 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
         await init_database(container.engine)
         await container.run_service.reconcile_orphaned_runs()
         try:
-            await container.capabilities.discover(startup_settings.execution.tool_call_timeout_seconds)
+            await container.capabilities.discover()
         except MCPConnectionError as exc:
             logger.warning("Capability preview discovery failed: %s", exc)
         yield

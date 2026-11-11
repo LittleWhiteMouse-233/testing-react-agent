@@ -132,7 +132,7 @@ class RunService:
         execution_settings = settings.execution.model_copy(deep=True)
         model_profile = settings.llm.profile_for_activity(AgentActivity.EXECUTION).model_copy(deep=True)
         await self.repository.validate_test_plan_for_run(test_case_id=test_case_id, test_plan_id=test_plan_id)
-        discovery = await self.capabilities.discover(execution_settings.tool_call_timeout_seconds)
+        discovery = await self.capabilities.discover()
         capability_catalog = select_capabilities(discovery.catalog, selected_columns)
         tools = tuple(tool for tool in discovery.tools
                       if capability_catalog.tool_is_available(str((tool.metadata or {})["tool_source"])))

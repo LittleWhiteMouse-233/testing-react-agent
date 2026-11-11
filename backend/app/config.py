@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 import tomli_w
 
 from app.domain.execution import ExecutionSettings
+from app.domain.planning import PlanningSettings
 from app.domain.activity import AgentActivity
 from app.domain.ids import ModelProfileId
 from app.domain.resources import LLMProfileSettings
@@ -64,6 +65,8 @@ class SettingsContent(BaseModel, Generic[TProfile]):
     checkpoint_path: Path | None = Field(default=None, title="检查点文件", description="留空时使用数据目录内的 checkpoints.db。")
     mcp_config_path: Path = Field(title="MCP 连接配置文件", description="独立外部服务的连接配置路径。")
     skills_dir: Path = Field(title="资料目录", description="本地 Skill 和静态资料的根目录。")
+    capability_discovery_timeout_seconds: float = Field(gt=0, title="能力目录发现超时", description="每次完整目录发现的超时秒数，对下一次发现生效。", json_schema_extra={"x-requires-restart": False})
+    planning: PlanningSettings = Field(title="规划参数", description="新规划使用的决策限额和交互参数。", json_schema_extra={"x-requires-restart": False})
     execution: ExecutionSettings = Field(title="执行参数", description="新运行使用的预算和交互参数。", json_schema_extra={"x-requires-restart": False})
     llm: LLMSettings[TProfile] = Field(title="模型设置", description="新规划和新运行使用的模型。", json_schema_extra={"x-requires-restart": False})
 

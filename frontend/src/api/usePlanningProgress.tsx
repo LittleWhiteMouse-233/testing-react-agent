@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { useQueryClient } from "@tanstack/react-query";
 import { message } from "antd";
 import { $api, apiFetch } from "./client";
-import type { PlanningEvent } from "./contracts";
+import type { CapabilityColumnSelection, PlanningEvent } from "./contracts";
 import { openPlanningEventStream } from "./planningEvents";
 
 export interface PlanningProgressState {
@@ -14,11 +14,12 @@ export interface PlanningProgressState {
   events: PlanningEvent[];
   connectionNotice: string;
   error: string;
+  errorCode: string;
 }
 
 interface PlanningProgressSession {
   requests: ReadonlyMap<string, PlanningProgressState>;
-  start: (testCaseId: string, userInput: string) => void;
+  start: (testCaseId: string, userInput: string, selectedColumns: CapabilityColumnSelection[]) => void;
   close: (testCaseId: string) => string | undefined;
 }
 
@@ -52,11 +53,12 @@ export function PlanningProgressProvider({ children }: { children: ReactNode }) 
     return progress.userInput;
   }, [publish]);
 
-  const start = useCallback((testCaseId: string, userInput: string) => {
+  const start = useCallback((testCaseId: string, userInput: string, selectedColumns: CapabilityColumnSelection[]) => {
     if (requestRecords.current.has(testCaseId)) return;
+    const submittedColumns = selectedColumns.map(({ id, fingerprint }) => ({ id, fingerprint }));
     const requestId = crypto.randomUUID();
     publish(testCaseId, {
-      requestId, userInput, status: "connecting", startedAt: Date.now(), events: [], connectionNotice: "", error: ""
+      requestId, userInput, status: "connecting", startedAt: Date.now(), events: [], connectionNotice: "", error: "", errorCode: ""
     });
     let submitted = false;
     let stopped = false;
@@ -65,12 +67,12 @@ export function PlanningProgressProvider({ children }: { children: ReactNode }) 
       const progress = requestRecords.current.get(testCaseId);
       if (!stopped && progress?.requestId === requestId) publish(testCaseId, change(progress));
     };
-    const finish = (error: string | null) => {
+    const finish = (error: string | null, errorCode = "") => {
       const progress = requestRecords.current.get(testCaseId);
       if (stopped || progress?.requestId !== requestId) return;
       connections.current.get(testCaseId)?.();
       connections.current.delete(testCaseId);
-      publish(testCaseId, error === null ? null : { ...progress, status: "failed", finishedAt: Date.now(), error });
+      publish(testCaseId, error === null ? null : { ...progress, status: "failed", finishedAt: Date.now(), error, errorCode });
     };
     const testCaseQueryKey = $api.queryOptions("get", "/api/test-cases/{test_case_id}", {
       params: { path: { test_case_id: testCaseId } }
@@ -93,13 +95,13 @@ export function PlanningProgressProvider({ children }: { children: ReactNode }) 
           update((progress) => ({ ...progress, status: "running" }));
           void apiFetch.POST("/api/test-cases/{test_case_id}/plans", {
             params: { path: { test_case_id: testCaseId } },
-            body: { planning_request_id: requestId, user_input: userInput.trim() || null }
+            body: { planning_request_id: requestId, user_input: userInput.trim() || null, selected_columns: submittedColumns }
           }).then(async ({ error }) => {
             if (stopped) return;
             if (error) {
               if (error.code === "planning_input_not_found") void queryClient.invalidateQueries({ queryKey: testCaseQueryKey });
               if (error.code === "test_plan_not_latest") void queryClient.invalidateQueries({ queryKey: testPlansQueryKey });
-              finish(error.message);
+              finish(error.message, error.code);
             } else {
               // Invalidation alone can reuse an initial read that started before the plan was saved.
               await Promise.all([testCaseQueryKey, testPlansQueryKey].map((queryKey) => queryClient.cancelQueries({ queryKey })));

@@ -79,9 +79,9 @@ def write_mcp_config(root: Path, calls: list[dict[str, Any]], *, servers: tuple[
     return config
 
 
-def tool_turn(index: int, name: str = "fixture_inspect") -> AIMessage:
+def tool_turn(index: int, name: str = "fixture_inspect", arguments: dict[str, Any] | None = None) -> AIMessage:
     return AIMessage(content=f"Visual observation / decision {index}", tool_calls=[{
-        "name": name, "args": {}, "id": f"call-{index}", "type": "tool_call",
+        "name": name, "args": arguments if arguments is not None else {}, "id": f"call-{index}", "type": "tool_call",
     }])
 
 
@@ -119,7 +119,7 @@ def build_client(root: Path, *, calls: list[dict[str, Any]] | None = None,
 
 def create_plan(client: TestClient, *, task_count: int = 1) -> dict[str, Any]:
     case = client.post("/api/test-cases", json={"name": "Protocol test", "source_text": "Verify an observed result"}).json()
-    planning = client.post(f"/api/test-cases/{case['id']}/plans", json={"planning_request_id": str(uuid4())})
+    planning = client.post(f"/api/test-cases/{case['id']}/plans", json={"selected_columns": capability_selection(client), "planning_request_id": str(uuid4())})
     assert planning.status_code == 201, planning.text
     plan = planning.json()
     tasks = [entry["definition"] for entry in plan["content"]["tasks"][:task_count]]

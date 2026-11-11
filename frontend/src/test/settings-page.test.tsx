@@ -16,10 +16,18 @@ vi.mock("../api/client", async (importOriginal) => {
 
 const schema = {
   type: "object", additionalProperties: false,
-  required: ["app_name", "llm", "execution"],
+  required: ["app_name", "llm", "execution", "planning", "capability_discovery_timeout_seconds"],
   properties: {
     app_name: { type: "string", title: "应用名称", description: "启动时显示的名称" },
     cors_origins: { type: "array", title: "允许的浏览器来源", items: { type: "string" } },
+    capability_discovery_timeout_seconds: { type: "number", exclusiveMinimum: 0, title: "能力目录发现超时（秒）", "x-requires-restart": false },
+    planning: { type: "object", title: "规划参数", "x-requires-restart": false,
+      required: ["max_cycles", "model_response_max_attempts", "model_call_max_attempts", "tool_call_timeout_seconds"], properties: {
+        max_cycles: { type: "integer", minimum: 1, maximum: 100, title: "规划决策轮次上限" },
+        model_response_max_attempts: { type: "integer", minimum: 1, maximum: 10, title: "规划连续纠错次数" },
+        model_call_max_attempts: { type: "integer", minimum: 1, maximum: 10, title: "规划模型传输尝试次数" },
+        tool_call_timeout_seconds: { type: "number", exclusiveMinimum: 0, title: "规划工具交互超时" }
+      } },
     execution: { type: "object", title: "执行参数", "x-requires-restart": false,
       required: ["goal_max_failures"], properties: {
         goal_max_failures: { type: "integer", minimum: 1, title: "Goal 累计失败上限", description: "失败次数" }
@@ -37,7 +45,9 @@ const schema = {
 
 function settingsResponse(version = "version-1", restartRequired = false) {
   return { version, restart_required: restartRequired, settings_schema: schema, settings: {
-    app_name: "TestPilot", cors_origins: ["http://localhost:5173"], execution: { goal_max_failures: 10 }, llm: {
+    app_name: "TestPilot", cors_origins: ["http://localhost:5173"], execution: { goal_max_failures: 10 },
+    capability_discovery_timeout_seconds: 120,
+    planning: { max_cycles: 20, model_response_max_attempts: 3, model_call_max_attempts: 3, tool_call_timeout_seconds: 120 }, llm: {
       profiles: [{ id: "model-a", api_key_configured: true }], planning_model_id: "model-a", execution_model_id: "model-a"
     }
   } };
@@ -94,6 +104,21 @@ it("blocks invalid numeric input using the backend schema", async () => {
   fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
   expect(await screen.findByText(/必须大于等于 1/)).toBeInTheDocument();
   expect(requests).toHaveLength(0);
+});
+
+it("saves planning limits and directory discovery timeout independently", async () => {
+  mountPage();
+  expect(await screen.findByLabelText("规划决策轮次上限")).toHaveValue("20");
+  fireEvent.change(screen.getByLabelText("规划决策轮次上限"), { target: { value: "12" } });
+  fireEvent.change(screen.getByLabelText("规划连续纠错次数"), { target: { value: "2" } });
+  fireEvent.change(screen.getByLabelText("规划模型传输尝试次数"), { target: { value: "4" } });
+  fireEvent.change(screen.getByLabelText("规划工具交互超时"), { target: { value: "80" } });
+  fireEvent.change(screen.getByLabelText("能力目录发现超时（秒）"), { target: { value: "45" } });
+  fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+  await waitFor(() => expect(requests).toHaveLength(1));
+  expect(requests[0]?.body.planning).toEqual({ max_cycles: 12, model_response_max_attempts: 2, model_call_max_attempts: 4, tool_call_timeout_seconds: 80 });
+  expect(requests[0]?.body.capability_discovery_timeout_seconds).toBe(45);
+  expect(requests[0]?.body.execution).toEqual({ goal_max_failures: 10 });
 });
 
 it("keeps the draft on version conflict and maps backend field errors", async () => {

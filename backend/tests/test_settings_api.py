@@ -225,7 +225,7 @@ def test_planning_finishes_with_its_original_model_after_settings_change(tmp_pat
                 return await original_generate(*args, **kwargs)
 
             monkeypatch.setattr(container.planning_graph, "generate", delayed_generate)
-            planning = asyncio.create_task(container.planning.generate(test_case_id=case["id"], planning_request_id=str(uuid4())))
+            planning = asyncio.create_task(container.planning.generate(selected_columns=container.capabilities.preview.columns, test_case_id=case["id"], planning_request_id=str(uuid4())))
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
                 try:
                     await asyncio.wait_for(entered.wait(), 5)
@@ -235,15 +235,23 @@ def test_planning_finishes_with_its_original_model_after_settings_change(tmp_pat
                     profile.pop("api_key_configured")
                     profile.update(id="next-model", model="next-deterministic")
                     draft["llm"].update(planning_model_id="next-model", execution_model_id="next-model")
+                    draft["planning"].update(max_cycles=8, model_response_max_attempts=2, model_call_max_attempts=4, tool_call_timeout_seconds=25)
+                    draft["capability_discovery_timeout_seconds"] = 30
                     saved = await api.put("/api/settings", json={"version": snapshot["version"], "settings": draft})
                     assert saved.status_code == 200, saved.text
                 finally:
                     release.set()
                 old_plan = await asyncio.wait_for(planning, 10)
-                next_plan = await container.planning.generate(test_case_id=case["id"], planning_request_id=str(uuid4()), user_input="Generate using new model")
+                next_plan = await container.planning.generate(selected_columns=container.capabilities.preview.columns, test_case_id=case["id"], planning_request_id=str(uuid4()), user_input="Generate using new model")
                 assert old_plan.planning_context.planning_model.id == "default"
                 assert next_plan.planning_context.planning_model.id == "next-model"
                 assert next_plan.planning_context.planning_model.model == "next-deterministic"
+                assert old_plan.planning_context.planning_setting.max_cycles == 20
+                assert next_plan.planning_context.planning_setting.model_dump() == {
+                    "max_cycles": 8, "model_response_max_attempts": 2,
+                    "model_call_max_attempts": 4, "tool_call_timeout_seconds": 25,
+                }
+                assert "capability_discovery_timeout_seconds" not in next_plan.planning_context.model_dump()
 
         assert client.portal is not None
         client.portal.call(exercise)
@@ -276,7 +284,7 @@ def test_settings_save_rejects_new_planning_run_and_competing_save(tmp_path: Pat
                     assert await asyncio.to_thread(entered.wait, 5)
                     requests = [
                         ("/api/settings", command),
-                        (f"/api/test-cases/{plan['test_case_id']}/plans", {"planning_request_id": str(uuid4()), "user_input": "new plan"}),
+                        (f"/api/test-cases/{plan['test_case_id']}/plans", {"selected_columns": capability_selection(client), "planning_request_id": str(uuid4()), "user_input": "new plan"}),
                         ("/api/runs", {"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)}),
                     ]
                     for path, request_body in requests:

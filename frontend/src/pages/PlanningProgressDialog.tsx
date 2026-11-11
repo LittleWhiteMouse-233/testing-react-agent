@@ -7,8 +7,10 @@ function planningEventText(event: PlanningEvent): string {
   switch (event.type) {
     case "planning.started": return "开始规划，正在读取用例和最新计划";
     case "planning.input_ready": return "输入准备完成";
-    case "planning.attempt_started": return `第 ${event.attempt}/3 次生成，等待模型返回`;
-    case "planning.attempt_failed": return `第 ${event.attempt}/3 次生成失败：${event.reason}`;
+    case "planning.cycle_started": return `第 ${event.cycle_count}/${event.max_cycles} 轮决策，等待模型返回`;
+    case "planning.response_invalid": return `第 ${event.cycle_count} 轮响应无效：${event.reason}`;
+    case "planning.tool_started": return `第 ${event.cycle_count} 轮调用 ${event.tool_name}`;
+    case "planning.tool_completed": return `${event.tool_name} ${event.status === "success" ? "完成" : "失败"}${event.reason ? "：" + event.reason : ""}`;
     case "planning.validated": return "计划校验通过";
     case "planning.saving": return "正在保存计划";
     case "planning.succeeded": return "计划保存成功";
@@ -43,7 +45,7 @@ export default function PlanningProgressDialog({ progress, onClose }: {
         const element = panel.current;
         if (element) follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24;
       }}>
-        {progress.events.map((event, index) => <div key={index} className={"reason" in event ? "planning-log-error" : ""}>
+        {progress.events.map((event, index) => <div key={index} className={"reason" in event && event.reason ? "planning-log-error" : ""}>
           <time>{new Date(event.occurred_at).toLocaleTimeString("zh-CN", { hour12: false })}</time> {planningEventText(event)}
         </div>)}
         {progress.error && !errorAlreadyShown && <div className="planning-log-error">{progress.error}</div>}

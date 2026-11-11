@@ -10,7 +10,7 @@ from pydantic import Field, create_model
 
 from app.domain.errors import ModelContextBudgetExceeded
 from app.domain.resources import LLMProfileSettings
-from app.execution.model_context import ModelContextWindow, ModelImageWindow
+from app.llm import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent import finish_task
 from app.event_stream.projector import project_run_message
 

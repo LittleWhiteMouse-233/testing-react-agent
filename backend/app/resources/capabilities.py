@@ -8,6 +8,7 @@ from collections.abc import Sequence
 
 from langchain_core.tools import BaseTool
 
+from app.config import SettingsService
 from app.domain.errors import describe_exception
 from app.domain.resources import CapabilityCatalog, CapabilityColumnSelection, build_capability_preview
 from app.resources.mcp import MCPClientProvider, MCPConnectionError
@@ -26,10 +27,11 @@ class CapabilityDiscovery:
 class CapabilityProvider:
     """Own serialized discovery; each successful batch retains its own bound clients."""
 
-    def __init__(self, mcp_config_path: Path, skills_dir: Path, builtin_tools: Sequence[BaseTool]) -> None:
+    def __init__(self, mcp_config_path: Path, skills_dir: Path, builtin_tools: Sequence[BaseTool], *, settings_service: SettingsService) -> None:
         self.mcp_config_path = mcp_config_path
         self.skills_dir = skills_dir
         self.builtin_tools = tuple(builtin_tools)
+        self.settings_service = settings_service
         self._discovery_lock = asyncio.Lock()
         self._latest: CapabilityDiscovery | None = None
         self._discovery_error = "Capabilities have not been discovered"
@@ -41,9 +43,10 @@ class CapabilityProvider:
             raise MCPConnectionError(self._discovery_error)
         return self._latest.catalog
 
-    async def discover(self, timeout_seconds: float) -> CapabilityDiscovery:
+    async def discover(self) -> CapabilityDiscovery:
         """Prepare and atomically publish a fresh batch within one shared timeout."""
         phase = "MCP configuration loading"
+        timeout_seconds = self.settings_service.current.capability_discovery_timeout_seconds
         try:
             async with asyncio.timeout(timeout_seconds):
                 async with self._discovery_lock:

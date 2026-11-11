@@ -182,6 +182,7 @@ def test_run_admission_precedes_background_task_scheduling(tmp_path: Path) -> No
                 test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True,
              selected_columns=container.capabilities.preview.columns))
             planning = asyncio.create_task(container.planning.generate(
+                selected_columns=container.capabilities.preview.columns,
                 test_case_id=plan["test_case_id"], planning_request_id=str(uuid4()), user_input="随后提交的规划",
             ))
             try:
@@ -267,13 +268,14 @@ def test_preparing_run_protects_plan_until_creation_then_allows_new_versions(
             case_url = f"/api/test-cases/{plan['test_case_id']}"
             revision = {**plan["content"], "tasks": [task["definition"] for task in plan["content"]["tasks"]]}
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
+                other_planning: asyncio.Task[httpx.Response] | None = None
                 startup = asyncio.create_task(api.post("/api/runs", json={
                     "test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True,
                  "selected_columns": capability_selection(client)}))
                 try:
                     await asyncio.wait_for(preparing.wait(), 5)
                     for url, payload in (
-                        (case_url + "/plans", {"planning_request_id": str(uuid4()), "user_input": "准备期间不得替换计划"}),
+                        (case_url + "/plans", {"selected_columns": capability_selection(client), "planning_request_id": str(uuid4()), "user_input": "准备期间不得替换计划"}),
                         (f"/api/test-plans/{plan['id']}/revisions", {"content": revision}),
                     ):
                         response = await api.post(url, json=payload)
@@ -283,20 +285,25 @@ def test_preparing_run_protects_plan_until_creation_then_allows_new_versions(
                     other_case = (await api.post("/api/test-cases", json={
                         "name": "独立用例", "source_text": "其他用例仍可规划",
                     })).json()
-                    other_plan = await api.post(f"/api/test-cases/{other_case['id']}/plans", json={
+                    # Discovery batches are serialized. Accept the independent request,
+                    # then allow the occupied discovery to finish before awaiting it.
+                    other_planning = asyncio.create_task(api.post(f"/api/test-cases/{other_case['id']}/plans", json={
+                        "selected_columns": capability_selection(client),
                         "planning_request_id": str(uuid4()),
-                    })
-                    assert other_plan.status_code == 201, other_plan.text
+                    }))
                     edited = await api.patch(case_url, json={"name": "后续输入", "source_text": "下一轮规划使用"})
                     assert edited.status_code == 200, edited.text
                     release_preparation.set()
                     created = await asyncio.wait_for(startup, 15)
                     assert created.status_code == 201, created.text
+                    other_plan = await asyncio.wait_for(other_planning, 15)
+                    assert other_plan.status_code == 201, other_plan.text
                     run_id = created.json()["id"]
                     await asyncio.wait_for(executing.wait(), 5)
                     revised = await api.post(f"/api/test-plans/{plan['id']}/revisions", json={"content": revision})
                     assert revised.status_code == 201, revised.text
                     replanned = await api.post(case_url + "/plans", json={
+                        "selected_columns": capability_selection(client),
                         "planning_request_id": str(uuid4()), "user_input": "创建后允许新规划",
                     })
                     assert replanned.status_code == 201, replanned.text
@@ -312,6 +319,8 @@ def test_preparing_run_protects_plan_until_creation_then_allows_new_versions(
                     release_preparation.set()
                     release_execution.set()
                     await asyncio.gather(startup, return_exceptions=True)
+                    if other_planning is not None:
+                        await asyncio.gather(other_planning, return_exceptions=True)
                     await container.run_service.shutdown()
 
         assert client.portal is not None
@@ -353,6 +362,7 @@ def test_run_completion_preserves_concurrent_planning(
             assert work is not None and work.task is not None
             monkeypatch.setattr(planning_owner, planning_method, prepare_or_generate)
             planning = asyncio.create_task(container.planning.generate(
+                selected_columns=container.capabilities.preview.columns,
                 test_case_id=plan["test_case_id"], planning_request_id=str(uuid4()), user_input="运行中规划",
             ))
             try:
@@ -366,6 +376,7 @@ def test_run_completion_preserves_concurrent_planning(
                     assert archive.json()["code"] == "test_case_planning"
                 with pytest.raises(CaseBusy):
                     await container.planning.generate(
+                        selected_columns=container.capabilities.preview.columns,
                         test_case_id=plan["test_case_id"], planning_request_id=str(uuid4()), user_input="重复规划",
                     )
             finally:
@@ -508,7 +519,7 @@ def test_one_preparation_timeout_covers_every_stage_and_releases_run_entry(
             from app.domain.resources import LLMProfileSettings
             service = container.settings_service
             draft = service.current.model_dump()
-            draft["execution"]["tool_call_timeout_seconds"] = 0.05
+            draft["capability_discovery_timeout_seconds"] = 0.05
             await service.update(SettingsContent[LLMProfileSettings].model_validate(draft), version=service.version)
             with pytest.raises(MCPConnectionError, match="TimeoutError") as captured:
                 await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=[])
@@ -570,7 +581,7 @@ def test_tool_failure_blocks_releases_slot_and_allows_another_run(
 
         async def exercise():
             monkeypatch.setattr(ToolProvider, "discover_tools", discover_tools)
-            await container.capabilities.discover(container.settings_service.current.execution.tool_call_timeout_seconds)
+            await container.capabilities.discover()
             run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
             work = container.run_service._work
             assert work is not None and work.task is not None
@@ -584,7 +595,7 @@ def test_tool_failure_blocks_releases_slot_and_allows_another_run(
             assert sum(entry.event.type == "run.finished" for entry in events) == 1
             assert container.run_service._work is None
             monkeypatch.setattr(ToolProvider, "discover_tools", original_discover)
-            await container.capabilities.discover(container.settings_service.current.execution.tool_call_timeout_seconds)
+            await container.capabilities.discover()
             next_run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
             assert next_run.id != run.id
             assert await container.run_service.cancel(next_run.id)

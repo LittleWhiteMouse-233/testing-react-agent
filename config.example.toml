@@ -8,20 +8,27 @@ app_name = "Android TV Test Agent"
 app_version = "0.1.0"
 debug = false
 cors_origins = ["http://localhost:5173"]
-data_dir = "./data"
 mcp_config_path = "./mcp_servers/mcp.json"
 skills_dir = "./skills"
+data_dir = "./data"
+capability_discovery_timeout_seconds = 120
 
 # Optional storage overrides; otherwise derive both locations from data_dir.
 # database_url = "sqlite+aiosqlite:///D:/agent-data/app.db"
 # checkpoint_path = "D:/agent-data/checkpoints.db"
 
-[execution]
-tool_call_timeout_seconds = 120
-goal_max_failures = 10
-image_history_rounds = 3
+[planning]
 model_call_max_attempts = 3
 model_response_max_attempts = 3
+tool_call_timeout_seconds = 120
+max_cycles = 20
+
+[execution]
+model_call_max_attempts = 3
+model_response_max_attempts = 3
+tool_call_timeout_seconds = 120
+image_history_rounds = 3
+goal_max_failures = 10
 
 [execution.max_cycles_by_task_type]
 act = 30

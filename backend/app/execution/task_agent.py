@@ -24,13 +24,10 @@ from langgraph.graph.message import Messages
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, ToolRuntime
 from langgraph.types import Command, RetryPolicy
-# Documented public API; LangGraph 1.2.9 omits this re-export from its type declarations.
-from langgraph.types import default_retry_on  # type: ignore[reportPrivateImportUsage]
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from app.domain.errors import (
     ToolCallError,
-    ModelContextBudgetExceeded,
     ModelCallTimeout,
 )
 from app.domain.execution import (
@@ -43,11 +40,11 @@ from app.domain.execution import (
 from app.domain.resources import LLMProfileSettings, CapabilityCatalog, CapabilityColumnSnapshot, ResourceDefinitionSnapshot, top_level_skills
 from app.domain.ids import ArtifactId, TaskRunId
 from app.domain.planning import TestTask, TestTaskType
-from app.execution.model_context import ModelContextWindow, ModelImageWindow
+from app.llm import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.artifacts import ArtifactStore
 from app import llm
-from app.llm import ChatModelClient
+from app.llm import ChatModelClient, should_retry_model_call
 from app.resources.prompts import PromptCatalog, PromptDefinition
 
 
@@ -185,7 +182,7 @@ class TaskAgentFactory:
         graph.add_node("cycle_guard", runtime.cycle_guard)
         graph.add_node("model", runtime.call_model, retry_policy=RetryPolicy(
             initial_interval=0.25, backoff_factor=2, max_interval=1,
-            max_attempts=runtime_context.execution.model_call_max_attempts, jitter=False, retry_on=_retry_model_error,
+            max_attempts=runtime_context.execution.model_call_max_attempts, jitter=False, retry_on=should_retry_model_call,
         ))
         graph.add_node("validate", runtime.validate_message)
         graph.add_node("announce_tool", runtime.announce_tool)
@@ -217,16 +214,6 @@ class TaskAgentFactory:
             "messages": [], "cycle_count": 0, "model_response_attempt": 0, "completion": None, "route": "cycle_guard",
         }
         return graph.compile(checkpointer=checkpointer), initial_state, runtime_context
-
-
-def _retry_model_error(exc: Exception) -> bool:
-    """Extend the framework default for asyncio model-call timeouts."""
-
-    if isinstance(exc, ModelContextBudgetExceeded):
-        return False
-    if isinstance(exc, TimeoutError):
-        return True
-    return default_retry_on(exc)
 
 
 @dataclass

@@ -19,7 +19,7 @@ class ExecutionSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
-    tool_call_timeout_seconds: float = Field(gt=0, title="工具交互超时", description="外部能力准备及每次工具完整交互的超时秒数。")
+    tool_call_timeout_seconds: float = Field(gt=0, title="工具交互超时", description="执行期间每次工具完整交互的超时秒数。")
     goal_max_failures: int = Field(ge=1, title="Goal 累计失败上限", description="同一运行中每个 Goal 独立累计的失败次数上限。")
     image_history_rounds: int = Field(ge=1, title="图片保留轮数", description="模型上下文保留原图的最近有图片决策轮数。")
     model_call_max_attempts: int = Field(ge=1, le=10, title="模型传输尝试次数", description="单轮模型传输的最多尝试次数，包含首次。")

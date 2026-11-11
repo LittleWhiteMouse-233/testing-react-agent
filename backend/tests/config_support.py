@@ -14,6 +14,7 @@ from app.domain.activity import AgentActivity
 from app.domain.resources import LLMProfileSettings
 from app.llm import ChatModelClient
 from app.domain.execution import ExecutionSettings
+from app.domain.planning import PlanningSettings
 
 if TYPE_CHECKING:
     from app.container import Container
@@ -36,6 +37,7 @@ def build_model_profile(**profile_parameters: object) -> LLMProfileSettings:
 
 def app_config_values(
     root: Path, *, execution: dict[str, Any] | None = None,
+    planning: dict[str, Any] | None = None,
     llm: dict[str, Any] | None = None, **app_parameters: object,
 ) -> dict[str, Any]:
     return {
@@ -43,6 +45,12 @@ def app_config_values(
         "debug": False, "cors_origins": ["http://localhost:5173"],
         "data_dir": root.as_posix(), "mcp_config_path": (root / "mcp.json").as_posix(),
         "skills_dir": (root / "skills").as_posix(),
+        "capability_discovery_timeout_seconds": 120,
+        "planning": {
+            "max_cycles": 20, "model_response_max_attempts": 3,
+            "model_call_max_attempts": 3, "tool_call_timeout_seconds": 120,
+            **(planning or {}),
+        },
         "execution": {
             "tool_call_timeout_seconds": 120, "goal_max_failures": 10,
             "image_history_rounds": 3, "model_call_max_attempts": 3,
@@ -58,9 +66,10 @@ def app_config_values(
 
 def build_settings(
     root: Path, *, execution: dict[str, Any] | None = None,
+    planning: dict[str, Any] | None = None,
     llm: dict[str, Any] | None = None, **app_parameters: object,
 ) -> Settings:
-    settings_values = app_config_values(root, execution=execution, llm=llm, **app_parameters)
+    settings_values = app_config_values(root, execution=execution, planning=planning, llm=llm, **app_parameters)
     settings_values["config_path"] = (PROJECT_ROOT / root / "config.toml").resolve()
     return Settings.model_validate(settings_values)
 
@@ -79,6 +88,10 @@ def build_execution_settings(**parameters: object) -> ExecutionSettings:
     return ExecutionSettings.model_validate({**app_config_values(Path("unused"))["execution"], **parameters})
 
 
+def build_planning_settings(**parameters: object) -> PlanningSettings:
+    return PlanningSettings.model_validate({**app_config_values(Path("unused"))["planning"], **parameters})
+
+
 def execution_model_client(container: Container) -> ChatModelClient:
     """测试从当前配置路由读取客户端以检查实际调用记录。"""
     profile = container.settings_service.current.llm.profile_for_activity(AgentActivity.EXECUTION)
@@ -88,6 +101,7 @@ def execution_model_client(container: Container) -> ChatModelClient:
 def write_app_config(root: Path, config_values: dict[str, Any] | None = None) -> Path:
     # Framework input payloads also include deliberately invalid validation cases.
     sections = deepcopy(config_values if config_values is not None else app_config_values(root))
+    planning = sections.pop("planning", {})
     execution = sections.pop("execution", {})
     cycle_limits = execution.pop("max_cycles_by_task_type", {})
     llm = sections.pop("llm", {})
@@ -100,7 +114,7 @@ def write_app_config(root: Path, config_values: dict[str, Any] | None = None) ->
         )
 
     paragraphs = [
-        assignments(sections), "[execution]", assignments(execution),
+        assignments(sections), "[planning]", assignments(planning), "[execution]", assignments(execution),
         "[execution.max_cycles_by_task_type]", assignments(cycle_limits),
         "[llm]", assignments(llm),
     ]

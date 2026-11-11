@@ -113,6 +113,9 @@ dd { margin-left: 0; font-size: 12px; white-space: pre-wrap; }
 .plan-start .ant-btn { border-radius: 12px; height: 46px; }
 .capability-card { border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin: 20px 0 12px; background: white; }
 .capability-card h3 { margin: 0; }
+.planning-capabilities { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.planning-capabilities .capability-card { min-width: 0; padding: 14px; }
+.planning-capabilities .section-heading { align-items: flex-start; flex-direction: column; gap: 12px; }
 .capability-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
 .capability-column { border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 12px 0; }
 .capability-column .ant-checkbox-wrapper { font-size: 15px; font-weight: 600; }

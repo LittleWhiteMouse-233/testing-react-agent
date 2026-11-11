@@ -368,7 +368,7 @@
             "type": "integer"
           },
           "tool_call_timeout_seconds": {
-            "description": "外部能力准备及每次工具完整交互的超时秒数。",
+            "description": "执行期间每次工具完整交互的超时秒数。",
             "exclusiveMinimum": 0.0,
             "title": "工具交互超时",
             "type": "number"
@@ -988,14 +988,18 @@
         "title": "PageResponse[TestRunListResponse]",
         "type": "object"
       },
-      "PlanningAttemptEvent": {
+      "PlanningCycleEvent": {
         "additionalProperties": false,
-        "description": "模型尝试开始或校验完成，需要明确本次尝试序号。",
+        "description": "实际决策轮次开始或有效计划提交，额度只用于进度。",
         "properties": {
-          "attempt": {
-            "maximum": 3.0,
+          "cycle_count": {
             "minimum": 1.0,
-            "title": "Attempt",
+            "title": "Cycle Count",
+            "type": "integer"
+          },
+          "max_cycles": {
+            "minimum": 1.0,
+            "title": "Max Cycles",
             "type": "integer"
           },
           "occurred_at": {
@@ -1015,7 +1019,7 @@
           },
           "type": {
             "enum": [
-              "planning.attempt_started",
+              "planning.cycle_started",
               "planning.validated"
             ],
             "title": "Type",
@@ -1027,70 +1031,25 @@
           "planning_request_id",
           "occurred_at",
           "type",
-          "attempt"
+          "cycle_count",
+          "max_cycles"
         ],
-        "title": "PlanningAttemptEvent",
-        "type": "object"
-      },
-      "PlanningAttemptFailedEvent": {
-        "additionalProperties": false,
-        "description": "可重试的单次模型失败，与整个请求失败具有不同生命周期。",
-        "properties": {
-          "attempt": {
-            "maximum": 3.0,
-            "minimum": 1.0,
-            "title": "Attempt",
-            "type": "integer"
-          },
-          "occurred_at": {
-            "format": "date-time",
-            "title": "Occurred At",
-            "type": "string"
-          },
-          "planning_request_id": {
-            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
-            "title": "Planning Request Id",
-            "type": "string"
-          },
-          "reason": {
-            "minLength": 1,
-            "title": "Reason",
-            "type": "string"
-          },
-          "test_case_id": {
-            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
-            "title": "Test Case Id",
-            "type": "string"
-          },
-          "type": {
-            "const": "planning.attempt_failed",
-            "default": "planning.attempt_failed",
-            "title": "Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "test_case_id",
-          "planning_request_id",
-          "occurred_at",
-          "type",
-          "attempt",
-          "reason"
-        ],
-        "title": "PlanningAttemptFailedEvent",
+        "title": "PlanningCycleEvent",
         "type": "object"
       },
       "PlanningEvent": {
         "discriminator": {
           "mapping": {
-            "planning.attempt_failed": "#/components/schemas/PlanningAttemptFailedEvent",
-            "planning.attempt_started": "#/components/schemas/PlanningAttemptEvent",
+            "planning.cycle_started": "#/components/schemas/PlanningCycleEvent",
             "planning.failed": "#/components/schemas/PlanningFailedEvent",
             "planning.input_ready": "#/components/schemas/PlanningStageEvent",
+            "planning.response_invalid": "#/components/schemas/PlanningResponseInvalidEvent",
             "planning.saving": "#/components/schemas/PlanningStageEvent",
             "planning.started": "#/components/schemas/PlanningStageEvent",
             "planning.succeeded": "#/components/schemas/PlanningStageEvent",
-            "planning.validated": "#/components/schemas/PlanningAttemptEvent"
+            "planning.tool_completed": "#/components/schemas/PlanningToolCompletedEvent",
+            "planning.tool_started": "#/components/schemas/PlanningToolStartedEvent",
+            "planning.validated": "#/components/schemas/PlanningCycleEvent"
           },
           "propertyName": "type"
         },
@@ -1099,10 +1058,16 @@
             "$ref": "#/components/schemas/PlanningStageEvent"
           },
           {
-            "$ref": "#/components/schemas/PlanningAttemptEvent"
+            "$ref": "#/components/schemas/PlanningCycleEvent"
           },
           {
-            "$ref": "#/components/schemas/PlanningAttemptFailedEvent"
+            "$ref": "#/components/schemas/PlanningResponseInvalidEvent"
+          },
+          {
+            "$ref": "#/components/schemas/PlanningToolStartedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/PlanningToolCompletedEvent"
           },
           {
             "$ref": "#/components/schemas/PlanningFailedEvent"
@@ -1150,6 +1115,94 @@
         "title": "PlanningFailedEvent",
         "type": "object"
       },
+      "PlanningResponseInvalidEvent": {
+        "additionalProperties": false,
+        "description": "模型未给出一个可用工具调用，应用反馈后继续决策。",
+        "properties": {
+          "cycle_count": {
+            "minimum": 1.0,
+            "title": "Cycle Count",
+            "type": "integer"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "planning_request_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Planning Request Id",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "test_case_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Test Case Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "planning.response_invalid",
+            "default": "planning.response_invalid",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "test_case_id",
+          "planning_request_id",
+          "occurred_at",
+          "type",
+          "cycle_count",
+          "reason"
+        ],
+        "title": "PlanningResponseInvalidEvent",
+        "type": "object"
+      },
+      "PlanningSettings": {
+        "additionalProperties": false,
+        "description": "配置与不可变规划背景共用的决策限额及交互参数。",
+        "properties": {
+          "max_cycles": {
+            "description": "每次规划允许的模型决策轮数，包含资源读取及最终提交。",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "规划决策轮次上限",
+            "type": "integer"
+          },
+          "model_call_max_attempts": {
+            "description": "单轮模型传输的最多尝试次数，包含首次。",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "规划模型传输尝试次数",
+            "type": "integer"
+          },
+          "model_response_max_attempts": {
+            "description": "连续无效模型响应和可纠正工具错误共用的次数。",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "规划连续纠错次数",
+            "type": "integer"
+          },
+          "tool_call_timeout_seconds": {
+            "description": "每次规划工具完整交互的超时秒数。",
+            "exclusiveMinimum": 0.0,
+            "title": "规划工具交互超时",
+            "type": "number"
+          }
+        },
+        "required": [
+          "max_cycles",
+          "model_response_max_attempts",
+          "model_call_max_attempts",
+          "tool_call_timeout_seconds"
+        ],
+        "title": "PlanningSettings",
+        "type": "object"
+      },
       "PlanningStageEvent": {
         "additionalProperties": false,
         "description": "输入准备与持久化阶段；不复制计划内容或数据库版本事实。",
@@ -1187,6 +1240,133 @@
           "type"
         ],
         "title": "PlanningStageEvent",
+        "type": "object"
+      },
+      "PlanningToolCompletedEvent": {
+        "additionalProperties": false,
+        "description": "调用结果 SSE 边界，在同一调用身份上增加实际状态。",
+        "properties": {
+          "cycle_count": {
+            "minimum": 1.0,
+            "title": "Cycle Count",
+            "type": "integer"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "planning_request_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Planning Request Id",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "status": {
+            "enum": [
+              "success",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "test_case_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Test Case Id",
+            "type": "string"
+          },
+          "tool_call_id": {
+            "minLength": 1,
+            "title": "Tool Call Id",
+            "type": "string"
+          },
+          "tool_name": {
+            "minLength": 1,
+            "title": "Tool Name",
+            "type": "string"
+          },
+          "type": {
+            "const": "planning.tool_completed",
+            "default": "planning.tool_completed",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "test_case_id",
+          "planning_request_id",
+          "occurred_at",
+          "cycle_count",
+          "tool_call_id",
+          "tool_name",
+          "type",
+          "status",
+          "reason"
+        ],
+        "title": "PlanningToolCompletedEvent",
+        "type": "object"
+      },
+      "PlanningToolStartedEvent": {
+        "additionalProperties": false,
+        "description": "工具实际开始的独立 SSE 边界，尚无结果状态。",
+        "properties": {
+          "cycle_count": {
+            "minimum": 1.0,
+            "title": "Cycle Count",
+            "type": "integer"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "planning_request_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Planning Request Id",
+            "type": "string"
+          },
+          "test_case_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Test Case Id",
+            "type": "string"
+          },
+          "tool_call_id": {
+            "minLength": 1,
+            "title": "Tool Call Id",
+            "type": "string"
+          },
+          "tool_name": {
+            "minLength": 1,
+            "title": "Tool Name",
+            "type": "string"
+          },
+          "type": {
+            "const": "planning.tool_started",
+            "default": "planning.tool_started",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "test_case_id",
+          "planning_request_id",
+          "occurred_at",
+          "cycle_count",
+          "tool_call_id",
+          "tool_name",
+          "type"
+        ],
+        "title": "PlanningToolStartedEvent",
         "type": "object"
       },
       "ReasonCode": {
@@ -1786,6 +1966,13 @@
             "title": "应用版本",
             "type": "string"
           },
+          "capability_discovery_timeout_seconds": {
+            "description": "每次完整目录发现的超时秒数，对下一次发现生效。",
+            "exclusiveMinimum": 0.0,
+            "title": "能力目录发现超时",
+            "type": "number",
+            "x-requires-restart": false
+          },
           "checkpoint_path": {
             "anyOf": [
               {
@@ -1848,6 +2035,12 @@
             "title": "MCP 连接配置文件",
             "type": "string"
           },
+          "planning": {
+            "$ref": "#/components/schemas/PlanningSettings",
+            "description": "新规划使用的决策限额和交互参数。",
+            "title": "规划参数",
+            "x-requires-restart": false
+          },
           "skills_dir": {
             "description": "本地 Skill 和静态资料的根目录。",
             "format": "path",
@@ -1863,6 +2056,8 @@
           "data_dir",
           "mcp_config_path",
           "skills_dir",
+          "capability_discovery_timeout_seconds",
+          "planning",
           "execution",
           "llm"
         ],
@@ -1881,6 +2076,13 @@
             "description": "后端及运行记录使用的应用版本。",
             "title": "应用版本",
             "type": "string"
+          },
+          "capability_discovery_timeout_seconds": {
+            "description": "每次完整目录发现的超时秒数，对下一次发现生效。",
+            "exclusiveMinimum": 0.0,
+            "title": "能力目录发现超时",
+            "type": "number",
+            "x-requires-restart": false
           },
           "checkpoint_path": {
             "anyOf": [
@@ -1944,6 +2146,12 @@
             "title": "MCP 连接配置文件",
             "type": "string"
           },
+          "planning": {
+            "$ref": "#/components/schemas/PlanningSettings",
+            "description": "新规划使用的决策限额和交互参数。",
+            "title": "规划参数",
+            "x-requires-restart": false
+          },
           "skills_dir": {
             "description": "本地 Skill 和静态资料的根目录。",
             "format": "path",
@@ -1959,6 +2167,8 @@
           "data_dir",
           "mcp_config_path",
           "skills_dir",
+          "capability_discovery_timeout_seconds",
+          "planning",
           "execution",
           "llm"
         ],
@@ -2567,6 +2777,13 @@
             "title": "Planning Request Id",
             "type": "string"
           },
+          "selected_columns": {
+            "items": {
+              "$ref": "#/components/schemas/CapabilityColumnSelection"
+            },
+            "title": "Selected Columns",
+            "type": "array"
+          },
           "user_input": {
             "anyOf": [
               {
@@ -2580,7 +2797,8 @@
           }
         },
         "required": [
-          "planning_request_id"
+          "planning_request_id",
+          "selected_columns"
         ],
         "title": "TestPlanGenerateRequest",
         "type": "object"
@@ -2599,6 +2817,9 @@
         "additionalProperties": false,
         "description": "规划准备时固定的输入与模型审计事实，不参与后续版本覆盖。",
         "properties": {
+          "capability_catalog": {
+            "$ref": "#/components/schemas/CapabilityCatalog_CapabilityColumnSnapshot_"
+          },
           "planning_model": {
             "$ref": "#/components/schemas/LLMProfileSettings-Output"
           },
@@ -2613,6 +2834,9 @@
               }
             ],
             "title": "Planning Prompt Fingerprint"
+          },
+          "planning_setting": {
+            "$ref": "#/components/schemas/PlanningSettings"
           },
           "test_case_content": {
             "$ref": "#/components/schemas/TestCaseContent"
@@ -2632,7 +2856,9 @@
         "required": [
           "test_case_content",
           "planning_model",
-          "planning_prompt_fingerprint"
+          "planning_prompt_fingerprint",
+          "planning_setting",
+          "capability_catalog"
         ],
         "title": "TestPlanPlanningContext",
         "type": "object"

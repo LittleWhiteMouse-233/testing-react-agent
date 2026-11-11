@@ -6,7 +6,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage } from "../api/client";
 import type { TestCaseContent, TestPlan, TestPlanDraft, TestTaskDefinition } from "../api/contracts";
 import { emptyTask, getGoalsWithInvalidatedJumpTargets, isPlanDraftValid, toPlanDraft, updateTaskOrder } from "../planDraft";
-import CapabilitySelector, { useCapabilitySelection } from "./CapabilitySelector";
+import CapabilitySelector, { PlanningCapabilitySelector, useCapabilitySelection } from "./CapabilitySelector";
 import { usePlanningProgress } from "../api/usePlanningProgress";
 import PlanningProgressDialog from "./PlanningProgressDialog";
 
@@ -20,7 +20,12 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   const queryClient = useQueryClient();
   const planning = usePlanningProgress();
   const capabilitySelection = useCapabilitySelection();
+  const planningCapabilitySelection = useCapabilitySelection();
   const progress = planning.requests.get(caseId);
+  const markPlanningStale = planningCapabilitySelection.markStale;
+  useEffect(() => {
+    if (progress?.errorCode === "capability_catalog_changed") markPlanningStale();
+  }, [progress?.errorCode, markPlanningStale]);
   const planningPending = !!progress && progress.status !== "failed";
   const previousProgress = useRef(progress);
   const previousLatestPlanId = useRef<string | undefined>(undefined);
@@ -105,9 +110,9 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   const runOccupied = runStartPending || !!activeRuns.data?.items.length;
   const canEdit = !busy && isLatest;
   const valid = isPlanDraftValid(draft);
-  const canGenerate = !busy && !dirty && (!plan || (isLatest && !!userInput.trim()));
+  const canGenerate = !busy && !dirty && planningCapabilitySelection.ready && (!plan || (isLatest && !!userInput.trim()));
   const generatePlan = () => {
-    if (canGenerate) planning.start(caseId, userInput);
+    if (canGenerate) planning.start(caseId, userInput, planningCapabilitySelection.selectedColumns);
   };
   const updateDraft = (value: TestPlanDraft) => { setDraft(value); setDirty(true); setConfirmed(false); };
   const updateTask = (index: number, patch: Partial<TestTaskDefinition>) => {
@@ -162,6 +167,7 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
       {plan && <details className="planning-audit"><summary>规划来源与额外输入</summary><dl><dt>生成此计划时的额外输入</dt><dd>{plan.planning_context.user_input ?? "无"}</dd>
         <dt>规划模型</dt><dd>{plan.planning_context.planning_model.model}</dd><dt>父计划</dt><dd className="mono">{plan.derived_from_plan_id ?? "首次规划"}</dd></dl></details>}
       </div>
+      <div inert={!!progress}><PlanningCapabilitySelector selection={planningCapabilitySelection} disabled={busy} /></div>
       <div className="planning-prompt" inert={!!progress}><div className="section-label">告诉规划 Agent 如何调整 <small>Ctrl / ⌘ + Enter 发送</small></div>
         <Form.Item label={"额外输入（" + (plan ? "必填" : "可选") + "）"} required={!!plan}>
           <Input.TextArea aria-label="规划额外输入" value={progress?.userInput ?? userInput} disabled={busy || (!!plan && !isLatest)} rows={4} placeholder={plan ? "说明希望如何修改最新计划" : "补充本次规划的要求"}
