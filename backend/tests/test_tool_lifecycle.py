@@ -115,13 +115,13 @@ async def test_message_publication_contract_is_checked_during_build(
 
 
 def test_image_tool_snapshot_contains_only_model_visible_arguments() -> None:
-    from app.resources.tools import snapshot_tools
+    from app.resources.tools import snapshot_langchain_tool
 
-    snapshots = snapshot_tools(task_agent.TASK_AGENT_TOOLS)
-    image_tool = next(entry for entry in snapshots.tools if entry.name == "read_image_artifact")
-    assert image_tool.source_id == "builtin:task_agent"
-    assert set(image_tool.input_schema["properties"]) == {"artifact_id"}
-    assert image_tool.input_schema["required"] == ["artifact_id"]
+    image_tool = next(tool for tool in task_agent.TASK_AGENT_TOOLS if tool.name == "read_image_artifact")
+    image_tool_snapshot = snapshot_langchain_tool(image_tool)
+    assert image_tool_snapshot.source_id == "builtin:task_agent"
+    assert set(image_tool_snapshot.input_schema["properties"]) == {"artifact_id"}
+    assert image_tool_snapshot.input_schema["required"] == ["artifact_id"]
 
 
 @pytest.mark.asyncio

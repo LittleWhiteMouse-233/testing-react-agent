@@ -9,7 +9,7 @@ from langsmith import tracing_context
 
 from app.domain.resources import ToolCatalogSnapshot
 from app.resources.mcp import MCPClientProvider
-from app.resources.tools import ToolProvider, snapshot_tools
+from app.resources.tools import ToolProvider, snapshot_langchain_tool
 from mcp_support import image_block, load_mcp_client_provider, read_records, replay_call, text_block, write_mcp_config
 
 
@@ -65,7 +65,7 @@ async def test_discovery_closes_sessions_and_tools_use_independent_calls(tmp_pat
     ], servers=("first", "second"))
     tools = await discover_execution_tools(config)
     assert [tool.name for tool in tools] == ["first_inspect", "second_inspect"]
-    snapshot = snapshot_tools(tools)
+    snapshot = ToolCatalogSnapshot(tools=[snapshot_langchain_tool(tool) for tool in tools])
     assert [tool.source_id for tool in snapshot.tools] == ["mcp:first", "mcp:second"]
     assert snapshot.tools[0].annotations.readOnlyHint is True
     assert "env" not in snapshot.model_dump_json()
@@ -85,7 +85,7 @@ async def test_discovery_closes_sessions_and_tools_use_independent_calls(tmp_pat
     records = read_records(tmp_path, "first")
     assert len({record["pid"] for record in records}) == 3
     assert sum(record["phase"] == "completed" for record in records) == 2
-    assert snapshot_tools(tools) == snapshot
+    assert [snapshot_langchain_tool(tool) for tool in tools] == snapshot.tools
 
 
 @pytest.mark.asyncio
@@ -113,7 +113,8 @@ async def test_additional_tools_are_frozen_per_discovery_and_snapshotted(tmp_pat
     additional_tools.clear()
     first = await provider.discover_tools()
     second = await provider.discover_tools()
-    assert first == second == snapshot_tools((extra_tool,))
+    assert first == second
+    assert first.tools == [snapshot_langchain_tool(extra_tool)]
     assert await provider.build_execution_tools() == (extra_tool,)
     snapshot = first
     assert snapshot.tools[0].name == extra_tool.name
@@ -156,7 +157,7 @@ async def test_source_schema_stays_stable_and_adapter_preserves_open_object_argu
         tools = await provider.build_execution_tools()
 
     assert catalog.tools[0].input_schema == input_schema
-    execution_schema = snapshot_tools(tools).tools[0].input_schema
+    execution_schema = snapshot_langchain_tool(tools[0]).input_schema
     assert execution_schema["properties"]["payload"]["additionalProperties"] is True
     with tracing_context(enabled=False):
         response = await tools[0].ainvoke({

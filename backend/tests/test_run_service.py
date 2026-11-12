@@ -1,5 +1,5 @@
 from __future__ import annotations
-from app.resources.tools import ToolProvider, snapshot_tools
+from app.resources.tools import ToolProvider, snapshot_langchain_tool
 from app.resources.mcp import MCPClientProvider
 from app.resources.static_resources import SkillResourceProvider
 from mcp_support import capability_selection
@@ -22,7 +22,7 @@ from app.container import Container
 from app.execution.run_service import RunConflict
 from app.domain.errors import TestCaseBusy as CaseBusy, describe_exception
 from app.domain.execution import TestRunVerdict as RunVerdict
-from app.domain.resources import ResourceCatalogSnapshot
+from app.domain.resources import ResourceCatalogSnapshot, ToolCatalogSnapshot
 from app.resources.mcp import MCPConnectionError
 from mcp_support import build_client, create_plan, finish_turn, tool_turn
 
@@ -504,7 +504,7 @@ def test_one_preparation_timeout_covers_every_stage_and_releases_run_entry(
 
         async def discover_tools(self):
             await stage("tools")
-            return snapshot_tools(self.additional_tools)
+            return ToolCatalogSnapshot(tools=[snapshot_langchain_tool(tool) for tool in self.additional_tools])
 
         async def discover_resources(self) -> ResourceCatalogSnapshot:
             await stage("resources")
@@ -761,7 +761,7 @@ def test_shutdown_cancels_discovery_before_run_creation(tmp_path: Path, monkeypa
                 try:
                     preparing.set()
                     await asyncio.Event().wait()
-                    return snapshot_tools(self.additional_tools)
+                    return ToolCatalogSnapshot(tools=[snapshot_langchain_tool(tool) for tool in self.additional_tools])
                 finally:
                     cleaned.set()
 
