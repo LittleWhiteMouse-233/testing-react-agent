@@ -6,26 +6,29 @@ from dataclasses import dataclass
 from contextlib import AsyncExitStack
 from pathlib import Path
 from collections.abc import Sequence
+from typing import Generic, Literal, TypeVar, overload
 
 from langchain_core.tools import BaseTool
 
 from app.config import SettingsService
 from app.domain.errors import describe_exception
 from app.domain.resources import (
-    CapabilityCatalog, CapabilityCatalogChanged, CapabilityColumnSelection,
+    CapabilityCatalog, CapabilityCatalogChanged, CapabilityColumnSelection, CapabilityColumnSnapshot,
     build_capability_preview, merge_capability_preview, select_capabilities,
 )
 from app.resources.mcp import MCPClientProvider, MCPConnectionError
 from app.resources.static_resources import SkillResourceProvider
 from app.resources.tools import ToolProvider
 
+ColumnT = TypeVar("ColumnT", CapabilityColumnSelection, CapabilityColumnSnapshot)
+
 
 @dataclass(frozen=True)
-class CapabilityDiscovery:
+class CapabilityDiscovery(Generic[ColumnT]):
     """Framework boundary: bound executable tools and their credential-free directory facts."""
 
     tools: tuple[BaseTool, ...]
-    catalog: CapabilityCatalog[CapabilityColumnSelection]
+    catalog: CapabilityCatalog[ColumnT]
 
 
 class CapabilityProvider:
@@ -42,16 +45,26 @@ class CapabilityProvider:
 
     @property
     def preview(self) -> CapabilityCatalog[CapabilityColumnSelection]:
-        """Read the last complete discovery without connecting to external services."""
+        """Read the last published complete preview without connecting to external services."""
         if self._latest is None:
             raise MCPConnectionError(self._discovery_error)
         return self._latest
 
+    @overload
+    async def discover(
+        self, *, selected_columns: None = None, build_execution_tools: Literal[False] = False,
+    ) -> CapabilityDiscovery[CapabilityColumnSelection]: ...
+
+    @overload
+    async def discover(
+        self, *, selected_columns: Sequence[CapabilityColumnSelection], build_execution_tools: bool = False,
+    ) -> CapabilityDiscovery[CapabilityColumnSnapshot]: ...
+
     async def discover(
         self, *, selected_columns: Sequence[CapabilityColumnSelection] | None = None,
         build_execution_tools: bool = False,
-    ) -> CapabilityDiscovery:
-        """Refresh directory facts, validate selections, and optionally bind executable tools."""
+    ) -> CapabilityDiscovery[CapabilityColumnSelection] | CapabilityDiscovery[CapabilityColumnSnapshot]:
+        """Publish a complete preview and return this discovery's preview or validated snapshot."""
         phase = "MCP configuration loading"
         timeout_seconds = self.settings_service.current.capability_discovery_timeout_seconds
         try:
@@ -67,6 +80,7 @@ class CapabilityProvider:
                     resources = SkillResourceProvider(self.skills_dir, clients)
                     tool_provider = ToolProvider(clients, additional_tools=(*resources.build_resource_tools(), *self.builtin_tools))
                     selection_error: CapabilityCatalogChanged | None = None
+                    capability_snapshot: CapabilityCatalog[CapabilityColumnSnapshot] | None = None
                     async with AsyncExitStack() as connections:
                         for server_name, group in tool_provider.client_groups.items():
                             phase = f"MCP connection: {server_name}"
@@ -76,13 +90,13 @@ class CapabilityProvider:
                         phase = "Skill and resource discovery"
                         resource_catalog = await resources.discover_resources()
                         phase = "Capability catalog construction"
-                        catalog = build_capability_preview(tool_catalog, resource_catalog,
-                                                           [f"mcp:{name}" for name in clients.clients])
-                        if cached_preview is not None:
-                            catalog = merge_capability_preview(cached_preview, catalog, selected_source_ids)
+                        discovered_preview = build_capability_preview(tool_catalog, resource_catalog,
+                                                                      [f"mcp:{name}" for name in clients.clients])
+                        updated_preview = (merge_capability_preview(cached_preview, discovered_preview, selected_source_ids)
+                                           if cached_preview is not None else discovered_preview)
                         if selected_columns is not None:
                             try:
-                                select_capabilities(catalog, selected_columns)
+                                capability_snapshot = select_capabilities(discovered_preview, selected_columns)
                             except CapabilityCatalogChanged as exc:
                                 selection_error = exc
                         tools = tool_provider.additional_tools
@@ -90,10 +104,12 @@ class CapabilityProvider:
                             phase = "MCP tool assembly"
                             tools = await tool_provider.build_execution_tools()
                         phase = "MCP connection cleanup"
-                    self._latest = catalog
+                    self._latest = updated_preview
                     if selection_error is not None:
                         raise selection_error
-                    return CapabilityDiscovery(tools=tools, catalog=catalog)
+                    if capability_snapshot is not None:
+                        return CapabilityDiscovery(tools=tools, catalog=capability_snapshot)
+                    return CapabilityDiscovery(tools=tools, catalog=discovered_preview)
         except (CapabilityCatalogChanged, MCPConnectionError):
             raise
         except Exception as exc:

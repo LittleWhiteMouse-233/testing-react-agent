@@ -172,9 +172,19 @@ beforeEach(() => {
       const body = await request.json() as TestPlanGenerateRequest;
       const isOtherCase = path === `/api/test-cases/${otherCase.id}/plans`;
       const plan = savedPlan((isOtherCase ? otherPlans : plans).length + 1, body.user_input ?? null, isOtherCase ? otherCase : currentCase);
-      plan.planning_context.capability_catalog.columns.forEach((column) => {
-        column.selected = body.selected_columns.some((selected) => selected.id === column.id);
-      });
+      const selectedColumnIds = new Set(body.selected_columns.map(({ id }) => id));
+      const planCatalog = plan.planning_context.capability_catalog;
+      planCatalog.columns = planCatalog.columns
+        .filter((column) => !column.id.startsWith("mcp:") || selectedColumnIds.has(column.id))
+        .map((column) => ({ ...column, selected: selectedColumnIds.has(column.id) }));
+      planCatalog.tool_catalog = { tools: planCatalog.tool_catalog.tools.filter((tool) =>
+        tool.source_id.startsWith("builtin:") || selectedColumnIds.has(tool.source_id)) };
+      planCatalog.resource_catalog = {
+        ...planCatalog.resource_catalog,
+        resources: planCatalog.resource_catalog.resources.filter((resource) =>
+          resource.source_id === "local" || selectedColumnIds.has(resource.source_id)),
+        templates: planCatalog.resource_catalog.templates.filter((template) => selectedColumnIds.has(template.source_id))
+      };
       if (isOtherCase) otherPlans = [plan, ...otherPlans];
       else plans = [plan, ...plans];
       return Response.json(plan, { status: 201 });

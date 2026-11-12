@@ -219,7 +219,7 @@
       },
       "CapabilityColumnSnapshot": {
         "additionalProperties": false,
-        "description": "Persisted access decision for one discovered column, including unselected ones.",
+        "description": "Persisted access decision for one discovered column, including unselected local ones.",
         "properties": {
           "id": {
             "minLength": 1,

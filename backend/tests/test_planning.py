@@ -76,7 +76,9 @@ def test_planning_empty_selection_freezes_its_own_settings(tmp_path: Path) -> No
         context = response.json()["planning_context"]
         assert context["planning_setting"]["max_cycles"] == 7
         assert context["planning_setting"]["model_call_max_attempts"] == 3
-        assert not any(column["selected"] for column in context["capability_catalog"]["columns"])
+        assert context["capability_catalog"]["columns"] == [{"id": "local:other", "selected": False}]
+        assert all(tool["source_id"].startswith("builtin:") for tool in context["capability_catalog"]["tool_catalog"]["tools"])
+        assert {column["id"] for column in client.get("/api/capabilities").json()["columns"]} == {"mcp:fixture", "local:other"}
         assert "capability_discovery_timeout_seconds" not in context
         assert client.get("/api/runs").json()["total"] == 0
 

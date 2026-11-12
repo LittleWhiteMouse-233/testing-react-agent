@@ -394,7 +394,7 @@ export interface components {
         };
         /**
          * CapabilityColumnSnapshot
-         * @description Persisted access decision for one discovered column, including unselected ones.
+         * @description Persisted access decision for one discovered column, including unselected local ones.
          */
         CapabilityColumnSnapshot: {
             /** Id */

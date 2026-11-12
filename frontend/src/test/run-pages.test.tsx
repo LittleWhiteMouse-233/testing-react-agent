@@ -69,7 +69,7 @@ it("shows frozen Skill resource addresses and templates in run resources", () =>
     resources: [{ source_id: "mcp:docs", uri: "skill://focus/SKILL.md", name: "Focus check", description: "Focus instructions", mime_type: "text/markdown", is_skill_manifest: false }],
     templates: [{ source_id: "mcp:docs", uri_template: "skill://focus/{path*}", name: "Attachments", description: null, mime_type: null }],
   };
-  report.detail.environment.capability_catalog.columns.push({ id: "mcp:docs", selected: false });
+  report.detail.environment.capability_catalog.columns.push({ id: "mcp:docs", selected: true });
   render(<RunResources report={report} />);
   expect(screen.getByText("Focus check")).toBeInTheDocument();
   expect(screen.getByText("skill://focus/SKILL.md")).toBeInTheDocument();

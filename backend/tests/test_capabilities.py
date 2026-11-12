@@ -129,12 +129,32 @@ def test_startup_preview_and_empty_selection_keep_only_builtin_tools(tmp_path: P
         detail = wait_for_run(client, response.json()["id"])
         assert detail["run"]["verdict"] == "PASS"
         catalog = detail["environment"]["capability_catalog"]
-        assert not any(column["selected"] for column in catalog["columns"])
-        assert {tool["name"] for tool in catalog["tool_catalog"]["tools"]} >= {
-            "fixture_inspect", "finish_task", "read_resource", "load_skill", "list_resources", "read_image_artifact",
+        assert catalog["columns"] == [{"id": "local:other", "selected": False}]
+        assert {tool["name"] for tool in catalog["tool_catalog"]["tools"]} == {
+            "finish_task", "read_resource", "load_skill", "list_resources", "read_image_artifact",
         }
         assert detail["task_runs"][0]["cycle_count"] == 2
         assert not any(record["phase"] == "started" for record in read_records(tmp_path))
+        assert client.get("/api/capabilities").json() == preview
+
+        scenario_path = tmp_path / "scenario.json"
+        scenario = json.loads(scenario_path.read_text("utf-8"))
+        scenario["tools"][0]["description"] = "Changed after the run"
+        scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
+        refreshed = client.post("/api/capabilities/refresh")
+        assert refreshed.status_code == 200 and refreshed.json() != preview
+        assert client.get(f"/api/runs/{response.json()['id']}").json()["detail"]["environment"]["capability_catalog"] == catalog
+        for export_format in ("json", "html"):
+            exported = client.post(f"/api/runs/{response.json()['id']}/exports", json={"format": export_format})
+            assert exported.status_code == 201
+            download = client.get(f"/api/artifacts/{exported.json()['id']}")
+            assert download.status_code == 200
+            if export_format == "json":
+                assert download.json()["detail"]["environment"]["capability_catalog"] == catalog
+            else:
+                resource_section = download.text.split("<h3>工具目录</h3>", 1)[1].split("</section>", 1)[0]
+                assert "finish_task" in resource_section and "local:other" in resource_section
+                assert "mcp:fixture" not in resource_section
 
 
 def test_changed_selected_column_rejects_preparation_and_refresh_recovers(tmp_path: Path) -> None:
@@ -236,7 +256,7 @@ async def test_refresh_does_not_replace_clients_bound_to_an_existing_batch(tmp_p
     from langchain_core.messages import AIMessage
     from langgraph.graph import StateGraph, MessagesState, START, END
     from langgraph.prebuilt import ToolNode
-    from app.domain.resources import select_capabilities
+    from app.domain.resources import CapabilityColumnSelection, select_capabilities
     from app.resources.capabilities import CapabilityProvider, CapabilityDiscovery
     from mcp_support import write_mcp_config, ResourceTestContext
 
@@ -252,7 +272,7 @@ async def test_refresh_does_not_replace_clients_bound_to_an_existing_batch(tmp_p
     original.write_text(replacement.read_text("utf-8"), encoding="utf-8")
     second = await provider.discover()
 
-    async def read_from(discovery: CapabilityDiscovery) -> str:
+    async def read_from(discovery: CapabilityDiscovery[CapabilityColumnSelection]) -> str:
         graph = StateGraph(MessagesState, context_schema=ResourceTestContext)
         graph.add_node("tools", ToolNode(discovery.tools))
         graph.add_edge(START, "tools")
@@ -390,7 +410,9 @@ async def test_discovery_reuses_one_process_for_tools_resources_manifests_and_su
 async def test_targeted_discovery_keeps_cached_unselected_service_without_connecting_it(tmp_path: Path) -> None:
     from mcp_support import read_records, write_mcp_config
 
-    config = write_mcp_config(tmp_path, [], servers=("first", "second"))
+    config = write_mcp_config(tmp_path, [], servers=("first", "second"),
+                              resources=[{"uri": "doc://manual", "name": "Manual"}],
+                              templates=[{"uriTemplate": "doc://{name}", "name": "Documents"}])
     provider = build_capability_provider(tmp_path, config)
     initial = await provider.discover()
     initial_json = initial.catalog.model_dump_json()
@@ -402,16 +424,24 @@ async def test_targeted_discovery_keeps_cached_unselected_service_without_connec
 
     current = await provider.discover(selected_columns=selection)
 
-    assert {column.id for column in current.catalog.columns} == {"mcp:first", "mcp:second", "local:other"}
-    assert {tool.source_id for tool in current.catalog.tool_catalog.tools} >= {"mcp:first", "mcp:second"}
+    assert {column.id for column in current.catalog.columns} == {"mcp:first", "local:other"}
+    assert {column.id: column.selected for column in current.catalog.columns} == {"mcp:first": True, "local:other": False}
+    assert {tool.source_id for tool in current.catalog.tool_catalog.tools} == {"mcp:first", "builtin:skill"}
+    assert {resource.source_id for resource in current.catalog.resource_catalog.resources} == {"mcp:first"}
+    assert {template.source_id for template in current.catalog.resource_catalog.templates} == {"mcp:first"}
+    assert not current.catalog.resource_is_available("mcp:second", "doc://unlisted")
     assert read_records(tmp_path, "second") == second_records
     assert sum(record["phase"] == "closed" for record in read_records(tmp_path, "first")) == 2
     assert initial.catalog.model_dump_json() == initial_json
-    assert provider.preview == current.catalog
+    assert provider.preview.columns == initial.catalog.columns
+    assert {tool.source_id for tool in provider.preview.tool_catalog.tools} == {"mcp:first", "mcp:second", "builtin:skill"}
+    assert {resource.source_id for resource in provider.preview.resource_catalog.resources} == {"mcp:first", "mcp:second"}
+    assert {template.source_id for template in provider.preview.resource_catalog.templates} == {"mcp:first", "mcp:second"}
 
 
 @pytest.mark.asyncio
-async def test_empty_selection_refreshes_local_boundaries_without_connecting_mcp(tmp_path: Path) -> None:
+@pytest.mark.parametrize("select_other", [False, True])
+async def test_local_selection_refreshes_all_local_boundaries_without_connecting_mcp(tmp_path: Path, select_other: bool) -> None:
     from app.domain.resources import select_capabilities
     from mcp_support import read_records, write_mcp_config
 
@@ -423,12 +453,17 @@ async def test_empty_selection_refreshes_local_boundaries_without_connecting_mcp
     new_package.mkdir(parents=True)
     (new_package / "SKILL.md").write_text("---\nname: New\ndescription: New package\n---", encoding="utf-8")
 
-    current = await provider.discover(selected_columns=[])
+    selected_columns = [column for column in initial.catalog.columns if select_other and column.id == "local:other"]
+    current = await provider.discover(selected_columns=selected_columns)
 
     assert read_records(tmp_path) == before
-    other_only = [column for column in current.catalog.columns if column.id == "local:other"]
-    snapshot = select_capabilities(current.catalog, other_only)
-    assert not snapshot.resource_is_available("local", (new_package / "unlisted.md").as_uri())
+    assert {column.id for column in current.catalog.columns} == {(new_package / "SKILL.md").as_uri(), "local:other"}
+    assert {column.id: column.selected for column in current.catalog.columns} == {
+        (new_package / "SKILL.md").as_uri(): False, "local:other": select_other,
+    }
+    assert not current.catalog.resource_is_available("local", (new_package / "unlisted.md").as_uri())
+    assert current.catalog.resource_is_available("local", (tmp_path / "skills/unlisted.md").as_uri()) is select_other
+    assert {column.id for column in provider.preview.columns} == {"mcp:fixture", (new_package / "SKILL.md").as_uri(), "local:other"}
     old_snapshot = select_capabilities(initial.catalog, [column for column in initial.catalog.columns if column.id == "local:other"])
     assert old_snapshot.resource_is_available("local", (new_package / "unlisted.md").as_uri())
 

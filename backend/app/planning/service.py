@@ -23,7 +23,7 @@ from app.config import SettingsService
 from app.event_stream import EventBus
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.planning.graph import PlanningProgress, PlanningGraph
-from app.domain.resources import CapabilityColumnSelection, select_capabilities
+from app.domain.resources import CapabilityColumnSelection
 from app.resources.capabilities import CapabilityProvider
 from app.test_case_lock import TestCaseLock
 
@@ -85,7 +85,6 @@ class PlanningService:
                 previous_content = draft_plan_content(previous_plan.content) if previous_plan else None
                 prompt_definition = self.planning_graph.prompt_definition
                 discovery = await self.capabilities.discover(selected_columns=selected_columns)
-                capability_catalog = select_capabilities(discovery.catalog, selected_columns)
                 resource_tools = tuple(available_tool for available_tool in discovery.tools
                                        if (available_tool.metadata or {}).get("tool_source") == "builtin:skill")
                 context = TestPlanPlanningContext(
@@ -96,7 +95,7 @@ class PlanningService:
                     ),
                     user_input=user_input,
                     planning_setting=planning_setting,
-                    capability_catalog=capability_catalog,
+                    capability_catalog=discovery.catalog,
                 )
                 self.test_case_lock.release(test_case_id, "pre_planning")
                 await stage("planning.input_ready")

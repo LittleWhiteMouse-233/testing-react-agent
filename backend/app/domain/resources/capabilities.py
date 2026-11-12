@@ -26,7 +26,7 @@ class CapabilityColumnSelection(BaseModel):
 
 
 class CapabilityColumnSnapshot(BaseModel):
-    """Persisted access decision for one discovered column, including unselected ones."""
+    """Persisted access decision for one discovered column, including unselected local ones."""
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: str = Field(min_length=1)
     selected: bool
@@ -36,7 +36,7 @@ ColumnT = TypeVar("ColumnT", CapabilityColumnSelection, CapabilityColumnSnapshot
 
 
 class CapabilityCatalog(BaseModel, Generic[ColumnT]):
-    """One full capability family; columns coordinate preview or immutable run decisions."""
+    """Capability directory facts and columns for a preview or a prepared snapshot."""
     model_config = ConfigDict(extra="forbid", frozen=True)
     tool_catalog: ToolCatalogSnapshot
     resource_catalog: ResourceCatalogSnapshot
@@ -155,7 +155,7 @@ def merge_capability_preview(
 def select_capabilities(
     preview: CapabilityCatalog[CapabilityColumnSelection], selections: Sequence[CapabilityColumnSelection],
 ) -> CapabilityCatalog[CapabilityColumnSnapshot]:
-    """Validate selected previews and freeze the complete directory view for audit."""
+    """Validate selected fingerprints and freeze the supplied discovery scope for audit."""
     selected_by_id = {selection.id: selection.fingerprint for selection in selections}
     if len(selected_by_id) != len(selections):
         raise ValueError("Selected capability columns must be unique")

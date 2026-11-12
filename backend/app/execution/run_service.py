@@ -16,7 +16,7 @@ from app.persistence.run_repository import (
 )
 from app.resources.prompts import PromptCatalog
 from app.resources.capabilities import CapabilityProvider
-from app.domain.resources import CapabilityColumnSelection, select_capabilities
+from app.domain.resources import CapabilityColumnSelection
 from app.test_case_lock import TestCaseLock
 
 
@@ -133,7 +133,7 @@ class RunService:
         model_profile = settings.llm.profile_for_activity(AgentActivity.EXECUTION).model_copy(deep=True)
         await self.repository.validate_test_plan_for_run(test_case_id=test_case_id, test_plan_id=test_plan_id)
         discovery = await self.capabilities.discover(selected_columns=selected_columns, build_execution_tools=True)
-        capability_catalog = select_capabilities(discovery.catalog, selected_columns)
+        capability_catalog = discovery.catalog
         tools = tuple(tool for tool in discovery.tools
                       if capability_catalog.tool_is_available(str((tool.metadata or {})["tool_source"])))
         environment = TestRunEnvironmentSnapshot(
