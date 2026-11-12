@@ -160,7 +160,7 @@ async def test_mcp_manifest_nested_resources_and_source_bound_reads(tmp_path: Pa
     }
     config = write_mcp_config(tmp_path, [], resources=resources, resource_contents=contents,
                              templates=[{"uriTemplate": "skill://parent/{path*}", "name": "attachments"}], tools_enabled=False)
-    assert await ToolProvider(await load_mcp_client_provider(config)).discover_tools() == ()
+    assert (await ToolProvider(await load_mcp_client_provider(config)).discover_tools()).tools == []
     provider = SkillResourceProvider(tmp_path / "skills", await load_mcp_client_provider(config))
     catalog = await provider.discover_resources()
     catalog_before_reads = catalog.model_dump_json()

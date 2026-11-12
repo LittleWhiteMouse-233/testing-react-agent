@@ -1,5 +1,5 @@
 from __future__ import annotations
-from app.resources.tools import ToolProvider
+from app.resources.tools import ToolProvider, snapshot_tools
 from app.resources.mcp import MCPClientProvider
 from app.resources.static_resources import SkillResourceProvider
 from mcp_support import capability_selection
@@ -504,7 +504,7 @@ def test_one_preparation_timeout_covers_every_stage_and_releases_run_entry(
 
         async def discover_tools(self):
             await stage("tools")
-            return self.additional_tools
+            return snapshot_tools(self.additional_tools)
 
         async def discover_resources(self) -> ResourceCatalogSnapshot:
             await stage("resources")
@@ -548,13 +548,13 @@ def test_preparation_errors_are_converted_once_at_the_public_boundary(tmp_path: 
         plan = create_plan(client)
         config = tmp_path / "mcp.json"
         config.write_text("not json" if invalid_config else json.dumps({
-            "mcpServers": {"missing": {"command": "nonexistent-mcp-executable"}},
+            "mcpServers": {"fixture": {"command": "nonexistent-mcp-executable"}},
         }), encoding="utf-8")
         response = client.post("/api/runs", json={"test_case_id": plan["test_case_id"], "test_plan_id": plan["id"], "assumptions_confirmed": True, "selected_columns": capability_selection(client)})
         assert response.status_code == 502
         assert response.json()["code"] == "mcp_unavailable"
         diagnostic = response.json()["message"]
-        assert diagnostic.startswith("MCP configuration loading" if invalid_config else "MCP tool discovery")
+        assert diagnostic.startswith("MCP configuration loading" if invalid_config else "MCP connection: fixture")
         assert "MCPConnectionError" not in diagnostic
 
 
@@ -565,23 +565,24 @@ def test_tool_failure_blocks_releases_slot_and_allows_another_run(
     with build_client(tmp_path, turns=[tool_turn(1)]) as client:
         plan = create_plan(client, task_count=2)
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
-        original_discover = ToolProvider.discover_tools
-
         async def fail_tool() -> str:
             if cancelled:
                 assert container.run_service._work is not None
                 container.run_service._work.cancellation.set()
             raise OSError("tool invocation mechanism failed")
 
-        async def discover_tools(self):
-            return (StructuredTool.from_function(
-                coroutine=fail_tool, name="fixture_inspect", description="Observe target",
-                metadata={"tool_source": "mcp:fixture"},
-            ), *self.additional_tools)
+        original_build = ToolProvider.build_execution_tools
+
+        async def build_execution_tools(self):
+            tools = await original_build(self)
+            for tool in tools:
+                if tool.name == "fixture_inspect":
+                    assert isinstance(tool, StructuredTool)
+                    tool.coroutine = fail_tool
+            return tools
 
         async def exercise():
-            monkeypatch.setattr(ToolProvider, "discover_tools", discover_tools)
-            await container.capabilities.discover()
+            monkeypatch.setattr(ToolProvider, "build_execution_tools", build_execution_tools)
             run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
             work = container.run_service._work
             assert work is not None and work.task is not None
@@ -594,8 +595,7 @@ def test_tool_failure_blocks_releases_slot_and_allows_another_run(
             assert sum(entry.event.type == "execution.error" for entry in events) == 1
             assert sum(entry.event.type == "run.finished" for entry in events) == 1
             assert container.run_service._work is None
-            monkeypatch.setattr(ToolProvider, "discover_tools", original_discover)
-            await container.capabilities.discover()
+            monkeypatch.setattr(ToolProvider, "build_execution_tools", original_build)
             next_run = await container.run_service.start(test_case_id=plan["test_case_id"], test_plan_id=plan["id"], assumptions_confirmed=True, selected_columns=container.capabilities.preview.columns)
             assert next_run.id != run.id
             assert await container.run_service.cancel(next_run.id)
@@ -761,7 +761,7 @@ def test_shutdown_cancels_discovery_before_run_creation(tmp_path: Path, monkeypa
                 try:
                     preparing.set()
                     await asyncio.Event().wait()
-                    return self.additional_tools
+                    return snapshot_tools(self.additional_tools)
                 finally:
                     cleaned.set()
 

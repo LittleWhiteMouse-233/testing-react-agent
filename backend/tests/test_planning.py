@@ -416,6 +416,11 @@ async def test_resource_timeout_is_reported_without_replaying_the_call(tmp_path:
 
 
 def test_planning_reads_skills_and_resources_without_executing_mcp_tools(tmp_path: Path) -> None:
+    from app.resources import tools as tool_resources
+
+    async def reject_assembly(*arguments: object) -> None:
+        raise AssertionError("Planning must not assemble external execution tools")
+
     skill_root = tmp_path / "skills" / "display"
     skill_root.mkdir(parents=True)
     skill_entry = skill_root / "SKILL.md"
@@ -430,6 +435,7 @@ def test_planning_reads_skills_and_resources_without_executing_mcp_tools(tmp_pat
         planning_turn(5, "finish_plan", expected_draft().model_dump(mode="json")),
     ])
     with build_client(tmp_path) as client, pytest.MonkeyPatch.context() as patch:
+        patch.setattr(tool_resources, "as_langchain_tool", reject_assembly)
         install_model(client, model, patch)
         case = client.post("/api/test-cases", json={"name": "资源规划", "source_text": "检查标题"}).json()
         response = client.post(f"/api/test-cases/{case['id']}/plans", json={

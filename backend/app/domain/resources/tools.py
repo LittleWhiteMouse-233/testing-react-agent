@@ -1,4 +1,5 @@
-"""Immutable, credential-free projections of all tools available to one run."""
+"""Immutable, credential-free tool definitions used by previews and run snapshots."""
+from collections import Counter
 from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
@@ -34,7 +35,8 @@ class ToolCatalogSnapshot(BaseModel):
 
     @model_validator(mode="after")
     def tool_names_are_unique(self) -> "ToolCatalogSnapshot":
-        names = [tool.name for tool in self.tools]
-        if len(names) != len(set(names)):
-            raise ValueError("tool names must be unique")
+        name_counts = Counter(tool.name for tool in self.tools)
+        collisions = sorted(name for name, count in name_counts.items() if count > 1)
+        if collisions:
+            raise ValueError(f"Tool names collide: {', '.join(collisions)}")
         return self

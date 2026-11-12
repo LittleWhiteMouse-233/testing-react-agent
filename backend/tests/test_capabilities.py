@@ -6,6 +6,17 @@ import os
 import pytest
 
 from app.domain.resources import ResourceCatalogSnapshot, ResourceDefinitionSnapshot, ToolCatalogSnapshot
+from app.resources.capabilities import CapabilityProvider
+
+
+def build_capability_provider(root: Path, mcp_config: Path, *, timeout_seconds: float = 120) -> CapabilityProvider:
+    from app.config import SettingsService
+    from app.test_case_lock import TestCaseLock
+    from config_support import build_settings
+
+    return CapabilityProvider(mcp_config, root / "skills", (), settings_service=SettingsService(
+        build_settings(root, mcp_config_path=mcp_config, capability_discovery_timeout_seconds=timeout_seconds), TestCaseLock(),
+    ))
 
 
 def local_catalog(root: Path) -> ResourceCatalogSnapshot:
@@ -288,3 +299,319 @@ async def test_discovery_reads_updated_timeout_without_replacing_inflight_deadli
     assert service.restart_required is False
     release.set()
     assert (await provider.discover()).catalog.columns
+
+
+@pytest.mark.parametrize("selected_source_state", ["replaced", "empty", "removed"])
+def test_targeted_preview_merge_replaces_whole_sources_and_local_boundaries(
+    tmp_path: Path, selected_source_state: str,
+) -> None:
+    from app.domain.resources import (
+        ResourceTemplateSnapshot, ToolAnnotationsSnapshot, ToolDefinitionSnapshot,
+        build_capability_preview, merge_capability_preview, select_capabilities,
+    )
+
+    first_tool = ToolDefinitionSnapshot(name="first_old", source_id="mcp:first", description="Old",
+                                       input_schema={"type": "object"}, annotations=ToolAnnotationsSnapshot())
+    second_tool = first_tool.model_copy(update={"name": "second_inspect", "source_id": "mcp:second"})
+    builtin_tool = first_tool.model_copy(update={"name": "finish", "source_id": "builtin:fixture"})
+    first_resource = ResourceDefinitionSnapshot(source_id="mcp:first", uri="doc://old", name="Old")
+    second_resource = first_resource.model_copy(update={"source_id": "mcp:second"})
+    first_template = ResourceTemplateSnapshot(source_id="mcp:first", uri_template="doc://old/{path}", name="Old")
+    second_template = first_template.model_copy(update={"source_id": "mcp:second"})
+    cached = build_capability_preview(
+        ToolCatalogSnapshot(tools=[first_tool, second_tool, builtin_tool]),
+        ResourceCatalogSnapshot(local_root=str(tmp_path), resources=[
+            *local_catalog(tmp_path).resources, first_resource, second_resource,
+        ], templates=[first_template, second_template]),
+        ["mcp:first", "mcp:second"],
+    )
+    cached_before_merge = cached.model_dump_json()
+    fresh_local = ResourceDefinitionSnapshot(source_id="local", uri=(tmp_path / "new/SKILL.md").as_uri(), name="New")
+    discovered = build_capability_preview(
+        ToolCatalogSnapshot(tools=[builtin_tool.model_copy(update={"description": "Current"}), *(
+            [first_tool.model_copy(update={"name": "first_new"})] if selected_source_state == "replaced" else []
+        )]),
+        ResourceCatalogSnapshot(local_root=str(tmp_path), resources=[fresh_local, *(
+            [first_resource.model_copy(update={"uri": "doc://new"})] if selected_source_state == "replaced" else []
+        )]),
+        [] if selected_source_state == "removed" else ["mcp:first"],
+    )
+
+    merged = merge_capability_preview(cached, discovered, {"mcp:first"})
+
+    assert {tool.name for tool in merged.tool_catalog.tools} == (
+        {"finish", "second_inspect", "first_new"} if selected_source_state == "replaced"
+        else {"finish", "second_inspect"}
+    )
+    assert next(tool for tool in merged.tool_catalog.tools if tool.name == "finish").description == "Current"
+    expected_resources = {("local", fresh_local.uri), ("mcp:second", "doc://old")}
+    if selected_source_state == "replaced":
+        expected_resources.add(("mcp:first", "doc://new"))
+    assert {(entry.source_id, entry.uri) for entry in merged.resource_catalog.resources} == expected_resources
+    assert [(entry.source_id, entry.uri_template) for entry in merged.resource_catalog.templates] == [
+        ("mcp:second", "doc://old/{path}"),
+    ]
+    assert ("mcp:first" in {column.id for column in merged.columns}) == (selected_source_state != "removed")
+    assert next(column for column in merged.columns if column.id == "mcp:second").fingerprint == next(
+        column for column in cached.columns if column.id == "mcp:second"
+    ).fingerprint
+    snapshot = select_capabilities(merged, [column for column in merged.columns if column.id == "local:other"])
+    assert not snapshot.resource_is_available("local", (tmp_path / "new/unlisted.md").as_uri())
+    assert cached.model_dump_json() == cached_before_merge
+
+
+@pytest.mark.asyncio
+async def test_discovery_reuses_one_process_for_tools_resources_manifests_and_summaries(tmp_path: Path) -> None:
+    from mcp_support import read_records, write_mcp_config
+
+    manifest_uri = "skill://package/_manifest"
+    skill_uri = "skill://package/SKILL.md"
+    config = write_mcp_config(tmp_path, [], resources=[
+        {"uri": manifest_uri, "name": "manifest", "mimeType": "application/json",
+         "_meta": {"fastmcp": {"skill": {"is_manifest": True}}}},
+        {"uri": skill_uri, "name": "package", "mimeType": "text/markdown"},
+    ], resource_contents={
+        manifest_uri: [{"uri": manifest_uri, "text": json.dumps({
+            "skill": "package", "files": [{"path": "SKILL.md", "size": 1, "hash": "sha256:test"}],
+        })}],
+        skill_uri: [{"uri": skill_uri, "text": "---\nname: Package\ndescription: Package summary\n---\nInstructions"}],
+    })
+    discovery = await build_capability_provider(tmp_path, config).discover()
+
+    records = read_records(tmp_path)
+    assert {record["uri"] for record in records if record["phase"] == "resource.read"} == {manifest_uri, skill_uri}
+    assert len({record["pid"] for record in records}) == 1
+    assert sum(record["phase"] == "closed" for record in records) == 1
+    assert not any(record["phase"] == "started" for record in records)
+    assert {tool.name for tool in discovery.tools} == {"load_skill", "read_resource", "list_resources"}
+
+
+@pytest.mark.asyncio
+async def test_targeted_discovery_keeps_cached_unselected_service_without_connecting_it(tmp_path: Path) -> None:
+    from mcp_support import read_records, write_mcp_config
+
+    config = write_mcp_config(tmp_path, [], servers=("first", "second"))
+    provider = build_capability_provider(tmp_path, config)
+    initial = await provider.discover()
+    initial_json = initial.catalog.model_dump_json()
+    second_records = read_records(tmp_path, "second")
+    connections = json.loads(config.read_text("utf-8"))
+    connections["mcpServers"]["second"]["command"] = "nonexistent-mcp-executable"
+    config.write_text(json.dumps(connections), encoding="utf-8")
+    selection = [column for column in initial.catalog.columns if column.id == "mcp:first"]
+
+    current = await provider.discover(selected_columns=selection)
+
+    assert {column.id for column in current.catalog.columns} == {"mcp:first", "mcp:second", "local:other"}
+    assert {tool.source_id for tool in current.catalog.tool_catalog.tools} >= {"mcp:first", "mcp:second"}
+    assert read_records(tmp_path, "second") == second_records
+    assert sum(record["phase"] == "closed" for record in read_records(tmp_path, "first")) == 2
+    assert initial.catalog.model_dump_json() == initial_json
+    assert provider.preview == current.catalog
+
+
+@pytest.mark.asyncio
+async def test_empty_selection_refreshes_local_boundaries_without_connecting_mcp(tmp_path: Path) -> None:
+    from app.domain.resources import select_capabilities
+    from mcp_support import read_records, write_mcp_config
+
+    config = write_mcp_config(tmp_path, [])
+    provider = build_capability_provider(tmp_path, config)
+    initial = await provider.discover()
+    before = read_records(tmp_path)
+    new_package = tmp_path / "skills/new"
+    new_package.mkdir(parents=True)
+    (new_package / "SKILL.md").write_text("---\nname: New\ndescription: New package\n---", encoding="utf-8")
+
+    current = await provider.discover(selected_columns=[])
+
+    assert read_records(tmp_path) == before
+    other_only = [column for column in current.catalog.columns if column.id == "local:other"]
+    snapshot = select_capabilities(current.catalog, other_only)
+    assert not snapshot.resource_is_available("local", (new_package / "unlisted.md").as_uri())
+    old_snapshot = select_capabilities(initial.catalog, [column for column in initial.catalog.columns if column.id == "local:other"])
+    assert old_snapshot.resource_is_available("local", (new_package / "unlisted.md").as_uri())
+
+
+@pytest.mark.asyncio
+async def test_catalog_conflict_publishes_new_preview_without_assembling_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.domain.resources import CapabilityCatalogChanged
+    from app.resources import tools as tool_resources
+    from mcp_support import read_records, write_mcp_config
+
+    async def reject_assembly(*arguments: object) -> None:
+        raise AssertionError("A conflicting selection must not assemble executable tools")
+
+    monkeypatch.setattr(tool_resources, "as_langchain_tool", reject_assembly)
+    config = write_mcp_config(tmp_path, [])
+    provider = build_capability_provider(tmp_path, config)
+    initial = await provider.discover()
+    initial_json = initial.catalog.model_dump_json()
+    scenario_path = tmp_path / "scenario.json"
+    scenario = json.loads(scenario_path.read_text("utf-8"))
+    scenario["tools"][0]["description"] = "New definition"
+    scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
+
+    with pytest.raises(CapabilityCatalogChanged):
+        await provider.discover(selected_columns=initial.catalog.columns, build_execution_tools=True)
+
+    assert provider.preview.tool_catalog.tools[0].description == "New definition"
+    assert provider.preview != initial.catalog
+    assert initial.catalog.model_dump_json() == initial_json
+    assert not any(record["phase"] == "started" for record in read_records(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_selected_service_removal_clears_its_cached_column_and_full_refresh_replaces_all(tmp_path: Path) -> None:
+    from app.domain.resources import CapabilityCatalogChanged
+    from mcp_support import read_records, write_mcp_config
+
+    config = write_mcp_config(tmp_path, [], servers=("first", "second"))
+    provider = build_capability_provider(tmp_path, config)
+    initial = await provider.discover()
+    before = {name: read_records(tmp_path, name) for name in ("first", "second")}
+    connections = json.loads(config.read_text("utf-8"))
+    del connections["mcpServers"]["first"]
+    connections["mcpServers"]["second"]["command"] = "nonexistent-mcp-executable"
+    config.write_text(json.dumps(connections), encoding="utf-8")
+
+    with pytest.raises(CapabilityCatalogChanged):
+        await provider.discover(selected_columns=[column for column in initial.catalog.columns if column.id == "mcp:first"])
+
+    assert {column.id for column in provider.preview.columns} == {"mcp:second", "local:other"}
+    assert all(tool.source_id != "mcp:first" for tool in provider.preview.tool_catalog.tools)
+    assert {name: read_records(tmp_path, name) for name in before} == before
+    write_mcp_config(tmp_path, [], servers=("third",))
+    refreshed = await provider.discover()
+    assert {column.id for column in refreshed.catalog.columns} == {"mcp:third", "local:other"}
+
+
+@pytest.mark.asyncio
+async def test_targeted_preparation_assembles_only_selected_service_and_keeps_calls_independent(tmp_path: Path) -> None:
+    from langsmith import tracing_context
+    from mcp_support import read_records, replay_call, text_block, write_mcp_config
+
+    config = write_mcp_config(tmp_path, [replay_call(content=[text_block("observed")])], servers=("first", "second"))
+    provider = build_capability_provider(tmp_path, config)
+    initial = await provider.discover()
+    second_records = read_records(tmp_path, "second")
+
+    prepared = await provider.discover(
+        selected_columns=[column for column in initial.catalog.columns if column.id == "mcp:first"],
+        build_execution_tools=True,
+    )
+
+    assert {tool.name for tool in prepared.tools} == {"first_inspect", "load_skill", "read_resource", "list_resources"}
+    assert sum(record["phase"] == "closed" for record in read_records(tmp_path, "first")) == 2
+    assert sum(record["phase"] == "discovery" for record in read_records(tmp_path, "first")) == 2
+    tool = next(tool for tool in prepared.tools if tool.name == "first_inspect")
+    with tracing_context(enabled=False):
+        response = await tool.ainvoke({"name": tool.name, "args": {}, "id": "inspect", "type": "tool_call"})
+    assert response.text == "observed"
+    assert read_records(tmp_path, "second") == second_records
+    assert sum(record["phase"] == "closed" for record in read_records(tmp_path, "first")) == 3
+
+
+@pytest.mark.asyncio
+async def test_targeted_discovery_without_valid_preview_does_not_connect(tmp_path: Path) -> None:
+    from app.resources.mcp import MCPConnectionError
+    from mcp_support import read_records, write_mcp_config
+
+    config = write_mcp_config(tmp_path, [])
+    provider = build_capability_provider(tmp_path, config)
+    with pytest.raises(MCPConnectionError, match="have not been discovered"):
+        await provider.discover(selected_columns=[])
+    assert read_records(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_failed_connection_closes_previous_services_and_preserves_cached_preview(tmp_path: Path) -> None:
+    from app.resources.mcp import MCPConnectionError
+    from mcp_support import read_records, write_mcp_config
+
+    config = write_mcp_config(tmp_path, [], servers=("first", "second"))
+    provider = build_capability_provider(tmp_path, config)
+    initial = await provider.discover()
+    original_config = config.read_text("utf-8")
+    connections = json.loads(original_config)
+    connections["mcpServers"]["second"]["command"] = "nonexistent-mcp-executable"
+    config.write_text(json.dumps(connections), encoding="utf-8")
+
+    with pytest.raises(MCPConnectionError, match="MCP connection: second"):
+        await provider.discover()
+
+    assert provider.preview == initial.catalog
+    assert sum(record["phase"] == "closed" for record in read_records(tmp_path, "first")) == 2
+    assert sum(record["phase"] == "closed" for record in read_records(tmp_path, "second")) == 1
+    config.write_text(original_config, encoding="utf-8")
+    assert (await provider.discover()).catalog == initial.catalog
+
+
+@pytest.mark.asyncio
+async def test_resource_disconnect_releases_other_services_without_publishing_partial_catalog(tmp_path: Path) -> None:
+    from app.resources.mcp import MCPConnectionError
+    from mcp_support import read_records, write_mcp_config
+
+    skill_uri = "skill://package/SKILL.md"
+    config = write_mcp_config(tmp_path, [], servers=("first", "second"), resources=[
+        {"uri": skill_uri, "name": "Package", "mimeType": "text/markdown"},
+    ], resource_contents={skill_uri: [{"uri": skill_uri, "text": "---\ndescription: Package\n---"}]})
+    provider = build_capability_provider(tmp_path, config)
+    initial = await provider.discover()
+    scenario_path = tmp_path / "scenario.json"
+    scenario = json.loads(scenario_path.read_text("utf-8"))
+    scenario["resource_disconnects"] = [skill_uri]
+    scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
+
+    with pytest.raises(MCPConnectionError, match="Skill and resource discovery"):
+        await provider.discover()
+
+    assert provider.preview == initial.catalog
+    assert sum(record["phase"] == "closed" for record in read_records(tmp_path, "second")) == 2
+    scenario["resource_disconnects"] = []
+    scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
+    assert (await provider.discover()).catalog == initial.catalog
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interruption", ["cancel", "timeout"])
+async def test_interrupted_discovery_releases_connected_processes_and_retains_preview(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interruption: str,
+) -> None:
+    import asyncio
+    from app.resources.mcp import MCPConnectionError
+    from app.resources.static_resources import SkillResourceProvider
+    from mcp_support import read_records, write_mcp_config
+
+    config = write_mcp_config(tmp_path, [])
+    provider = build_capability_provider(tmp_path, config, timeout_seconds=10)
+    initial = await provider.discover()
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_discover_resources = SkillResourceProvider.discover_resources
+
+    async def blocked_resources(resources: SkillResourceProvider) -> ResourceCatalogSnapshot:
+        entered.set()
+        await release.wait()
+        return await original_discover_resources(resources)
+
+    monkeypatch.setattr(SkillResourceProvider, "discover_resources", blocked_resources)
+    pending = asyncio.create_task(provider.discover())
+    try:
+        await asyncio.wait_for(entered.wait(), 15)
+        if interruption == "cancel":
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+        else:
+            with pytest.raises(MCPConnectionError, match="TimeoutError"):
+                await pending
+    finally:
+        if not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+    assert provider.preview == initial.catalog
+    assert sum(record["phase"] == "closed" for record in read_records(tmp_path)) == 2
+    release.set()
+    assert (await provider.discover()).catalog == initial.catalog

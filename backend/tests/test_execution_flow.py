@@ -886,9 +886,13 @@ def test_run_tools_ignore_config_changes_and_hold_the_single_run_slot(tmp_path: 
         ]
         assert len({tool["name"] for tool in snapshots}) == len(snapshots) == 6
     records = read_records(tmp_path)
-    # Startup, planning and run preparation each close tool/resource sessions,
-    # followed by the two independent business calls bound to the original batch.
-    assert len({entry["pid"] for entry in records}) == 8
+    # Startup, planning and run preparation each share one discovery process;
+    # the two business calls still use independent processes from the original batch.
+    process_ids = {entry["pid"] for entry in records}
+    business_call_process_ids = {entry["pid"] for entry in records if entry["phase"] == "started"}
+    assert len(process_ids - business_call_process_ids) == 3
+    assert len(business_call_process_ids) == 2
+    assert {entry["pid"] for entry in records if entry["phase"] == "closed"} == process_ids
     assert sum(entry["phase"] == "completed" for entry in records) == 2
 
 

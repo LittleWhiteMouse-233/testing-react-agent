@@ -84,7 +84,7 @@ class PlanningService:
                 model_client = llm.create_model_client(model_profile)
                 previous_content = draft_plan_content(previous_plan.content) if previous_plan else None
                 prompt_definition = self.planning_graph.prompt_definition
-                discovery = await self.capabilities.discover()
+                discovery = await self.capabilities.discover(selected_columns=selected_columns)
                 capability_catalog = select_capabilities(discovery.catalog, selected_columns)
                 resource_tools = tuple(available_tool for available_tool in discovery.tools
                                        if (available_tool.metadata or {}).get("tool_source") == "builtin:skill")

@@ -2,41 +2,58 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from collections import Counter
 
 from fastmcp.client.group import ClientGroup
 from langchain.mcp import as_langchain_tool
 from langchain_core.tools import BaseTool
 from langchain_core.utils.pydantic import model_json_schema
+from mcp_types import Tool as MCPTool
 
 from app.domain.resources import ToolDefinitionSnapshot, ToolCatalogSnapshot, ToolAnnotationsSnapshot
 from app.resources.mcp import MCPClientProvider
 
 
 class ToolProvider:
-    """Discover once per run; returned tools own their invocation contexts."""
+    """Discover source definitions, then optionally bind this batch's executable tools."""
 
     def __init__(self, mcp_clients: MCPClientProvider, *, additional_tools: Sequence[BaseTool] = ()) -> None:
         self.mcp_clients = mcp_clients
         self.additional_tools = tuple(additional_tools)
+        self.client_groups: dict[str, ClientGroup] = {
+            server_name: ClientGroup({server_name: client}) for server_name, client in mcp_clients.clients.items()
+        }
+        self._remote_tools_by_server: dict[str, list[MCPTool]] = {}
 
-    async def discover_tools(self) -> tuple[BaseTool, ...]:
-        loaded_tools: list[BaseTool] = []
-        for server_name, client in self.mcp_clients.clients.items():
+    async def discover_tools(self) -> ToolCatalogSnapshot:
+        definitions: list[ToolDefinitionSnapshot] = []
+        self._remote_tools_by_server = {}
+        for server_name, group in self.client_groups.items():
             # One-member groups retain prefixes without opening unrelated services.
-            group = ClientGroup({server_name: client})
+            client = self.mcp_clients.clients[server_name]
             async with group:
                 if client.server_capabilities is None or client.server_capabilities.tools is None:
                     continue
-                for remote_tool in await group.list_tools(cache_mode="bypass"):
-                    adapted_tool = await as_langchain_tool(remote_tool, group)
-                    adapted_tool.metadata = {**(adapted_tool.metadata or {}), "tool_source": f"mcp:{server_name}"}
-                    loaded_tools.append(adapted_tool)
+                remote_tools = await group.list_tools(cache_mode="bypass")
+                self._remote_tools_by_server[server_name] = remote_tools
+                definitions.extend(ToolDefinitionSnapshot(
+                    name=remote_tool.name, description=remote_tool.description or "",
+                    input_schema=remote_tool.input_schema, source_id=f"mcp:{server_name}",
+                    annotations=ToolAnnotationsSnapshot.model_validate(
+                        remote_tool.annotations.model_dump() if remote_tool.annotations is not None else {},
+                    ),
+                ) for remote_tool in remote_tools)
+        return ToolCatalogSnapshot(tools=[*definitions, *snapshot_tools(self.additional_tools).tools])
+
+    async def build_execution_tools(self) -> tuple[BaseTool, ...]:
+        """Adapt definitions while the caller holds their groups and discovered routes."""
+        loaded_tools: list[BaseTool] = []
+        for server_name, remote_tools in self._remote_tools_by_server.items():
+            group = self.client_groups[server_name]
+            for remote_tool in remote_tools:
+                adapted_tool = await as_langchain_tool(remote_tool, group)
+                adapted_tool.metadata = {**(adapted_tool.metadata or {}), "tool_source": f"mcp:{server_name}"}
+                loaded_tools.append(adapted_tool)
         loaded_tools.extend(self.additional_tools)
-        name_counts = Counter(entry.name for entry in loaded_tools)
-        collisions = sorted(name for name, count in name_counts.items() if count > 1)
-        if collisions:
-            raise ValueError(f"Tool names collide: {', '.join(collisions)}")
         return tuple(loaded_tools)
 
 

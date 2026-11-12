@@ -1,13 +1,45 @@
 from pathlib import Path
+from contextlib import AsyncExitStack
+import json
 
 import pytest
 from langchain_core.messages import ToolMessage
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import BaseTool, StructuredTool
 from langsmith import tracing_context
 
+from app.domain.resources import ToolCatalogSnapshot
 from app.resources.mcp import MCPClientProvider
 from app.resources.tools import ToolProvider, snapshot_tools
 from mcp_support import image_block, load_mcp_client_provider, read_records, replay_call, text_block, write_mcp_config
+
+
+async def discover_execution_tools(config: Path) -> tuple[BaseTool, ...]:
+    clients = await load_mcp_client_provider(config)
+    provider = ToolProvider(clients)
+    async with AsyncExitStack() as connections:
+        for group in provider.client_groups.values():
+            await connections.enter_async_context(group)
+        await provider.discover_tools()
+        return await provider.build_execution_tools()
+
+
+@pytest.mark.asyncio
+async def test_discovery_returns_metadata_without_assembling_executable_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.resources import tools as tool_resources
+
+    async def reject_assembly(*arguments: object) -> None:
+        raise AssertionError("Metadata discovery must not assemble executable tools")
+
+    monkeypatch.setattr(tool_resources, "as_langchain_tool", reject_assembly)
+    config = write_mcp_config(tmp_path, [])
+    catalog = await ToolProvider(await load_mcp_client_provider(config)).discover_tools()
+
+    assert isinstance(catalog, ToolCatalogSnapshot)
+    assert [tool.name for tool in catalog.tools] == ["fixture_inspect"]
+    assert catalog.tools[0].annotations.readOnlyHint is True
+    assert not any(record["phase"] == "started" for record in read_records(tmp_path))
 
 
 @pytest.mark.asyncio
@@ -17,7 +49,7 @@ async def test_replay_scenario_continues_across_framework_sessions(tmp_path: Pat
         replay_call(content=[text_block("second observation")]),
     ])
     with tracing_context(enabled=False):
-        tools = await ToolProvider(await load_mcp_client_provider(config)).discover_tools()
+        tools = await discover_execution_tools(config)
         responses = [await tools[0].ainvoke({
             "name": tools[0].name, "args": {}, "id": str(index), "type": "tool_call",
         }) for index in range(2)]
@@ -31,7 +63,7 @@ async def test_discovery_closes_sessions_and_tools_use_independent_calls(tmp_pat
         replay_call(content=[text_block("first"), image_block()]),
         replay_call(content=[text_block("second"), image_block()]),
     ], servers=("first", "second"))
-    tools = await ToolProvider(await load_mcp_client_provider(config)).discover_tools()
+    tools = await discover_execution_tools(config)
     assert [tool.name for tool in tools] == ["first_inspect", "second_inspect"]
     snapshot = snapshot_tools(tools)
     assert [tool.source_id for tool in snapshot.tools] == ["mcp:first", "mcp:second"]
@@ -81,8 +113,9 @@ async def test_additional_tools_are_frozen_per_discovery_and_snapshotted(tmp_pat
     additional_tools.clear()
     first = await provider.discover_tools()
     second = await provider.discover_tools()
-    assert first == second == (extra_tool,)
-    snapshot = snapshot_tools(first)
+    assert first == second == snapshot_tools((extra_tool,))
+    assert await provider.build_execution_tools() == (extra_tool,)
+    snapshot = first
     assert snapshot.tools[0].name == extra_tool.name
     assert snapshot.tools[0].source_id == "builtin:fixture"
     assert snapshot.tools[0].annotations.readOnlyHint is None
@@ -95,9 +128,40 @@ async def test_complete_tool_collection_rejects_duplicate_names(tmp_path: Path, 
         """Inspect the current target."""
         return "observed"
 
-    extra_tool = StructuredTool.from_function(coroutine=inspect, name="fixture_inspect")
+    extra_tool = StructuredTool.from_function(coroutine=inspect, name="fixture_inspect",
+                                              metadata={"tool_source": "builtin:fixture"})
     clients = (await load_mcp_client_provider(write_mcp_config(tmp_path, []))
                if with_mcp else MCPClientProvider(tmp_path / "unused.json"))
     provider = ToolProvider(clients, additional_tools=(extra_tool,) if with_mcp else (extra_tool, extra_tool))
     with pytest.raises(ValueError, match="fixture_inspect"):
         await provider.discover_tools()
+
+
+@pytest.mark.asyncio
+async def test_source_schema_stays_stable_and_adapter_preserves_open_object_arguments(tmp_path: Path) -> None:
+    arguments = {"payload": {"free_key": [1, 2]}}
+    input_schema = {"type": "object", "properties": {"payload": {"type": ["object", "null"]}}, "required": ["payload"]}
+    config = write_mcp_config(tmp_path, [replay_call(content=[text_block("accepted")])])
+    scenario_path = tmp_path / "scenario.json"
+    scenario = json.loads(scenario_path.read_text("utf-8"))
+    scenario["tools"][0]["inputSchema"] = input_schema
+    scenario["calls"][0]["arguments"] = arguments
+    scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
+    clients = await load_mcp_client_provider(config)
+    provider = ToolProvider(clients)
+    async with AsyncExitStack() as connections:
+        for group in provider.client_groups.values():
+            await connections.enter_async_context(group)
+        catalog = await provider.discover_tools()
+        tools = await provider.build_execution_tools()
+
+    assert catalog.tools[0].input_schema == input_schema
+    execution_schema = snapshot_tools(tools).tools[0].input_schema
+    assert execution_schema["properties"]["payload"]["additionalProperties"] is True
+    with tracing_context(enabled=False):
+        response = await tools[0].ainvoke({
+            "name": "fixture_inspect", "args": arguments, "id": "open-object", "type": "tool_call",
+        })
+    assert response.text == "accepted"
+    assert catalog.tools[0].input_schema == input_schema
+    assert [record["arguments"] for record in read_records(tmp_path) if record["phase"] == "started"] == [arguments]

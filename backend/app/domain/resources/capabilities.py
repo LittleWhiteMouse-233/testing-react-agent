@@ -1,7 +1,7 @@
 """Capability columns own preview consistency and each run's access decisions."""
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 import hashlib
 import json
 from pathlib import Path
@@ -123,10 +123,39 @@ def build_capability_preview(
     )
 
 
+def merge_capability_preview(
+    cached_preview: CapabilityCatalog[CapabilityColumnSelection],
+    discovered_preview: CapabilityCatalog[CapabilityColumnSelection],
+    refreshed_mcp_source_ids: Collection[str],
+) -> CapabilityCatalog[CapabilityColumnSelection]:
+    """Replace requested MCP sources and all local facts; retain other cached sources."""
+    retained_source_ids = {
+        column.id for column in cached_preview.columns
+        if column.id.startswith("mcp:") and column.id not in refreshed_mcp_source_ids
+    }
+    tool_catalog = ToolCatalogSnapshot(tools=[
+        *(tool for tool in cached_preview.tool_catalog.tools if tool.source_id in retained_source_ids),
+        *discovered_preview.tool_catalog.tools,
+    ])
+    resource_catalog = ResourceCatalogSnapshot(
+        local_root=discovered_preview.resource_catalog.local_root,
+        resources=[
+            *(resource for resource in cached_preview.resource_catalog.resources if resource.source_id in retained_source_ids),
+            *discovered_preview.resource_catalog.resources,
+        ],
+        templates=[
+            *(template for template in cached_preview.resource_catalog.templates if template.source_id in retained_source_ids),
+            *discovered_preview.resource_catalog.templates,
+        ],
+    )
+    source_ids = [*retained_source_ids, *(column.id for column in discovered_preview.columns if column.id.startswith("mcp:"))]
+    return build_capability_preview(tool_catalog, resource_catalog, source_ids)
+
+
 def select_capabilities(
     preview: CapabilityCatalog[CapabilityColumnSelection], selections: Sequence[CapabilityColumnSelection],
 ) -> CapabilityCatalog[CapabilityColumnSnapshot]:
-    """Validate selected previews and preserve fresh, complete discovery facts for audit."""
+    """Validate selected previews and freeze the complete directory view for audit."""
     selected_by_id = {selection.id: selection.fingerprint for selection in selections}
     if len(selected_by_id) != len(selections):
         raise ValueError("Selected capability columns must be unique")
