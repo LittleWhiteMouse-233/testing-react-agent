@@ -163,7 +163,7 @@ def select_capabilities(
     changed = [column_id for column_id, fingerprint in selected_by_id.items()
                if current_by_id.get(column_id) != fingerprint]
     if changed:
-        raise CapabilityCatalogChanged("所选栏目不存在或目录已变化，请刷新资源目录后重选：" + ", ".join(changed))
+        raise CapabilityCatalogChanged("所选栏目不存在或目录已变化：" + ", ".join(changed))
     return CapabilityCatalog[CapabilityColumnSnapshot](
         tool_catalog=preview.tool_catalog, resource_catalog=preview.resource_catalog,
         columns=[CapabilityColumnSnapshot(id=column.id, selected=column.id in selected_by_id) for column in preview.columns],

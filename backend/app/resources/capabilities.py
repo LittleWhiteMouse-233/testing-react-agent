@@ -106,7 +106,9 @@ class CapabilityProvider:
                         phase = "MCP connection cleanup"
                     self._latest = updated_preview
                     if selection_error is not None:
-                        raise selection_error
+                        raise CapabilityCatalogChanged(
+                            f"{selection_error}。目录预览已更新，请检查本次选择后重试"
+                        ) from selection_error
                     if capability_snapshot is not None:
                         return CapabilityDiscovery(tools=tools, catalog=capability_snapshot)
                     return CapabilityDiscovery(tools=tools, catalog=discovered_preview)

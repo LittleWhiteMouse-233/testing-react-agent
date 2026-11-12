@@ -157,8 +157,8 @@ def test_startup_preview_and_empty_selection_keep_only_builtin_tools(tmp_path: P
                 assert "mcp:fixture" not in resource_section
 
 
-def test_changed_selected_column_rejects_preparation_and_refresh_recovers(tmp_path: Path) -> None:
-    from mcp_support import build_client, create_plan, finish_turn
+def test_changed_selected_column_rejects_preparation_and_cached_preview_recovers(tmp_path: Path) -> None:
+    from mcp_support import build_client, create_plan, finish_turn, read_records
 
     with build_client(tmp_path, turns=[finish_turn(1)]) as client:
         selection = client.get("/api/capabilities").json()["columns"]
@@ -172,9 +172,14 @@ def test_changed_selected_column_rejects_preparation_and_refresh_recovers(tmp_pa
         rejected = client.post("/api/runs", json=body)
         assert rejected.status_code == 409, rejected.text
         assert rejected.json()["code"] == "capability_catalog_changed"
+        assert "目录预览已更新" in rejected.json()["message"]
+        assert "mcp:fixture" in rejected.json()["message"]
         assert client.get("/api/runs").json()["total"] == 0
-        refreshed = client.post("/api/capabilities/refresh")
+        discovery_records = read_records(tmp_path)
+        refreshed = client.get("/api/capabilities")
         assert refreshed.status_code == 200
+        assert refreshed.json()["columns"] != selection
+        assert read_records(tmp_path) == discovery_records
         response = client.post("/api/runs", json={**body, "selected_columns": refreshed.json()["columns"]})
         assert response.status_code == 201, response.text
 

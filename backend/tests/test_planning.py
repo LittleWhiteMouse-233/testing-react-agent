@@ -492,7 +492,14 @@ def test_planning_rejects_changed_selection_before_calling_model(tmp_path: Path)
         url = f"/api/test-cases/{case['id']}/plans"
         conflict = client.post(url, json={"planning_request_id": str(uuid4()), "selected_columns": selections})
         assert conflict.status_code == 409 and conflict.json()["code"] == "capability_catalog_changed"
+        assert "目录预览已更新" in conflict.json()["message"]
+        assert "local:other" in conflict.json()["message"]
         assert model.invocations == [] and client.get(url).json()["items"] == []
+        discovery_records = read_records(tmp_path)
+        preview = client.get("/api/capabilities")
+        assert preview.status_code == 200
+        assert any(entry["name"] == "added.txt" for entry in preview.json()["resource_catalog"]["resources"])
+        assert read_records(tmp_path) == discovery_records
         assert client.post(url, json={"planning_request_id": str(uuid4())}).status_code == 422
         assert client.post(url, json={"planning_request_id": str(uuid4()), "selected_columns": [selections[0]] * 2}).status_code == 422
 

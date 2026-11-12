@@ -6,7 +6,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage } from "../api/client";
 import type { TestCaseContent, TestPlan, TestPlanDraft, TestTaskDefinition } from "../api/contracts";
 import { emptyTask, getGoalsWithInvalidatedJumpTargets, isPlanDraftValid, toPlanDraft, updateTaskOrder } from "../planDraft";
-import CapabilitySelector, { PlanningCapabilitySelector, useCapabilitySelection } from "./CapabilitySelector";
+import CapabilitySelector, { PlanningCapabilitySelector, useCapabilityCatalog, useCapabilitySelection } from "./CapabilitySelector";
 import { usePlanningProgress } from "../api/usePlanningProgress";
 import PlanningProgressDialog from "./PlanningProgressDialog";
 
@@ -19,13 +19,14 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const planning = usePlanningProgress();
-  const capabilitySelection = useCapabilitySelection();
-  const planningCapabilitySelection = useCapabilitySelection();
+  const capabilityCatalog = useCapabilityCatalog();
+  const capabilitySelection = useCapabilitySelection(capabilityCatalog.preview);
+  const planningCapabilitySelection = useCapabilitySelection(capabilityCatalog.preview);
   const progress = planning.requests.get(caseId);
-  const markPlanningStale = planningCapabilitySelection.markStale;
+  const reloadCapabilityCatalog = capabilityCatalog.reload;
   useEffect(() => {
-    if (progress?.errorCode === "capability_catalog_changed") markPlanningStale();
-  }, [progress?.errorCode, markPlanningStale]);
+    if (progress?.errorCode === "capability_catalog_changed") reloadCapabilityCatalog();
+  }, [progress?.requestId, progress?.errorCode, reloadCapabilityCatalog]);
   const planningPending = !!progress && progress.status !== "failed";
   const previousProgress = useRef(progress);
   const previousLatestPlanId = useRef<string | undefined>(undefined);
@@ -101,7 +102,7 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
       message.error(apiErrorMessage(error, "启动失败"));
       if (error.code === "run_input_not_found") void testCase.refetch();
       if (error.code === "test_plan_not_startable") { setConfirmed(false); void plans.refetch(); }
-      if (error.code === "capability_catalog_changed") capabilitySelection.markStale();
+      if (error.code === "capability_catalog_changed") reloadCapabilityCatalog();
     }
   });
   const latest = plans.data?.items[0];
@@ -110,7 +111,7 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
   const runOccupied = runStartPending || !!activeRuns.data?.items.length;
   const canEdit = !busy && isLatest;
   const valid = isPlanDraftValid(draft);
-  const canGenerate = !busy && !dirty && planningCapabilitySelection.ready && (!plan || (isLatest && !!userInput.trim()));
+  const canGenerate = !busy && !dirty && capabilityCatalog.ready && planningCapabilitySelection.ready && (!plan || (isLatest && !!userInput.trim()));
   const generatePlan = () => {
     if (canGenerate) planning.start(caseId, userInput, planningCapabilitySelection.selectedColumns);
   };
@@ -167,7 +168,7 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
       {plan && <details className="planning-audit"><summary>规划来源与额外输入</summary><dl><dt>生成此计划时的额外输入</dt><dd>{plan.planning_context.user_input ?? "无"}</dd>
         <dt>规划模型</dt><dd>{plan.planning_context.planning_model.model}</dd><dt>父计划</dt><dd className="mono">{plan.derived_from_plan_id ?? "首次规划"}</dd></dl></details>}
       </div>
-      <div inert={!!progress}><PlanningCapabilitySelector selection={planningCapabilitySelection} disabled={busy} /></div>
+      <div inert={!!progress}><PlanningCapabilitySelector catalog={capabilityCatalog} selection={planningCapabilitySelection} disabled={busy} /></div>
       <div className="planning-prompt" inert={!!progress}><div className="section-label">告诉规划 Agent 如何调整 <small>Ctrl / ⌘ + Enter 发送</small></div>
         <Form.Item label={"额外输入（" + (plan ? "必填" : "可选") + "）"} required={!!plan}>
           <Input.TextArea aria-label="规划额外输入" value={progress?.userInput ?? userInput} disabled={busy || (!!plan && !isLatest)} rows={4} placeholder={plan ? "说明希望如何修改最新计划" : "补充本次规划的要求"}
@@ -190,12 +191,12 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
           {task.type === "goal" && <p className="muted">未满足时回到任务 {task.jump_back_to_task_no ?? "待选择"}{task.jump_back_to_task_no != null && " · " + draft.tasks.find((target) => target.task_no === task.jump_back_to_task_no)?.title}</p>}
         </div></article>)}</div>
         <div className="plan-start"><Checkbox disabled={busy || dirty || !isLatest} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}>我已确认计划 assumptions、任务目标和成功标准</Checkbox>
-          <Button block size="large" type="primary" icon={<RocketOutlined />} loading={start.isPending} disabled={busy || runOccupied || !valid || dirty || !confirmed || !isLatest || !capabilitySelection.ready}
+          <Button block size="large" type="primary" icon={<RocketOutlined />} loading={start.isPending} disabled={busy || runOccupied || !valid || dirty || !confirmed || !isLatest || !capabilityCatalog.ready || !capabilitySelection.ready}
             onClick={() => start.mutate({ body: { test_case_id: caseId, test_plan_id: plan.id, assumptions_confirmed: true, selected_columns: capabilitySelection.selectedColumns } })}>启动运行</Button>
           {dirty && <p className="muted">保存为新计划版本后才能启动</p>}
         </div>
       </> : <Empty className="plan-empty" image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未生成计划" />}
-      <CapabilitySelector selection={capabilitySelection} disabled={busy || start.isPending} />
+      <CapabilitySelector catalog={capabilityCatalog} selection={capabilitySelection} disabled={busy || start.isPending} />
       <Link className="case-history-link" to={"/runs?case=" + caseId}>查看本用例历史记录 →</Link>
     </aside>
     <Modal title="编辑语义计划" open={editing} width={760} onCancel={() => setEditing(false)} footer={null} mask={{ closable: false }}>
