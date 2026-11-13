@@ -3,7 +3,7 @@ import { Alert, Button, Empty, Image, Spin, message } from "antd";
 import { Link, useParams } from "react-router-dom";
 import { $api, apiErrorMessage, artifactUrl } from "../api/client";
 import { useRunReport } from "../api/useRunReport";
-import { ElapsedTime, EventTimeline, formatTime, RunResources, StatusBadge, TaskStatusBadge, taskMaxCycles } from "../runPresentation";
+import { ElapsedTime, EventTimeline, formatTime, imageUnavailableUrl, RunResources, StatusBadge, TaskStatusBadge, taskMaxCycles } from "../runPresentation";
 
 export default function ReportPage() {
   const { runId = "" } = useParams();
@@ -72,7 +72,7 @@ export function RunReportContent({ runId }: { runId: string }) {
           {taskRun.result && <div className="result-note"><p>{taskRun.result.summary}</p><small>{taskRun.result.reason_code} · {taskRun.cycle_count} / {taskMaxCycles(task.definition.type, detail.environment)} 轮</small></div>}
           {taskRun.result?.memory && <div className="task-memory"><strong>跨任务记忆</strong><p>{taskRun.result.memory}</p></div>}
           {events.length ? <EventTimeline events={events} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有任务事件" />}
-          {taskImages.length > 0 && <Image.PreviewGroup><div className="image-grid">{taskImages.map((artifact) => <figure key={artifact.id}><Image src={artifactUrl(artifact.id)} alt={"图片 " + artifact.id} />
+          {taskImages.length > 0 && <Image.PreviewGroup fallback={imageUnavailableUrl}><div className="image-grid">{taskImages.map((artifact) => <figure key={artifact.id}><Image src={artifactUrl(artifact.id)} fallback={imageUnavailableUrl} alt={"图片 " + artifact.id} />
             <figcaption>{formatTime(artifact.created_at)}</figcaption></figure>)}</div></Image.PreviewGroup>}
         </div>
       </details>;

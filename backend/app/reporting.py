@@ -65,14 +65,11 @@ class ReportService:
                 if artifact.type == ArtifactType.IMAGE
             ]
             loaded = await asyncio.gather(
-                *(self.artifacts.load_content(artifact.id) for artifact in images)
+                *(self._load_image_data_url(artifact.id) for artifact in images)
             )
             image_data_urls = {
-                artifact.id: (
-                    f"data:{mime_type};base64,"
-                    + base64.b64encode(raw).decode("ascii")
-                )
-                for artifact, (raw, mime_type) in zip(images, loaded, strict=True)
+                artifact.id: image_data_url
+                for artifact, image_data_url in zip(images, loaded, strict=True)
             }
             content = self.templates.get_template("report.html").render(
                 report=report_dump,
@@ -90,3 +87,11 @@ class ReportService:
             mime_type=mime_type,
             extension=extension,
         )
+
+    async def _load_image_data_url(self, artifact_id: str) -> str:
+        try:
+            raw, mime_type = await self.artifacts.load_content(artifact_id)
+        except FileNotFoundError:
+            raw = self.templates.get_template("image-unavailable.svg").render().encode("utf-8")
+            mime_type = "image/svg+xml"
+        return f"data:{mime_type};base64," + base64.b64encode(raw).decode("ascii")

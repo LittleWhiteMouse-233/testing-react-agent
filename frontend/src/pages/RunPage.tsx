@@ -5,7 +5,7 @@ import { Link, Navigate, useParams } from "react-router-dom";
 import { $api, apiErrorMessage, artifactUrl } from "../api/client";
 import { latestImageArtifactId } from "../api/runEvents";
 import { useRunReport } from "../api/useRunReport";
-import { ElapsedTime, EventTimeline, RunResources, StatusBadge, TaskStatusBadge, taskCycleCount, taskMaxCycles } from "../runPresentation";
+import { ElapsedTime, EventTimeline, imageUnavailableUrl, RunResources, StatusBadge, TaskStatusBadge, taskCycleCount, taskMaxCycles } from "../runPresentation";
 
 export function ActiveRunPage() {
   const runs = $api.useQuery("get", "/api/runs", { params: { query: { status: ["pending", "running"], limit: 1 } } }, {
@@ -72,7 +72,7 @@ function RunExecution({ runId }: { runId: string }) {
         })}
       </aside>
       <section className="execution-observation"><div className="section-heading"><div><small>运行观察</small><h2>最新图片</h2></div><span>v{plan.version_number}</span></div>
-        <div className="latest-image">{imageId ? <Image src={artifactUrl(imageId)} alt="最新运行图片" /> : <Empty description={finished ? "本次运行没有图片" : "等待首次图片…"} />}</div>
+        <div className="latest-image">{imageId ? <Image src={artifactUrl(imageId)} fallback={imageUnavailableUrl} alt="最新运行图片" /> : <Empty description={finished ? "本次运行没有图片" : "等待首次图片…"} />}</div>
         <div className="section-heading"><div><small>本次运行冻结的资源</small><h2>工具与模型</h2></div></div><RunResources report={report.data} />
       </section>
       <section className="execution-events"><div className="section-heading"><div><small>持久化运行事实</small><h2>事件流</h2></div><span className={"connection " + report.connection}>{report.contractError ? "已停止" : ({ connecting: "连接中", connected: "实时连接", reconnecting: "正在重连", awaiting_result: "等待最终结果", finished: "已结束" }[report.connection])}</span></div>

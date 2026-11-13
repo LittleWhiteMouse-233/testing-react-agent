@@ -131,6 +131,11 @@ async def read_image_artifact(
         )
     except LookupError as exc:
         raise ToolException(str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise ToolException(
+            f"Original file for image artifact {artifact_id} is missing. "
+            "Read another available image or obtain a new observation; do not infer the missing image's contents."
+        ) from exc
     return [create_image_block(id=artifact_id, base64=base64.b64encode(content).decode("ascii"), mime_type=mime_type)]
 
 

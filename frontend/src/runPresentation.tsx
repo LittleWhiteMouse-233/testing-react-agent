@@ -2,6 +2,9 @@ import { Button, Empty, Image, Select, Switch } from "antd";
 import { Fragment, useEffect, useRef, useState } from "react";
 import type { StoredRunEvent, TaskRun, TestRunListResponse, TestRunReport, TestTaskDefinition } from "./api/contracts";
 import { artifactUrl } from "./api/client";
+import imageUnavailableUrl from "../../backend/app/templates/image-unavailable.svg?inline";
+
+export { imageUnavailableUrl };
 
 export const statusLabels: Record<string, string> = {
   pending: "待启动", running: "运行中", finished: "已结束",
@@ -77,7 +80,7 @@ export function RunEventContent({ stored }: { stored: StoredRunEvent }) {
       </div>
       {message.content.map((block, index) => block.type === "text"
         ? <div key={index} className="message-text">{block.text}</div>
-        : <Image key={index} width={180} src={artifactUrl(block.artifact_id)} alt={`图片 ${block.artifact_id}`} />)}
+        : <Image key={index} width={180} src={artifactUrl(block.artifact_id)} fallback={imageUnavailableUrl} alt={`图片 ${block.artifact_id}`} />)}
       {message.role === "ai" && message.tool_calls.map((call) => <details className="tool-call" key={call.id}>
         <summary>{call.name} <span className="mono">{call.id}</span></summary><pre>{JSON.stringify(call.arguments, null, 2)}</pre>
       </details>)}

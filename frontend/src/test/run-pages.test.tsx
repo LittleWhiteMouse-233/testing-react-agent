@@ -13,7 +13,7 @@ import CasesPage from "../pages/CasesPage";
 import { useRunReport } from "../api/useRunReport";
 import { PlanningProgressProvider } from "../api/usePlanningProgress";
 import { RunResources } from "../runPresentation";
-import { caseId, runEvent, runId, runReport, taskRunId } from "./run-fixtures";
+import { caseId, imageId, runEvent, runId, runReport, taskRunId } from "./run-fixtures";
 
 vi.mock("../api/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("../api/client")>();
@@ -58,7 +58,55 @@ function reportResponse(url: URL, snapshot: TestRunReport): Response {
 afterEach(async () => {
   cleanup(); queryClient.clear();
   await act(async () => { message.destroy(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+function simulateImageLoading(fails: (source: string) => boolean) {
+  const nativeSourceSetter = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src")!.set!;
+  vi.spyOn(HTMLImageElement.prototype, "src", "set").mockImplementation(function (this: HTMLImageElement, source: string) {
+    nativeSourceSetter.call(this, source);
+    queueMicrotask(() => this.dispatchEvent(new Event(fails(source) ? "error" : "load")));
+  });
+}
+
+it.each(["execution", "report"])("shows unavailable images in thumbnails and the %s page preview", async (page) => {
+  simulateImageLoading((source) => source.includes("/api/artifacts/"));
+  renderPage(`/runs/${runId}${page === "report" ? "/report" : ""}`);
+  await screen.findByText("设置页面验证");
+  const thumbnails = screen.getAllByRole("img").filter((image) =>
+    image.getAttribute("alt") === "最新运行图片" || image.getAttribute("alt") === `图片 ${imageId}`);
+  expect(thumbnails).toHaveLength(2);
+  await waitFor(() => thumbnails.forEach((image) => expect(image.getAttribute("src")).toMatch(/^data:image\/svg\+xml/)));
+  fireEvent.click(thumbnails[page === "report" ? 1 : 0]!);
+  await waitFor(() => {
+    const preview = document.querySelector<HTMLImageElement>(".ant-image-preview-img");
+    expect(preview).not.toBeNull();
+    expect(preview!.getAttribute("src")).toMatch(/^data:image\/svg\+xml/);
+  });
+});
+
+it("loads the next observed image after the previous image became unavailable", async () => {
+  report = runReport(null);
+  simulateImageLoading((source) => source.endsWith(imageId));
+  renderPage(`/runs/${runId}`);
+  const latestImage = await screen.findByRole("img", { name: "最新运行图片" });
+  await waitFor(() => expect(latestImage.getAttribute("src")).toMatch(/^data:image\/svg\+xml/));
+  const nextImageId = "55555555-5555-4555-8555-555555555555";
+  act(() => sources[0]!.onmessage?.(new MessageEvent("message", { data: JSON.stringify(runEvent(2, {
+    type: "message.appended", test_run_id: runId, task_run_id: taskRunId,
+    message: { role: "tool", message_id: "message-2", tool_call_id: "call-2", name: "fixture_inspect", status: "success",
+      content: [{ type: "image_artifact", artifact_id: nextImageId }] }
+  })) })));
+  await waitFor(() => expect(latestImage.getAttribute("src")).toBe(`/api/artifacts/${nextImageId}`));
+});
+
+it.each([false, true])("preserves the empty image state when finished=%s", async (finished) => {
+  report = runReport(finished ? "PASS" : null);
+  report.events = []; report.artifacts = [];
+  renderPage(`/runs/${runId}`);
+  expect(await screen.findByText(finished ? "本次运行没有图片" : "等待首次图片…")).toBeInTheDocument();
+  expect(screen.queryByRole("img", { name: "最新运行图片" })).not.toBeInTheDocument();
 });
 
 function Location() { const location = useLocation(); return <output data-testid="location">{location.pathname}{location.search}</output>; }

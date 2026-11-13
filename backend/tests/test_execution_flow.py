@@ -10,6 +10,7 @@ from app.api.schemas import TestRunPageQuery as RunPageQuery
 import asyncio
 import base64
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -199,6 +200,114 @@ def test_image_read_business_errors_can_be_corrected(tmp_path: Path, invalid_art
         assert [message["status"] for message in returned] == ["error", "success"]
         assert returned[0]["tool_call_id"] == "invalid-read"
         assert "current run" in returned[0]["content"][0]["text"]
+
+
+@pytest.mark.parametrize("recover", [False, True])
+def test_missing_image_files_use_bounded_correction_without_replacing_observations(tmp_path: Path, recover: bool) -> None:
+    image_ids: list[str] = []
+    read_attempt = 0
+
+    def read_missing_image(messages: list[BaseMessage]) -> AIMessage:
+        nonlocal read_attempt
+        read_attempt += 1
+        if not image_ids:
+            image_ids.extend(block["text"].removeprefix("[Image artifact ").removesuffix("]")
+                             for block in messages[-1].content_blocks
+                             if block["type"] == "text" and block["text"].startswith("[Image artifact "))
+            image_path, = (tmp_path / "artifacts").rglob(f"{image_ids[0]}.*")
+            assert image_path.resolve().is_relative_to(tmp_path.resolve())
+            image_path.unlink()
+        return tool_turn(1 + read_attempt, "read_image_artifact", {"artifact_id": image_ids[0]})
+
+    def read_other_image(messages: list[BaseMessage]) -> AIMessage:
+        return tool_turn(3, "read_image_artifact", {"artifact_id": image_ids[1]})
+
+    with build_client(tmp_path, calls=[replay_call(content=[image_block(), image_block()])],
+                      turns=[tool_turn(1), read_missing_image, read_other_image if recover else read_missing_image,
+                             finish_turn(4)], execution={"model_response_max_attempts": 2}) as client:
+        run_id = start_run(client, create_plan(client, task_count=1 if recover else 2))
+        detail = wait_for_run(client, run_id)
+        assert detail["run"]["verdict"] == ("PASS" if recover else "BLOCKED")
+        assert detail["task_runs"][0]["cycle_count"] == (4 if recover else 3)
+        if not recover:
+            assert detail["task_runs"][0]["result"]["reason_code"] == "tool_failed"
+            assert detail["task_runs"][1]["status"] == "skipped"
+        report = client.get(f"/api/runs/{run_id}").json()
+        assert {artifact["id"] for artifact in report["artifacts"]} == set(image_ids)
+        events = [entry["event"] for entry in report["events"]]
+        assert not any(event["type"] == "execution.error" for event in events)
+        reads = [event["message"] for event in events if event["type"] == "message.appended"
+                 and event["message"]["role"] == "tool" and event["message"]["name"] == "read_image_artifact"]
+        assert [message["status"] for message in reads] == ["error", "success" if recover else "error"]
+        assert image_ids[0] in reads[0]["content"][0]["text"]
+        assert all(block["type"] == "text" for block in reads[0]["content"])
+        if recover:
+            assert reads[1]["content"][-1] == {"type": "image_artifact", "artifact_id": image_ids[1]}
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        model = cast(ScriptedChatModelClient, execution_model_client(container))
+        assert all(block.get("base64") == PNG_BASE64 for invocation in model.invocations
+                   for message in invocation for block in message.content_blocks if block["type"] == "image")
+
+
+@pytest.mark.parametrize("missing_count", [1, 2])
+def test_html_exports_embed_missing_image_placeholders_without_changing_run_facts(tmp_path: Path, missing_count: int) -> None:
+    with build_client(tmp_path, calls=[replay_call(content=[image_block(), image_block()])],
+                      turns=[tool_turn(1), finish_turn(2)]) as client:
+        run_id = start_run(client, create_plan(client))
+        wait_for_run(client, run_id)
+        report = client.get(f"/api/runs/{run_id}").json()
+        for artifact in report["artifacts"][:missing_count]:
+            image_path, = (tmp_path / "artifacts").rglob(f"{artifact['id']}.*")
+            assert image_path.resolve().is_relative_to(tmp_path.resolve())
+            image_path.unlink()
+        json_export = client.post(f"/api/runs/{run_id}/exports", json={"format": "json"})
+        assert json_export.status_code == 201, json_export.text
+        assert client.get(f"/api/artifacts/{json_export.json()['id']}").json() == report
+        html_export = client.post(f"/api/runs/{run_id}/exports", json={"format": "html"})
+        assert html_export.status_code == 201, html_export.text
+        html = client.get(f"/api/artifacts/{html_export.json()['id']}").text
+        image_sources = re.findall(r'<img src="([^"]+)"', html)
+        assert len(image_sources) == 2
+        for index, source in enumerate(image_sources):
+            if index < missing_count:
+                assert source.startswith("data:image/svg+xml;base64,")
+                placeholder = base64.b64decode(source.split(",", 1)[1]).decode("utf-8")
+                assert "<svg" in placeholder and "图片不可用" in placeholder
+            else:
+                assert source == f"data:image/png;base64,{PNG_BASE64}"
+        restored = client.get(f"/api/runs/{run_id}").json()
+        assert restored["detail"] == report["detail"] and restored["events"] == report["events"]
+        assert [artifact for artifact in restored["artifacts"] if artifact["type"] == "image"] == report["artifacts"]
+        assert client.get("/api/runs").json()["items"][0]["image_count"] == 2
+
+
+def test_image_file_permission_errors_remain_execution_and_export_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    denied_image_path: Path | None = None
+    original_read_bytes = Path.read_bytes
+
+    def read_bytes(image_path: Path) -> bytes:
+        if image_path == denied_image_path:
+            raise PermissionError("image access denied")
+        return original_read_bytes(image_path)
+
+    def read_denied_image(messages: list[BaseMessage]) -> AIMessage:
+        nonlocal denied_image_path
+        reference = next(block["text"] for block in messages[-1].content_blocks
+                         if block["type"] == "text" and block["text"].startswith("[Image artifact "))
+        artifact_id = reference.removeprefix("[Image artifact ").removesuffix("]")
+        denied_image_path, = (tmp_path / "artifacts").rglob(f"{artifact_id}.*")
+        denied_image_path = denied_image_path.resolve()
+        return tool_turn(2, "read_image_artifact", {"artifact_id": artifact_id})
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    with build_client(tmp_path, calls=[replay_call()], turns=[tool_turn(1), read_denied_image, finish_turn(3)]) as client:
+        run_id = start_run(client, create_plan(client))
+        detail = wait_for_run(client, run_id)
+        assert detail["run"]["verdict"] == "BLOCKED"
+        assert detail["task_runs"][0]["result"]["reason_code"] == "unexpected_error"
+        assert "image access denied" in detail["task_runs"][0]["result"]["summary"]
+        with pytest.raises(PermissionError, match="image access denied"):
+            client.post(f"/api/runs/{run_id}/exports", json={"format": "html"})
 
 
 def test_required_context_over_budget_blocks_without_calling_model(tmp_path: Path) -> None:

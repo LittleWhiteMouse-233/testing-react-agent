@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270" viewBox="0 0 480 270" role="img" aria-labelledby="title">
+  <title id="title">图片不可用</title>
+  <rect width="480" height="270" rx="12" fill="#f3f4f6"/>
+  <g fill="none" stroke="#98a2b3" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="208" y="72" width="64" height="50" rx="6"/>
+    <circle cx="225" cy="87" r="5"/>
+    <path d="m210 114 16-16 13 13 12-12 19 19M204 68l72 58"/>
+  </g>
+  <text x="240" y="174" text-anchor="middle" fill="#667085" font-family="system-ui, sans-serif" font-size="24">图片不可用</text>
+</svg>
