@@ -1,5 +1,6 @@
-import { Button, Empty, Image, Select, Switch } from "antd";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Button, Empty, Image, Select } from "antd";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { StoredRunEvent, TaskRun, TestRunListResponse, TestRunReport, TestTaskDefinition } from "./api/contracts";
 import { artifactUrl } from "./api/client";
 import imageUnavailableUrl from "../../backend/app/templates/image-unavailable.svg?inline";
@@ -23,7 +24,7 @@ export function TaskStatusBadge({ task, taskRun, finished }: { task: TestTaskDef
 export function formatTime(value: string | null | undefined, timeOnly = false) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai", ...(timeOnly ? {} : { month: "2-digit", day: "2-digit" }),
+    ...(timeOnly ? {} : { month: "2-digit", day: "2-digit" }),
     hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
   }).format(new Date(value));
 }
@@ -70,7 +71,32 @@ const eventLabels: Record<StoredRunEvent["event"]["type"], string> = {
   "cycle.started": "决策轮开始", "tool.started": "工具开始", "execution.error": "执行错误", "tasks.skipped": "任务跳过"
 };
 
-export function RunEventContent({ stored }: { stored: StoredRunEvent }) {
+export function TaskCard({ task, status, progress, children, jumpTargetTitle, active = false }: {
+  task: TestTaskDefinition; status?: ReactNode; progress?: ReactNode; children?: ReactNode;
+  jumpTargetTitle?: string; active?: boolean;
+}) {
+  return <article className={"task-card" + (active ? " active" : "")}><details>
+    <summary><span className={"task-number " + task.type}>{task.task_no}</span><div className="task-card-summary">
+      <div className="task-title"><h3>{task.title}</h3><span className={"pill " + task.type}>{task.type.toUpperCase()}</span>{status}</div>
+      {progress}
+    </div></summary>
+    <div className="task-card-details"><h4>目标</h4><p className="task-text-scroll">{task.goal}</p>
+      <h4>成功标准</h4><ul className="task-text-scroll">{task.success_criteria.map((criterion, index) => <li key={index}>{criterion}</li>)}</ul>
+      {task.type === "goal" && <p className="muted">未满足时回到任务 {task.jump_back_to_task_no ?? "待选择"}{jumpTargetTitle && " · " + jumpTargetTitle}</p>}
+      {children}
+    </div>
+  </details></article>;
+}
+
+function MessageText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const contentId = useId();
+  return <div className="message-block"><div id={contentId} className={"message-text" + (expanded ? "" : " message-preview")}>{text}</div>
+    <button type="button" className="message-toggle" aria-expanded={expanded} aria-controls={contentId} onClick={() => setExpanded(!expanded)}>{expanded ? "收起" : "展开"}</button>
+  </div>;
+}
+
+export function RunEventContent({ stored, collapsible = false }: { stored: StoredRunEvent; collapsible?: boolean }) {
   const event = stored.event;
   if (event.type === "message.appended") {
     const message = event.message;
@@ -79,21 +105,23 @@ export function RunEventContent({ stored }: { stored: StoredRunEvent }) {
         {message.role === "tool" && <><span>{message.name}</span><span>{message.status}</span><span className="mono">↳ {message.tool_call_id}</span></>}
       </div>
       {message.content.map((block, index) => block.type === "text"
-        ? <div key={index} className="message-text">{block.text}</div>
-        : <Image key={index} width={180} src={artifactUrl(block.artifact_id)} fallback={imageUnavailableUrl} alt={`图片 ${block.artifact_id}`} />)}
+        ? collapsible ? <MessageText key={index} text={block.text} /> : <div key={index} className="message-text">{block.text}</div>
+        : collapsible ? <details key={index} className="message-block image-block"><summary>图片 <span className="mono">{block.artifact_id}</span></summary>
+          <Image width={180} src={artifactUrl(block.artifact_id)} fallback={imageUnavailableUrl} alt={`图片 ${block.artifact_id}`} />
+        </details> : <Image key={index} width={180} src={artifactUrl(block.artifact_id)} fallback={imageUnavailableUrl} alt={`图片 ${block.artifact_id}`} />)}
       {message.role === "ai" && message.tool_calls.map((call) => <details className="tool-call" key={call.id}>
         <summary>{call.name} <span className="mono">{call.id}</span></summary><pre>{JSON.stringify(call.arguments, null, 2)}</pre>
       </details>)}
       {message.role === "ai" && message.invalid_tool_calls.map((call, index) => <div className="error-text" key={index}>
-        无效调用 · {call.name} · {call.error}<pre>{call.arguments}</pre>
+        {collapsible ? <MessageText text={`无效调用 · ${call.name} · ${call.error}\n${call.arguments}`} /> : <>无效调用 · {call.name} · {call.error}<pre>{call.arguments}</pre></>}
       </div>)}
     </div>;
   }
   switch (event.type) {
     case "cycle.started": return <>第 {event.cycle_count} 轮</>;
     case "tool.started": return <>调用 <span className="mono">{event.call_id}</span></>;
-    case "execution.error": return <span className="error-text">{event.reason_code} · {event.message}</span>;
-    case "message.validation_failed": return <span className="error-text">{event.message_id} · 尝试 {event.attempt} · {event.reason}</span>;
+    case "execution.error": return <div className="error-text">{collapsible ? <MessageText text={`${event.reason_code} · ${event.message}`} /> : <>{event.reason_code} · {event.message}</>}</div>;
+    case "message.validation_failed": return <div className="error-text">{collapsible ? <MessageText text={`${event.message_id} · 尝试 ${event.attempt} · ${event.reason}`} /> : <>{event.message_id} · 尝试 {event.attempt} · {event.reason}</>}</div>;
     case "tasks.skipped": return <>跳过 {event.task_run_ids.length} 个任务</>;
     default: return <>{eventLabels[event.type]}</>;
   }
@@ -101,29 +129,81 @@ export function RunEventContent({ stored }: { stored: StoredRunEvent }) {
 
 export function EventTimeline({ events, controls = false }: { events: StoredRunEvent[]; controls?: boolean }) {
   const [filter, setFilter] = useState<string>("");
-  const [stick, setStick] = useState(true);
+  const followLatest = useRef(true);
+  const lastScrollTop = useRef(0);
+  const previousScrollExtent = useRef(0);
+  const scrollViewport = useRef({ width: 0, height: 0 });
+  const userScrolling = useRef(false);
   const scroller = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
   const visible = filter ? events.filter((stored) => stored.event.type === filter) : events;
+  const updateScrollPosition = useCallback(() => {
+    const element = scroller.current;
+    if (!element) return;
+    if (element.clientWidth !== scrollViewport.current.width || element.clientHeight !== scrollViewport.current.height) userScrolling.current = false;
+    // Resolve user movement before a queued scroll event can be overtaken by layout.
+    if (userScrolling.current) {
+      if (element.scrollTop < lastScrollTop.current - 0.5) followLatest.current = false;
+      else if (element.scrollTop > lastScrollTop.current && element.scrollTop >= previousScrollExtent.current - 2) followLatest.current = true;
+    }
+    if (followLatest.current) element.scrollTop = element.scrollHeight;
+    // Layout and programmatic scrolling establish a new baseline, not user intent.
+    lastScrollTop.current = element.scrollTop;
+    previousScrollExtent.current = element.scrollHeight - element.clientHeight;
+    scrollViewport.current = { width: element.clientWidth, height: element.clientHeight };
+    userScrolling.current = false;
+  }, []);
+  useLayoutEffect(() => {
+    if (controls) updateScrollPosition();
+  }, [events, controls, filter, updateScrollPosition]);
   useEffect(() => {
-    if (controls && stick && scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
-  }, [events.length, controls, stick, filter]);
-  return <section className="event-timeline">
-    {controls && <div className="event-controls"><Select aria-label="筛选事件类型" value={filter} onChange={setFilter}
+    if (!controls || !scroller.current || !content.current) return;
+    const observer = new ResizeObserver(updateScrollPosition);
+    observer.observe(scroller.current);
+    observer.observe(content.current);
+    return () => observer.disconnect();
+  }, [controls, updateScrollPosition]);
+  return <section className={"event-timeline" + (controls ? " live-timeline" : "")}>
+    {controls && <div className="event-controls"><Select aria-label="筛选事件类型" value={filter} onChange={(value) => { userScrolling.current = false; setFilter(value); }}
       options={[{ value: "", label: "全部事件" }, ...Object.entries(eventLabels).map(([value, label]) => ({ value, label }))]} />
-      <span><Switch size="small" checked={stick} onChange={setStick} /> 自动贴底</span>
-      {!stick && <Button size="small" onClick={() => setStick(true)}>回到最新</Button>}
+      <Button size="small" onClick={() => { followLatest.current = true; updateScrollPosition(); }}>回到最新</Button>
     </div>}
-    <div ref={scroller} className={controls ? "event-scroll" : "event-rows"} onScroll={() => {
+    <div ref={scroller} className={controls ? "event-scroll" : "event-rows"} tabIndex={controls ? 0 : undefined} aria-label={controls ? "事件列表" : undefined}
+      onPointerDown={(event) => { if (controls) userScrolling.current = !(event.target instanceof Element && event.target.closest("button, summary, a, input, textarea, select")); }}
+      onTouchMove={() => { if (controls) userScrolling.current = true; }}
+      onWheel={(event) => { if (controls) {
+        userScrolling.current = true;
+        if (event.deltaY < 0) followLatest.current = false;
+        else if (event.deltaY > 0 && scroller.current && scroller.current.scrollHeight - scroller.current.clientHeight - scroller.current.scrollTop <= 2) followLatest.current = true;
+      } }}
+      onKeyDown={(event) => { if (controls && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ", "Enter"].includes(event.key)) {
+        if ([" ", "Enter"].includes(event.key) && event.target instanceof Element && event.target.closest("button, summary, a")) { userScrolling.current = false; return; }
+        userScrolling.current = true;
+        if (["ArrowUp", "PageUp", "Home"].includes(event.key)) followLatest.current = false;
+        else if (event.key === "End") followLatest.current = true;
+      } }}
+      onScroll={() => {
       const element = scroller.current;
-      if (controls && element && element.scrollHeight - element.clientHeight - element.scrollTop > 40) setStick(false);
+      if (!controls || !element) return;
+      if (element.scrollHeight - element.clientHeight !== previousScrollExtent.current
+        || element.clientWidth !== scrollViewport.current.width || element.clientHeight !== scrollViewport.current.height) {
+        updateScrollPosition();
+        return;
+      }
+      const moved = element.scrollTop - lastScrollTop.current;
+      if (moved < -0.5) followLatest.current = false;
+      else if (moved > 0.5 && element.scrollHeight - element.clientHeight - element.scrollTop <= 2) followLatest.current = true;
+      lastScrollTop.current = element.scrollTop;
     }}>
+      <div ref={content}>
       {visible.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无事件" /> : visible.map((stored) =>
         <div className="event-row" key={stored.sequence}>
           <time className="mono">{formatTime(stored.occurred_at, true)}</time>
           <div className="event-kind"><span>#{stored.sequence}</span><strong>{eventLabels[stored.event.type]}</strong>
             {stored.event.task_run_id && <span className="mono" title={stored.event.task_run_id}>{stored.event.task_run_id.slice(0, 8)}</span>}
-          </div><RunEventContent stored={stored} />
+          </div><div className="event-body"><RunEventContent stored={stored} collapsible={controls} /></div>
         </div>)}
+      </div>
     </div>
   </section>;
 }

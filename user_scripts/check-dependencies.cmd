@@ -32,7 +32,7 @@ if errorlevel 1 (
     echo [backend] FAIL: Cannot run Python. Activate or repair your Python environment.
     exit /b 1
 )
-call python -c "from importlib.metadata import version; version('android-tv-test-agent'); import alembic, uvicorn"
+call python -c "from importlib.metadata import version; version('testing-react-agent'); import alembic, uvicorn"
 if errorlevel 1 (
     echo [backend] FAIL: Basic project dependencies are missing or invalid. Run user_scripts\install.cmd from the project root.
     exit /b 1

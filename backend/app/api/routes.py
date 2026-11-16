@@ -24,7 +24,7 @@ from app.api.schemas import (
     TestRunCreateRequest,
     TestCaseListResponse,
     TestRunListResponse,
-    TestRunFilterQuery,
+    TestRunStatisticsQuery,
     TestRunPageQuery,
     TestRunStatisticsResponse,
 )
@@ -306,7 +306,7 @@ async def list_test_runs(
 @router.get("/runs/statistics", response_model=TestRunStatisticsResponse)
 async def get_test_run_statistics(
     request: Request,
-    filters: Annotated[TestRunFilterQuery, Query()],
+    filters: Annotated[TestRunStatisticsQuery, Query()],
 ) -> TestRunStatisticsResponse:
     return await repository.test_run_statistics(container(request).sessions, filters)
 

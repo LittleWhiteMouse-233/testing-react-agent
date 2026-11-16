@@ -9,3 +9,17 @@ export function isCalendarDate(value: string): boolean {
   const timestamp = Date.parse(value + "T00:00:00Z");
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
 }
+
+export function localToday(now = new Date()): string {
+  return [now.getFullYear().toString().padStart(4, "0"), (now.getMonth() + 1).toString().padStart(2, "0"), now.getDate().toString().padStart(2, "0")].join("-");
+}
+
+export function localDateBoundary(date: string, dayOffset = 0): string {
+  return new Date(addCalendarDays(date, dayOffset) + "T00:00:00").toISOString();
+}
+
+export function addCalendarDays(date: string, count: number): string {
+  const calendarDate = new Date(date + "T00:00:00Z");
+  calendarDate.setUTCDate(calendarDate.getUTCDate() + count);
+  return calendarDate.toISOString().slice(0, 10);
+}

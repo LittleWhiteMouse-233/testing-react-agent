@@ -28,22 +28,22 @@ def _default_plan(request: TestCaseContent) -> PlanDraft:
     goal = request.source_text
     return TestPlanContent[TestTaskDefinition](
         title=f"执行：{request.name}",
-        setup_steps=["确认电视已开机并可被控制"],
+        setup_steps=["确认待测对象及本次需要的操作与观察能力可用"],
         assumptions=[],
         tasks=[
             TestTaskDefinition(
                 task_no=1,
                 type=TestTaskType.ACT,
-                title="到达目标页面",
+                title="达到目标状态",
                 goal=goal,
-                success_criteria=["当前截图显示用例描述的目标页面或目标状态"],
+                success_criteria=["实际观察表明已达到用例描述的目标状态"],
             ),
             TestTaskDefinition(
                 task_no=2,
                 type=TestTaskType.JUDGE,
                 title="验证预期结果",
                 goal=goal,
-                success_criteria=["当前截图满足用例中的预期结果"],
+                success_criteria=["实际观察证据满足用例中的预期结果"],
             ),
         ],
     )

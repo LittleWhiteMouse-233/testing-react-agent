@@ -1,2 +1,2 @@
-"""Android TV test agent backend."""
+"""ReAct Testing Harness backend."""
 

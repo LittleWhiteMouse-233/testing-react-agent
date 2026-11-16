@@ -16,9 +16,9 @@ vi.mock("../api/client", async (importOriginal) => {
 
 const schema = {
   type: "object", additionalProperties: false,
-  required: ["app_name", "llm", "execution", "planning", "capability_discovery_timeout_seconds"],
+  required: ["data_dir", "llm", "execution", "planning", "capability_discovery_timeout_seconds"],
   properties: {
-    app_name: { type: "string", title: "应用名称", description: "启动时显示的名称" },
+    data_dir: { type: "string", title: "数据目录", description: "运行数据的保存目录" },
     cors_origins: { type: "array", title: "允许的浏览器来源", items: { type: "string" } },
     capability_discovery_timeout_seconds: { type: "number", exclusiveMinimum: 0, title: "能力目录发现超时（秒）", "x-requires-restart": false },
     planning: { type: "object", title: "规划参数", "x-requires-restart": false,
@@ -45,7 +45,7 @@ const schema = {
 
 function settingsResponse(version = "version-1", restartRequired = false) {
   return { version, restart_required: restartRequired, settings_schema: schema, settings: {
-    app_name: "TestPilot", cors_origins: ["http://localhost:5173"], execution: { goal_max_failures: 10 },
+    data_dir: "./data", cors_origins: ["http://localhost:5173"], execution: { goal_max_failures: 10 },
     capability_discovery_timeout_seconds: 120,
     planning: { max_cycles: 20, model_response_max_attempts: 3, model_call_max_attempts: 3, tool_call_timeout_seconds: 120 }, llm: {
       profiles: [{ id: "model-a", api_key_configured: true }], planning_model_id: "model-a", execution_model_id: "model-a"
@@ -72,12 +72,16 @@ beforeEach(() => {
     if (saveStatus === 409) return Response.json({ code: "settings_version_conflict", message: "配置已更新，请重新加载后保存" }, { status: 409 });
     if (saveStatus === 422) return Response.json({ code: "validation_error", message: "配置校验失败", errors: [{ loc: ["execution", "goal_max_failures"], msg: "当前额度不合法" }] }, { status: 422 });
     currentSettings = settingsResponse("version-2", true);
-    currentSettings.settings.app_name = command.settings.app_name;
+    currentSettings.settings.data_dir = command.settings.data_dir;
     return Response.json(currentSettings);
   }));
 });
 
-afterEach(() => { cleanup(); message.destroy(); vi.unstubAllGlobals(); });
+afterEach(async () => {
+  cleanup();
+  await act(async () => { message.destroy(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+  vi.unstubAllGlobals();
+});
 
 function mountPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
   return render(<QueryClientProvider client={queryClient}><SettingsPage /></QueryClientProvider>);
@@ -85,7 +89,7 @@ function mountPage(queryClient = new QueryClient({ defaultOptions: { queries: { 
 
 it("renders backend labels, hides existing credentials and clears replacements after save", async () => {
   mountPage();
-  expect(await screen.findByLabelText("应用名称")).toHaveValue("TestPilot");
+  expect(await screen.findByLabelText("数据目录")).toHaveValue("./data");
   const token = screen.getByLabelText("模型令牌");
   expect(token).toHaveValue("");
   expect(token).toHaveAttribute("placeholder", "已配置，留空保持不变");
@@ -106,6 +110,20 @@ it("blocks invalid numeric input using the backend schema", async () => {
   expect(requests).toHaveLength(0);
 });
 
+it("focuses the first invalid field and retains unrelated errors during edits", async () => {
+  mountPage();
+  const planningBudget = await screen.findByLabelText("规划决策轮次上限");
+  const goalBudget = screen.getByLabelText("Goal 累计失败上限");
+  fireEvent.change(planningBudget, { target: { value: "0" } });
+  fireEvent.change(goalBudget, { target: { value: "0" } });
+  fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+  await waitFor(() => expect(planningBudget).toHaveFocus());
+  expect(screen.getAllByText(/必须大于等于 1/)).toHaveLength(2);
+  fireEvent.change(planningBudget, { target: { value: "5" } });
+  expect(screen.getAllByText(/必须大于等于 1/)).toHaveLength(1);
+  expect(goalBudget.closest(".ant-form-item")).toHaveTextContent("必须大于等于 1");
+});
+
 it("saves planning limits and directory discovery timeout independently", async () => {
   mountPage();
   expect(await screen.findByLabelText("规划决策轮次上限")).toHaveValue("20");
@@ -123,22 +141,22 @@ it("saves planning limits and directory discovery timeout independently", async 
 
 it("keeps the draft on version conflict and maps backend field errors", async () => {
   mountPage();
-  const appName = await screen.findByLabelText("应用名称");
-  fireEvent.change(appName, { target: { value: "Unsaved draft" } });
+  const dataDirectory = await screen.findByLabelText("数据目录");
+  fireEvent.change(dataDirectory, { target: { value: "Unsaved draft" } });
   saveStatus = 409;
   fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
   expect(await screen.findByText("配置已更新，请重新加载后保存")).toBeInTheDocument();
-  expect(appName).toHaveValue("Unsaved draft");
+  expect(dataDirectory).toHaveValue("Unsaved draft");
   await waitFor(() => expect(screen.getByRole("button", { name: "保存设置" })).not.toBeDisabled());
   saveStatus = 422;
   fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
   expect(await screen.findByText("当前额度不合法")).toBeInTheDocument();
-  expect(appName).toHaveValue("Unsaved draft");
+  expect(dataDirectory).toHaveValue("Unsaved draft");
 });
 
 it("adds and removes model groups without a sorting control", async () => {
   mountPage();
-  await screen.findByLabelText("应用名称");
+  await screen.findByLabelText("数据目录");
   fireEvent.click(screen.getByRole("button", { name: "新增模型配置列表" }));
   expect(screen.getAllByLabelText("模型配置 ID")).toHaveLength(2);
   fireEvent.change(screen.getAllByLabelText("模型配置 ID")[1]!, { target: { value: "model-b" } });
@@ -150,13 +168,13 @@ it("adds and removes model groups without a sorting control", async () => {
 it("loads the latest saved settings and version when returning to the page", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const page = mountPage(queryClient);
-  fireEvent.change(await screen.findByLabelText("应用名称"), { target: { value: "Saved name" } });
+  fireEvent.change(await screen.findByLabelText("数据目录"), { target: { value: "Saved name" } });
   fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
   await screen.findByText("启动参数已经发生修改，请重启应用后生效");
   page.unmount();
-  currentSettings = { ...currentSettings, version: "version-3", settings: { ...currentSettings.settings, app_name: "Updated in another window" } };
+  currentSettings = { ...currentSettings, version: "version-3", settings: { ...currentSettings.settings, data_dir: "Updated in another window" } };
   mountPage(queryClient);
-  await waitFor(() => expect(screen.getByLabelText("应用名称")).toHaveValue("Updated in another window"));
+  await waitFor(() => expect(screen.getByLabelText("数据目录")).toHaveValue("Updated in another window"));
   expect(screen.getByText("启动参数已经发生修改，请重启应用后生效")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
   await waitFor(() => expect(requests).toHaveLength(2));
@@ -167,28 +185,28 @@ it("loads the latest saved settings and version when returning to the page", asy
 it("keeps unsaved edits when a background query refreshes", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   mountPage(queryClient);
-  fireEvent.change(await screen.findByLabelText("应用名称"), { target: { value: "Unsaved name" } });
-  currentSettings = { ...currentSettings, settings: { ...currentSettings.settings, app_name: "Server name" } };
+  fireEvent.change(await screen.findByLabelText("数据目录"), { target: { value: "Unsaved name" } });
+  currentSettings = { ...currentSettings, settings: { ...currentSettings.settings, data_dir: "Server name" } };
   await act(() => queryClient.refetchQueries({ queryKey: $api.queryOptions("get", "/api/settings", {}).queryKey }));
-  expect(screen.getByLabelText("应用名称")).toHaveValue("Unsaved name");
+  expect(screen.getByLabelText("数据目录")).toHaveValue("Unsaved name");
 });
 
 it("keeps unsaved edits when reloading fails", async () => {
   mountPage();
-  fireEvent.change(await screen.findByLabelText("应用名称"), { target: { value: "Unsaved name" } });
+  fireEvent.change(await screen.findByLabelText("数据目录"), { target: { value: "Unsaved name" } });
   vi.mocked(fetch).mockResolvedValueOnce(Response.json({ code: "internal_error", message: "加载暂时失败" }, { status: 500 }));
   fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
   await screen.findByText("加载暂时失败");
-  expect(screen.getByLabelText("应用名称")).toHaveValue("Unsaved name");
+  expect(screen.getByLabelText("数据目录")).toHaveValue("Unsaved name");
 });
 
 it("explains that a timed-out save may still succeed and preserves the draft", async () => {
   mountPage();
-  fireEvent.change(await screen.findByLabelText("应用名称"), { target: { value: "Unsaved name" } });
+  fireEvent.change(await screen.findByLabelText("数据目录"), { target: { value: "Unsaved name" } });
   vi.mocked(fetch).mockRejectedValueOnce(new DOMException("The operation timed out.", "TimeoutError"));
   fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
   await screen.findAllByText("保存结果尚未确认，请重新加载设置检查是否生效");
-  expect(screen.getByLabelText("应用名称")).toHaveValue("Unsaved name");
+  expect(screen.getByLabelText("数据目录")).toHaveValue("Unsaved name");
 });
 
 it("marks startup list settings as requiring restart", async () => {

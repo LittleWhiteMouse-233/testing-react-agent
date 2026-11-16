@@ -2,7 +2,7 @@
 
 Fake MCP 按预先编写的场景公开 MCP 工具和静态资源，并返回可预测的结果。它适合验证工具发现、调用顺序、图片返回、超时、取消和连接故障，不需要电视、模型凭据或外部网络。
 
-本服务作为独立 stdio 进程运行。使用 TestPilot 的流程见[项目 README](../../README.md)，应用通过协议连接服务；应用测试也使用独立进程，不导入本服务实现。
+本服务作为独立 stdio 进程运行。使用 ReAct Testing Harness 的流程见[项目 README](../../README.md)，应用通过协议连接服务；应用测试也使用独立进程，不导入本服务实现。
 
 ## 安装与启动
 
@@ -125,7 +125,7 @@ python src/fake_mcp_server.py --scenario scenario.json --record calls.jsonl
 
 资源列表和实际读取内容分别声明。未提供内容的 URI 会返回“Resource not found”；模板不会自动生成内容。资源发现、模板查询和资源读取不消耗工具回放步骤。
 
-为 TestPilot 提供 Skill 时，入口 URI、包范围和附件发现规则见[技能资料与静态资源](../../skills/README.md#通过-mcp-提供资料)。
+为 ReAct Testing Harness 提供 Skill 时，入口 URI、包范围和附件发现规则见[技能资料与静态资源](../../skills/README.md#通过-mcp-提供资料)。
 
 ## 回放位置与调用记录
 

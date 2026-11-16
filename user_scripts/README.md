@@ -1,6 +1,6 @@
 # 安装、启停与诊断
 
-本目录提供 TestPilot 的 Windows 安装和启动入口，以及独立的 MCP、模型服务诊断工具。产品操作和应用配置见[项目 README](../README.md)。
+本目录提供 ReAct Testing Harness 的 Windows 安装和启动入口，以及独立的 MCP、模型服务诊断工具。产品操作和应用配置见[项目 README](../README.md)。
 
 除明确切换目录的命令外，本文示例均从仓库根目录开始。批处理使用当前 PATH 中的 Python，不创建或自动切换环境。直接调用 Python 的示例使用已有 Conda 环境 `llm-dev`；使用其他环境时替换该名称。
 
@@ -58,7 +58,7 @@ npm.cmd --prefix frontend install --include=dev
 
 检查离线、只读，覆盖基础工具、后端安装记录和 Alembic/Uvicorn 导入、前端直接依赖与 Vite 入口。退出码为：`0` 通过、`1` 失败、`2` 参数错误。
 
-通过只说明基础依赖可用。模型配置、凭据、数据库、端口、MCP 和电视需分别验证；检查不会加载应用或自动安装缺失包。排查当前 Python 环境的包冲突时，可另行执行：
+通过只说明基础依赖可用。模型配置、凭据、数据库、端口、MCP 和待测对象需分别验证；检查不会加载应用或自动安装缺失包。排查当前 Python 环境的包冲突时，可另行执行：
 
 ```powershell
 $env:PYTHONUTF8 = "1"

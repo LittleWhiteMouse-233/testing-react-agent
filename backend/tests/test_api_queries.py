@@ -1,4 +1,4 @@
-"""UI read contracts: source-backed counts, pagination and Shanghai day boundaries."""
+"""UI read contracts: source-backed counts, pagination and browser-local day boundaries."""
 import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.types import Message, Scope
 
 from app.api import repository as api_repository
-from app.api.schemas import TestRunFilterQuery as RunFilterQuery, TestRunPageQuery as RunPageQuery
+from app.api.schemas import TestRunFilterQuery as RunFilterQuery, TestRunPageQuery as RunPageQuery, TestRunStatisticsQuery as RunStatisticsQuery
 from app.artifacts import ArtifactStore
 from app.container import Container
 from app.domain.execution import ReasonCode, TaskRunResult, TaskRunStatus, TestRunStatus as RunStatus, TestRunVerdict as RunVerdict
@@ -58,7 +58,7 @@ def test_history_queries_join_existing_facts_without_writes(tmp_path: Path) -> N
         assert run["task_count"] == 2
         assert run["task_status_counts"] == {"passed": 2}
         assert run["image_count"] == len(report["artifacts"]) == 2
-        statistics = client.get("/api/runs/statistics").json()
+        statistics = client.get("/api/runs/statistics", params={"time_zone": "UTC"}).json()
         assert statistics["run_count"] == 1
         assert statistics["verdict_counts"] == {"PASS": 1, "FAIL": 0, "BLOCKED": 0, "CANCELLED": 0}
         assert statistics["average_duration_seconds"] is not None
@@ -101,22 +101,75 @@ def test_run_filter_statistics_are_unpaginated_and_use_half_open_utc_range(tmp_p
         second = client.get("/api/runs", params={**filters, "limit": 2, "offset": 2}).json()
         assert first["total"] == second["total"] == 5
         assert [run["id"] for run in first["items"] + second["items"]] == list(reversed(ids))[:4]
-        statistics = client.get("/api/runs/statistics", params=filters).json()
+        statistics = client.get("/api/runs/statistics", params={**filters, "time_zone": "Asia/Shanghai"}).json()
         assert statistics["run_count"] == 5
         assert statistics["verdict_counts"] == {"PASS": 1, "FAIL": 1, "BLOCKED": 1, "CANCELLED": 1}
         assert statistics["average_duration_seconds"] == pytest.approx(60, abs=0.001)
         assert statistics["daily"][0]["date"] == "2026-09-14"
         assert statistics["daily"][0]["total_duration_seconds"] == pytest.approx(180, abs=0.001)
         assert client.get("/api/runs", params={**filters, "verdict": "FAIL"}).json()["total"] == 1
-        assert client.get("/api/runs/statistics", params={**filters, "verdict": "FAIL"}).json()["run_count"] == 1
+        assert client.get("/api/runs/statistics", params={**filters, "verdict": "FAIL", "time_zone": "Asia/Shanghai"}).json()["run_count"] == 1
         active = client.get("/api/runs", params=[("status", "pending"), ("status", "running")]).json()
         assert [run["id"] for run in active["items"]] == [ids[-1]]
         exclusive_end = client.get("/api/runs", params={**filters, "created_before": "2026-09-14T01:00:00+08:00"}).json()
         assert [run["id"] for run in exclusive_end["items"]] == [ids[0]]
-        empty = client.get("/api/runs/statistics", params={"search": "missing"}).json()
+        empty = client.get("/api/runs/statistics", params={"search": "missing", "time_zone": "UTC"}).json()
         assert empty["run_count"] == 0 and empty["daily"] == [] and empty["average_duration_seconds"] is None
         assert client.get("/api/runs", params={"created_from": "2026-09-14"}).status_code == 422
         assert client.get("/api/runs/statistics", params={**filters, "created_before": filters["created_from"]}).status_code == 422
+
+
+@pytest.mark.parametrize("time_zone,expected_dates", [
+    ("America/New_York", ["2026-03-07", "2026-03-08", "2026-03-09"]),
+    ("UTC", ["2026-03-08", "2026-03-09"]),
+    ("Asia/Kathmandu", ["2026-03-08", "2026-03-09"]),
+])
+def test_statistics_groups_creation_instants_in_browser_time_zone(
+    tmp_path: Path, time_zone: str, expected_dates: list[str],
+) -> None:
+    with build_client(tmp_path) as client:
+        plan = create_plan(client)
+        run_id = start_run(client, plan)
+        wait_for_run(client, run_id)
+        container = cast(Container, cast(FastAPI, client.app).state.container)
+        instants = [datetime.fromisoformat(value) for value in (
+            "2026-03-08T04:59:59+00:00", "2026-03-08T05:00:00+00:00",
+            "2026-03-09T03:59:59+00:00", "2026-03-09T04:00:00+00:00",
+        )]
+
+        async def seed_history() -> None:
+            async with container.sessions() as session:
+                original = await session.get(RunRow, run_id)
+                assert original is not None
+                original.created_at = instants[0]
+                original.started_at = instants[0]
+                original.finished_at = instants[0] + timedelta(seconds=60)
+                for created in instants[1:]:
+                    session.add(RunRow(
+                        id=str(uuid4()), test_plan_id=plan["id"], environment_json=original.environment_json,
+                        status=RunStatus.FINISHED, verdict=RunVerdict.PASS,
+                        created_at=created, started_at=created, finished_at=created + timedelta(seconds=60),
+                    ))
+                await session.commit()
+
+        assert client.portal is not None
+        client.portal.call(seed_history)
+        response = client.get("/api/runs/statistics", params={"time_zone": time_zone})
+        assert response.status_code == 200, response.text
+        statistics = response.json()
+        assert [day["date"] for day in statistics["daily"]] == expected_dates
+        assert statistics["run_count"] == 4
+        assert sum(day["run_count"] for day in statistics["daily"]) == 4
+        if time_zone == "America/New_York":
+            assert [day["run_count"] for day in statistics["daily"]] == [1, 2, 1]
+            local_day = client.get("/api/runs/statistics", params={
+                "time_zone": time_zone, "created_from": "2026-03-08T00:00:00-05:00",
+                "created_before": "2026-03-09T00:00:00-04:00",
+            }).json()
+            assert local_day["run_count"] == 2
+            assert local_day["daily"][0]["date"] == "2026-03-08"
+        assert client.get("/api/runs/statistics", params={"time_zone": "No/Such_Zone"}).status_code == 422
+        assert client.get("/api/runs/statistics").status_code == 422
 
 
 def test_case_search_is_literal_and_paginates_all_matches(tmp_path: Path) -> None:
@@ -239,7 +292,7 @@ async def test_response_keeps_one_snapshot_during_committed_run_changes(
             assert page.items[0].status == RunStatus.PENDING
             assert page.items[0].task_status_counts == {} and page.items[0].image_count == 0
         else:
-            statistics = await api_repository.test_run_statistics(sessions, RunFilterQuery())
+            statistics = await api_repository.test_run_statistics(sessions, RunStatisticsQuery(time_zone="UTC"))
             assert statistics.run_count == 1
             assert sum(statistics.verdict_counts.values()) == 0
             assert statistics.average_duration_seconds is None

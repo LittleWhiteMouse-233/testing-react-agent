@@ -1163,16 +1163,6 @@ export interface components {
         /** SettingsContent[LLMProfileSettingsResponse] */
         SettingsContent_LLMProfileSettingsResponse_: {
             /**
-             * 应用名称
-             * @description 后端接口文档显示的应用名称。
-             */
-            app_name: string;
-            /**
-             * 应用版本
-             * @description 后端及运行记录使用的应用版本。
-             */
-            app_version: string;
-            /**
              * 能力目录发现超时
              * @description 每次完整目录发现的超时秒数，对下一次发现生效。
              */
@@ -1233,16 +1223,6 @@ export interface components {
         };
         /** SettingsContent[LLMProfileSettings] */
         SettingsContent_LLMProfileSettings_: {
-            /**
-             * 应用名称
-             * @description 后端接口文档显示的应用名称。
-             */
-            app_name: string;
-            /**
-             * 应用版本
-             * @description 后端及运行记录使用的应用版本。
-             */
-            app_version: string;
             /**
              * 能力目录发现超时
              * @description 每次完整目录发现的超时秒数，对下一次发现生效。
@@ -1581,7 +1561,7 @@ export interface components {
         };
         /**
          * TestRunDailyStatistics
-         * @description Read-only aggregates grouped by creation day in Asia/Shanghai.
+         * @description Read-only aggregates grouped by creation day in the requested time zone.
          */
         TestRunDailyStatistics: {
             /** Average Duration Seconds */
@@ -2071,13 +2051,15 @@ export interface operations {
     };
     get_test_run_statistics_api_runs_statistics_get: {
         parameters: {
-            query?: {
+            query: {
                 search?: string;
                 test_case_id?: string | null;
                 status?: components["schemas"]["TestRunStatus"][];
                 verdict?: components["schemas"]["TestRunVerdict"] | null;
                 created_from?: string | null;
                 created_before?: string | null;
+                /** @description Browser IANA time zone used for creation-day grouping. */
+                time_zone: string;
             };
             header?: never;
             path?: never;

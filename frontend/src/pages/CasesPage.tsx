@@ -3,6 +3,7 @@ import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Empty, Form, Input, Modal, Pagination, Spin, Tooltip, message } from "antd";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import PageHeading from "../PageHeading";
 import { $api, apiErrorMessage } from "../api/client";
 import { usePlanningProgress } from "../api/usePlanningProgress";
 import type { TestCase, TestCaseCreateRequest } from "../api/contracts";
@@ -61,9 +62,10 @@ export default function CasesPage() {
     }, onError: (error) => message.error(apiErrorMessage(error, "创建失败"))
   });
   return <>
-    <header className="page-heading"><div><h1>用例规划</h1><p>将自然语言用例转为可确认的语义任务 · {cases.data?.total ?? "—"} 条用例</p></div>
-      <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建用例</Button>
-    </header>
+    <PageHeading actions={<Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新建用例</Button>}>
+      <h1>用例规划</h1><p>将自然语言用例转为可确认的语义任务 · {cases.data?.total ?? "—"} 条用例</p>
+    </PageHeading>
+    <div className="page-content">
     <div className="planning-layout">
       <aside className="case-library"><div className="section-heading"><div><small>用例库</small><h2>测试用例</h2></div><span>{cases.data?.total ?? 0} 条</span></div>
         <Input.Search key={search} aria-label="搜索用例" placeholder="搜索用例编号或关键字" defaultValue={search}
@@ -80,7 +82,8 @@ export default function CasesPage() {
         </div>
         <Pagination simple current={page} pageSize={12} total={cases.data?.total ?? 0} onChange={(next) => setParams({ ...(search ? { search } : {}), page: String(next) })} />
       </aside>
-      {caseId ? <PlanPage key={caseId} archiving={archiveTarget?.id === caseId} /> : <div className="planning-welcome"><span className="welcome-mark">T</span><h2>从测试意图开始</h2><p>选择左侧用例，或创建一个新用例。<br />查看并确认计划后，即可开始执行。</p><Button type="primary" onClick={() => setOpen(true)}>新建用例</Button></div>}
+      {caseId ? <PlanPage key={caseId} archiving={archiveTarget?.id === caseId} /> : <div className="planning-welcome"><span className="welcome-mark">R</span><h2>从测试意图开始</h2><p>选择左侧用例，或创建一个新用例。<br />查看并确认计划后，即可开始执行。</p><Button type="primary" onClick={() => setOpen(true)}>新建用例</Button></div>}
+    </div>
     </div>
     <Modal title="归档用例" open={!!archiveTarget} okText="归档用例" cancelText="取消" confirmLoading={archive.isPending}
       okButtonProps={{ className: "case-archive-confirm", disabled: !!archiveTarget && cannotArchive(archiveTarget.id) }} cancelButtonProps={{ disabled: archive.isPending }} closable={!archive.isPending} mask={{ closable: !archive.isPending }}

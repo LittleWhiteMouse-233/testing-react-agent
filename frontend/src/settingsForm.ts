@@ -12,6 +12,7 @@ export interface SettingsSchema {
   title?: string;
   description?: string;
   properties?: Record<string, SettingsSchema>;
+  required?: string[];
   propertyNames?: SettingsSchema;
   additionalProperties?: boolean | SettingsSchema;
   items?: SettingsSchema;

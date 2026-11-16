@@ -12,6 +12,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pydantic import BaseModel, ConfigDict
 
 from app.artifacts import ArtifactStore
+from app.config import APP_DESCRIPTION, APP_NAME
 from app.domain.execution import Artifact, ArtifactType, StoredRunEvent, TestRunDetail
 
 
@@ -73,6 +74,8 @@ class ReportService:
             }
             content = self.templates.get_template("report.html").render(
                 report=report_dump,
+                app_name=APP_NAME,
+                app_description=APP_DESCRIPTION,
                 image_data_urls=image_data_urls,
                 capability_catalog=report.detail.environment.capability_catalog,
             ).encode("utf-8")

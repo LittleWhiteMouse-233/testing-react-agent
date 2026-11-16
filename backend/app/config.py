@@ -21,6 +21,9 @@ from app.test_case_lock import TestCaseLock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+APP_NAME = "ReAct Testing Harness"
+APP_VERSION = "0.1.0"
+APP_DESCRIPTION = "— Natural language in, agent-planned tests out—observing the prototype and executing through tool calling."
 
 
 TProfile = TypeVar("TProfile", bound=LLMProfileSettings)
@@ -56,8 +59,6 @@ class SettingsContent(BaseModel, Generic[TProfile]):
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
-    app_name: str = Field(title="应用名称", description="后端接口文档显示的应用名称。")
-    app_version: str = Field(title="应用版本", description="后端及运行记录使用的应用版本。")
     debug: bool = Field(title="调试模式", description="后端调试开关。")
     cors_origins: list[str] = Field(title="允许的浏览器来源", description="允许访问后端的浏览器 Origin 列表。")
     data_dir: Path = Field(title="数据目录", description="数据库、图片和导出文件的默认根目录。")

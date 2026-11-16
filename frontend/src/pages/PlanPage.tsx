@@ -9,6 +9,7 @@ import { emptyTask, getGoalsWithInvalidatedJumpTargets, isPlanDraftValid, toPlan
 import CapabilitySelector, { PlanningCapabilitySelector, useCapabilityCatalog, useCapabilitySelection } from "./CapabilitySelector";
 import { usePlanningProgress } from "../api/usePlanningProgress";
 import PlanningProgressDialog from "./PlanningProgressDialog";
+import { TaskCard } from "../runPresentation";
 
 export default function PlanPage({ archiving = false }: { archiving?: boolean }) {
   const { caseId = "" } = useParams();
@@ -170,10 +171,12 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
       </div>
       <div inert={!!progress}><PlanningCapabilitySelector catalog={capabilityCatalog} selection={planningCapabilitySelection} disabled={busy} /></div>
       <div className="planning-prompt" inert={!!progress}><div className="section-label">告诉规划 Agent 如何调整 <small>Ctrl / ⌘ + Enter 发送</small></div>
-        <Form.Item label={"额外输入（" + (plan ? "必填" : "可选") + "）"} required={!!plan}>
-          <Input.TextArea aria-label="规划额外输入" value={progress?.userInput ?? userInput} disabled={busy || (!!plan && !isLatest)} rows={4} placeholder={plan ? "说明希望如何修改最新计划" : "补充本次规划的要求"}
+        <Form.Item layout="vertical" label={"额外输入（" + (plan ? "必填" : "可选") + "）"} required={!!plan}>
+          <Input.TextArea aria-label="规划额外输入" style={{ height: "100%", resize: "none" }} value={progress?.userInput ?? userInput} disabled={busy || (!!plan && !isLatest)} rows={4} placeholder={plan ? "说明希望如何修改最新计划" : "补充本次规划的要求"}
             onChange={(event) => setUserInput(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); generatePlan(); } }} />
         </Form.Item>
+      </div>
+      <div className="planning-actions" inert={!!progress}>
         {dirty && <Alert type="info" title="存在未保存的修改，请先保存新版本再重新规划" action={<Button disabled={busy} onClick={() => { if (plan) selectPlan(plan); }}>放弃修改</Button>} />}
         {!!plan && !isLatest && <Alert type="info" title="历史计划仅供回溯，不能修订或启动" />}
         <div className="prompt-actions"><span className="muted">{planningPending ? "规划中…" : "以目标和成功标准描述任务"}</span><Button type="primary" loading={planningPending} disabled={!canGenerate} onClick={generatePlan}>{plan ? "重新规划" : "生成计划"}</Button></div>
@@ -185,11 +188,8 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
           options={plans.data?.items.map((entry) => ({ value: entry.id, label: "v" + entry.version_number + (entry.id === latest?.id ? " · 最新" : " · 只读") }))} />
       </div>}
       {plan && draft ? <>
-        <div className="plan-task-list"><h3>{draft.title}</h3>{draft.tasks.map((task) => <article className="plan-task" key={task.task_no}><span className={"task-number " + task.type}>{task.task_no}</span><div>
-          <div className="task-title"><h3>{task.title}</h3><span className={"pill " + (task.type === "judge" ? "purple" : task.type === "goal" ? "goal" : "blue")}>{task.type.toUpperCase()}</span></div>
-          <p>{task.goal}</p><ul>{task.success_criteria.map((criterion, position) => <li key={position}>{criterion}</li>)}</ul>
-          {task.type === "goal" && <p className="muted">未满足时回到任务 {task.jump_back_to_task_no ?? "待选择"}{task.jump_back_to_task_no != null && " · " + draft.tasks.find((target) => target.task_no === task.jump_back_to_task_no)?.title}</p>}
-        </div></article>)}</div>
+        <div className="plan-task-list"><h3>{draft.title}</h3>{draft.tasks.map((task) => <TaskCard key={plan.id + ":" + task.task_no} task={task}
+          jumpTargetTitle={draft.tasks.find((target) => target.task_no === task.jump_back_to_task_no)?.title} />)}</div>
         <div className="plan-start"><Checkbox disabled={busy || dirty || !isLatest} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}>我已确认计划 assumptions、任务目标和成功标准</Checkbox>
           <Button block size="large" type="primary" icon={<RocketOutlined />} loading={start.isPending} disabled={busy || runOccupied || !valid || dirty || !confirmed || !isLatest || !capabilityCatalog.ready || !capabilitySelection.ready}
             onClick={() => start.mutate({ body: { test_case_id: caseId, test_plan_id: plan.id, assumptions_confirmed: true, selected_columns: capabilitySelection.selectedColumns } })}>启动运行</Button>
@@ -199,11 +199,13 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
       <CapabilitySelector catalog={capabilityCatalog} selection={capabilitySelection} disabled={busy || start.isPending} />
       <Link className="case-history-link" to={"/runs?case=" + caseId}>查看本用例历史记录 →</Link>
     </aside>
-    <Modal title="编辑语义计划" open={editing} width={760} onCancel={() => setEditing(false)} footer={null} mask={{ closable: false }}>
+    <Modal className="plan-editor-modal" title="编辑语义计划" open={editing} width="50vw" onCancel={() => setEditing(false)} mask={{ closable: false }}
+      footer={<div className="plan-editor-actions"><Button disabled={busy} onClick={() => { if (plan) selectPlan(plan); }}>放弃修改</Button><Button type="primary" icon={<SaveOutlined />} disabled={!canEdit || !dirty || !valid} loading={revise.isPending}
+        onClick={() => { if (plan && draft) revise.mutate({ params: { path: { test_plan_id: plan.id } }, body: { content: draft } }); }}>保存新版本</Button></div>}>
       {draft && <Form layout="vertical" disabled={!canEdit}>
         <Form.Item label="计划标题"><Input value={draft.title} maxLength={200} onChange={(event) => updateDraft({ ...draft, title: event.target.value })} /></Form.Item>
-        <Form.Item label="前置假设（每行一条）"><Input.TextArea value={draft.assumptions.join("\n")} onChange={(event) => updateDraft({ ...draft, assumptions: event.target.value ? event.target.value.split("\n") : [] })} /></Form.Item>
-        <Form.Item label="准备步骤（每行一条）"><Input.TextArea value={draft.setup_steps.join("\n")} onChange={(event) => updateDraft({ ...draft, setup_steps: event.target.value ? event.target.value.split("\n") : [] })} /></Form.Item>
+        <Form.Item label="前置假设（每行一条）"><Input.TextArea autoSize={{ minRows: 1, maxRows: 3 }} style={{ resize: "none" }} value={draft.assumptions.join("\n")} onChange={(event) => updateDraft({ ...draft, assumptions: event.target.value ? event.target.value.split("\n") : [] })} /></Form.Item>
+        <Form.Item label="准备步骤（每行一条）"><Input.TextArea autoSize={{ minRows: 1, maxRows: 3 }} style={{ resize: "none" }} value={draft.setup_steps.join("\n")} onChange={(event) => updateDraft({ ...draft, setup_steps: event.target.value ? event.target.value.split("\n") : [] })} /></Form.Item>
         {draft.tasks.map((task, index) => <section className="task-editor" key={task.task_no}><div className="task-editor-heading"><strong>任务 {task.task_no}</strong><div>
           <Button aria-label={"上移任务 " + (index + 1)} icon={<ArrowUpOutlined />} disabled={!canEdit || index === 0} onClick={() => moveTask(index, -1)} />
           <Button aria-label={"下移任务 " + (index + 1)} icon={<ArrowDownOutlined />} disabled={!canEdit || index === draft.tasks.length - 1} onClick={() => moveTask(index, 1)} />
@@ -215,14 +217,12 @@ function TestCasePlan({ caseId, archiving }: { caseId: string; archiving: boolea
               onChange={(target: number | undefined) => updateTask(index, { jump_back_to_task_no: target ?? null })} />
           </Form.Item>}
           <Form.Item label="任务标题"><Input value={task.title} maxLength={200} onChange={(event) => updateTask(index, { title: event.target.value })} /></Form.Item>
-          <Form.Item label="目标"><Input.TextArea value={task.goal} onChange={(event) => updateTask(index, { goal: event.target.value })} /></Form.Item>
-          <Form.Item label="成功标准（每行一条）"><Input.TextArea value={task.success_criteria.join("\n")} onChange={(event) => updateTask(index, { success_criteria: event.target.value.split("\n") })} /></Form.Item>
+          <Form.Item label="目标"><Input.TextArea autoSize={{ minRows: 1, maxRows: 3 }} style={{ resize: "none" }} value={task.goal} onChange={(event) => updateTask(index, { goal: event.target.value })} /></Form.Item>
+          <Form.Item label="成功标准（每行一条）"><Input.TextArea autoSize={{ minRows: 1, maxRows: 3 }} style={{ resize: "none" }} value={task.success_criteria.join("\n")} onChange={(event) => updateTask(index, { success_criteria: event.target.value.split("\n") })} /></Form.Item>
         </section>)}
         <Button block icon={<PlusOutlined />} onClick={() => applyTaskOrder([...draft.tasks, emptyTask(draft.tasks.length + 1)])}>新增任务</Button>
         {draft.setup_steps.map((step, index) => <Button key={index} type="link" onClick={() => applyTaskOrder([...draft.tasks, emptyTask(draft.tasks.length + 1, step)])}>将准备步骤 {index + 1} 转为任务</Button>)}
         {!valid && <Alert type="warning" title="请补全计划标题、任务目标、成功标准及有效的 Goal 回跳目标" />}
-        <div className="editor-footer"><Button disabled={busy} onClick={() => { if (plan) selectPlan(plan); }}>放弃修改</Button><Button type="primary" icon={<SaveOutlined />} disabled={!canEdit || !dirty || !valid} loading={revise.isPending}
-          onClick={() => { if (plan) revise.mutate({ params: { path: { test_plan_id: plan.id } }, body: { content: draft } }); }}>保存新版本</Button></div>
       </Form>}
     </Modal>
     <Modal title="跳转目标失效" open={pendingTaskOrder !== null} okText="继续并清空" cancelText="取消" okButtonProps={{ disabled: !canEdit }}

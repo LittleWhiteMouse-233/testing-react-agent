@@ -6,16 +6,15 @@ import { $api, apiErrorMessage } from "../api/client";
 import type { TestRunListResponse, TestRunStatisticsResponse, TestRunVerdict } from "../api/contracts";
 import { ElapsedTime, formatDuration, formatTime, runSummary, StatusBadge, statusLabels } from "../runPresentation";
 import ReportPage from "./ReportPage";
-import { isCalendarDate, parsePage } from "../pageParams";
+import { addCalendarDays, isCalendarDate, localDateBoundary, localToday, parsePage } from "../pageParams";
+import PageHeading from "../PageHeading";
 
-export function shanghaiToday() { return new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10); }
-export function addDays(date: string, count: number) { return new Date(Date.parse(date + "T00:00:00Z") + count * 86400000).toISOString().slice(0, 10); }
 const verdicts: TestRunVerdict[] = ["PASS", "FAIL", "BLOCKED", "CANCELLED"];
 
 function HistoryCharts({ statistics, from, to }: { statistics?: TestRunStatisticsResponse; from: string; to: string }) {
   const days: TestRunStatisticsResponse["daily"] = [];
   const byDate = new Map(statistics?.daily.map((entry) => [entry.date, entry]));
-  for (let date = from; date <= to; date = addDays(date, 1)) {
+  for (let date = from; date <= to; date = addCalendarDays(date, 1)) {
     days.push(byDate.get(date) ?? { date, run_count: 0, average_duration_seconds: null, total_duration_seconds: 0 });
   }
   const maxRuns = Math.max(1, ...days.map((day) => day.run_count));
@@ -51,18 +50,18 @@ export default function HistoryPage() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [caseSearch, setCaseSearch] = useState("");
-  const today = shanghaiToday();
-  const from = params.get("from") ?? addDays(today, -29);
+  const today = localToday();
+  const from = params.get("from") ?? addCalendarDays(today, -29);
   const to = params.get("to") ?? today;
-  const validRange = isCalendarDate(from) && isCalendarDate(to) && from <= to && isCalendarDate(addDays(to, 1));
+  const validRange = isCalendarDate(from) && isCalendarDate(to) && from <= to && isCalendarDate(addCalendarDays(to, 1));
   const pageSize = [8, 20, 50].includes(Number(params.get("size"))) ? Number(params.get("size")) : 8;
   const page = parsePage(params.get("page"), pageSize);
   const selectedVerdict = verdicts.find((value) => value === params.get("verdict"));
   const filters = { search: params.get("search") ?? "", test_case_id: params.get("case") || undefined,
-    created_from: validRange ? from + "T00:00:00+08:00" : undefined,
-    created_before: validRange ? addDays(to, 1) + "T00:00:00+08:00" : undefined };
+    created_from: validRange ? localDateBoundary(from) : undefined,
+    created_before: validRange ? localDateBoundary(to, 1) : undefined };
   const runs = $api.useQuery("get", "/api/runs", { params: { query: { ...filters, verdict: selectedVerdict, limit: pageSize, offset: (page - 1) * pageSize } } }, { enabled: validRange });
-  const statistics = $api.useQuery("get", "/api/runs/statistics", { params: { query: filters } }, { enabled: validRange });
+  const statistics = $api.useQuery("get", "/api/runs/statistics", { params: { query: { ...filters, time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone } } }, { enabled: validRange });
   const cases = $api.useQuery("get", "/api/runs/test-cases", { params: { query: { search: caseSearch, limit: 200 } } });
   const update = (changes: Record<string, string | undefined>) => {
     const next = new URLSearchParams(params); next.delete("page");
@@ -71,7 +70,7 @@ export default function HistoryPage() {
   };
   const reportUrl = (id: string) => "/runs/" + id + "/report?" + params;
   return <>
-    <header className="page-heading"><div><h1>历史记录 <span className="pill blue">{runs.data?.total ?? "—"} 条</span></h1><p>所有运行条目 · 按时间倒序 · 点击查看执行详情</p></div><Button icon={<ReloadOutlined />} disabled={!validRange} onClick={() => { void runs.refetch(); void statistics.refetch(); }}>刷新</Button></header>
+    <PageHeading actions={<Button icon={<ReloadOutlined />} disabled={!validRange} onClick={() => { void runs.refetch(); void statistics.refetch(); }}>刷新</Button>}><h1>历史记录 <span className="pill blue">{runs.data?.total ?? "—"} 条</span></h1><p>所有运行条目 · 按时间倒序 · 点击查看执行详情</p></PageHeading>
     <div className="history-content">
       {validRange ? <HistoryCharts statistics={statistics.data} from={from} to={to} /> : <Alert type="error" title="请选择有效的日期范围，开始日期不得晚于结束日期" />}
       {statistics.error && <Alert type="error" title={apiErrorMessage(statistics.error, "统计加载失败")} />}
@@ -86,7 +85,7 @@ export default function HistoryPage() {
         </div>
       </div>
       {runs.error && <Alert type="error" title={apiErrorMessage(runs.error, "历史加载失败")} />}
-      <Table<TestRunListResponse> className="history-table" rowKey="id" loading={runs.isLoading} dataSource={validRange ? runs.data?.items : []} scroll={{ x: 940 }}
+      <Table<TestRunListResponse> className="history-table" rowKey="id" loading={{ spinning: runs.isLoading, classNames: { root: "history-table-loading", container: "history-table-content" } }} dataSource={validRange ? runs.data?.items : []} scroll={{ x: 940, y: "100%" }}
         onRow={(run) => ({ onClick: () => navigate(reportUrl(run.id)), className: "clickable-row" })}
         pagination={{ current: page, pageSize, total: runs.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [8, 20, 50], showTotal: (total) => "共 " + total + " 条", onChange: (next, size) => update({ page: String(size === pageSize ? next : 1), size: String(size) }) }}
         columns={[

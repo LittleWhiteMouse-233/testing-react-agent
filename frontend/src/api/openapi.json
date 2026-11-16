@@ -1956,16 +1956,6 @@
       "SettingsContent_LLMProfileSettingsResponse_": {
         "additionalProperties": false,
         "properties": {
-          "app_name": {
-            "description": "后端接口文档显示的应用名称。",
-            "title": "应用名称",
-            "type": "string"
-          },
-          "app_version": {
-            "description": "后端及运行记录使用的应用版本。",
-            "title": "应用版本",
-            "type": "string"
-          },
           "capability_discovery_timeout_seconds": {
             "description": "每次完整目录发现的超时秒数，对下一次发现生效。",
             "exclusiveMinimum": 0.0,
@@ -2049,8 +2039,6 @@
           }
         },
         "required": [
-          "app_name",
-          "app_version",
           "debug",
           "cors_origins",
           "data_dir",
@@ -2067,16 +2055,6 @@
       "SettingsContent_LLMProfileSettings_": {
         "additionalProperties": false,
         "properties": {
-          "app_name": {
-            "description": "后端接口文档显示的应用名称。",
-            "title": "应用名称",
-            "type": "string"
-          },
-          "app_version": {
-            "description": "后端及运行记录使用的应用版本。",
-            "title": "应用版本",
-            "type": "string"
-          },
           "capability_discovery_timeout_seconds": {
             "description": "每次完整目录发现的超时秒数，对下一次发现生效。",
             "exclusiveMinimum": 0.0,
@@ -2160,8 +2138,6 @@
           }
         },
         "required": [
-          "app_name",
-          "app_version",
           "debug",
           "cors_origins",
           "data_dir",
@@ -2968,7 +2944,7 @@
         "type": "object"
       },
       "TestRunDailyStatistics": {
-        "description": "Read-only aggregates grouped by creation day in Asia/Shanghai.",
+        "description": "Read-only aggregates grouped by creation day in the requested time zone.",
         "properties": {
           "average_duration_seconds": {
             "anyOf": [
@@ -3542,7 +3518,8 @@
     }
   },
   "info": {
-    "title": "Android TV Test Agent",
+    "description": "— Natural language in, agent-planned tests out—observing the prototype and executing through tool calling.",
+    "title": "ReAct Testing Harness",
     "version": "0.1.0"
   },
   "openapi": "3.1.0",
@@ -4031,6 +4008,18 @@
                 }
               ],
               "title": "Created Before"
+            }
+          },
+          {
+            "description": "Browser IANA time zone used for creation-day grouping.",
+            "in": "query",
+            "name": "time_zone",
+            "required": true,
+            "schema": {
+              "description": "Browser IANA time zone used for creation-day grouping.",
+              "minLength": 1,
+              "title": "Time Zone",
+              "type": "string"
             }
           }
         ],

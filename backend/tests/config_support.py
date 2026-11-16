@@ -41,7 +41,6 @@ def app_config_values(
     llm: dict[str, Any] | None = None, **app_parameters: object,
 ) -> dict[str, Any]:
     return {
-        "app_name": "Android TV Test Agent", "app_version": "0.1.0",
         "debug": False, "cors_origins": ["http://localhost:5173"],
         "data_dir": root.as_posix(), "mcp_config_path": (root / "mcp.json").as_posix(),
         "skills_dir": (root / "skills").as_posix(),

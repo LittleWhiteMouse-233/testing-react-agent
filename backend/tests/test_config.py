@@ -76,9 +76,9 @@ def test_get_settings_reloads_the_selected_file(
     config_path = write_app_config(tmp_path)
     monkeypatch.setenv("TEST_AGENT_CONFIG_PATH", str(config_path))
     original = config.get_settings()
-    write_app_config(tmp_path, app_config_values(tmp_path, app_name="Updated configuration"))
-    assert config.get_settings().app_name == "Updated configuration"
-    assert original.app_name == "Android TV Test Agent"
+    write_app_config(tmp_path, app_config_values(tmp_path, debug=True))
+    assert config.get_settings().debug is True
+    assert original.debug is False
     config_path.unlink()
     with pytest.raises(FileNotFoundError):
         config.get_settings()
@@ -296,7 +296,7 @@ def test_importing_application_factory_does_not_read_personal_configuration(tmp_
 
 def test_openapi_export_uses_selected_actual_configuration_without_starting_services(tmp_path: Path) -> None:
     configuration = app_config_values(
-        tmp_path, app_name="Export configuration", data_dir=(tmp_path / "unused-data").as_posix(),
+        tmp_path, data_dir=(tmp_path / "unused-data").as_posix(),
     )
     configuration["llm"]["profiles"][0]["api_key"] = "never-export-this-secret"
     config_path = write_app_config(tmp_path, configuration)
@@ -308,6 +308,6 @@ def test_openapi_export_uses_selected_actual_configuration_without_starting_serv
     )
     assert result.returncode == 0, result.stdout + result.stderr
     exported_text = output_path.read_text(encoding="utf-8")
-    assert json.loads(exported_text)["info"]["title"] == "Export configuration"
+    assert json.loads(exported_text)["info"]["title"] == config.APP_NAME
     assert "never-export-this-secret" not in exported_text
     assert not (tmp_path / "unused-data").exists()

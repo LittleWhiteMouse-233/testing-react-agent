@@ -95,9 +95,9 @@ async def test_repeated_saves_keep_the_bound_file_after_environment_changes(
 
 async def test_startup_changes_remain_flagged_after_reverting_and_reset_on_restart(tmp_path: Path) -> None:
     service, _, config_path = settings_service(tmp_path)
-    for app_name in ("Changed app", "Android TV Test Agent"):
+    for debug in (True, False):
         draft = service.current.model_dump(mode="json")
-        draft["app_name"] = app_name
+        draft["debug"] = debug
         await service.update(config.SettingsContent[LLMProfileSettings].model_validate(draft), version=service.version)
         assert service.restart_required is True
     restarted = config.SettingsService(config.get_settings(config_path), CaseLock())

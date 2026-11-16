@@ -12,7 +12,7 @@ import HistoryPage from "../pages/HistoryPage";
 import CasesPage from "../pages/CasesPage";
 import { useRunReport } from "../api/useRunReport";
 import { PlanningProgressProvider } from "../api/usePlanningProgress";
-import { RunResources } from "../runPresentation";
+import { EventTimeline, RunResources } from "../runPresentation";
 import { caseId, imageId, runEvent, runId, runReport, taskRunId } from "./run-fixtures";
 
 vi.mock("../api/client", async (importOriginal) => {
@@ -159,7 +159,7 @@ it.each(["execution", "report"])("shows Goal facts without a failure limit snaps
   expect(screen.getByText(/未满足时回到任务 1/)).toBeInTheDocument();
   expect(screen.getByText("仍有未处理节点")).toBeInTheDocument();
   expect(screen.getByText("尚有一个节点")).toBeInTheDocument();
-  if (page === "execution") expect(screen.getByText(/累计失败 1 ·/)).toBeInTheDocument();
+  if (page === "execution") expect(screen.getByText(/累计失败 1/)).toBeInTheDocument();
   else expect(screen.getByText(/goal_failure_limit/)).toBeInTheDocument();
 });
 
@@ -322,11 +322,94 @@ it("uses whole-filter counts and retains pagination when opening and closing a r
   const link = await screen.findByRole("link", { name: runId.slice(0, 8) });
   expect(requests.find((url) => url.pathname === "/api/runs")?.searchParams.get("offset")).toBe("8");
   expect(requests.find((url) => url.pathname.endsWith("statistics"))?.searchParams.has("verdict")).toBe(false);
+  expect(requests.find((url) => url.pathname.endsWith("statistics"))?.searchParams.get("time_zone")).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
   fireEvent.click(link);
   await screen.findByRole("dialog");
   expect(screen.getByTestId("location")).toHaveTextContent("page=2");
   fireEvent.click(screen.getByRole("button", { name: /close/i }));
   await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/runs?from=2026-09-01&to=2026-09-30&page=2&verdict=PASS"));
+});
+
+it("keeps tool call text and identifiers together in the event body", () => {
+  const stored = runEvent(7, { type: "tool.started", test_run_id: runId, task_run_id: taskRunId, call_id: "finish-blocked" });
+  const page = render(<EventTimeline events={[stored]} />);
+  const row = page.container.querySelector(".event-row")!;
+  expect(row.children).toHaveLength(3);
+  expect(row.children[2]).toHaveTextContent("调用 finish-blocked");
+});
+
+it("collapses each message block independently and retains expansion when events arrive", () => {
+  const stored = runEvent(1, { type: "message.appended", test_run_id: runId, task_run_id: taskRunId,
+    message: { role: "tool", message_id: "mixed-message", tool_call_id: "call-mixed", name: "fixture_inspect", status: "success",
+      content: [{ type: "text", text: "第一段\n第二行\n第三行\n第四行" }, { type: "image_artifact", artifact_id: imageId },
+        { type: "text", text: "另一段" }, { type: "image_artifact", artifact_id: imageId }] } });
+  const page = render(<EventTimeline events={[stored]} controls />);
+  expect(page.container.querySelectorAll(".message-block")).toHaveLength(4);
+  expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "回到最新" })).toBeInTheDocument();
+  const imageBlocks = page.container.querySelectorAll<HTMLDetailsElement>("details.message-block");
+  expect(imageBlocks).toHaveLength(2);
+  expect(imageBlocks[0]!.open).toBe(false);
+  fireEvent.click(imageBlocks[0]!.querySelector("summary")!);
+  expect(imageBlocks[0]!.open).toBe(true);
+  page.rerender(<EventTimeline events={[stored, runEvent(2, { type: "cycle.started", test_run_id: runId, task_run_id: taskRunId, cycle_count: 2 })]} controls />);
+  expect(page.container.querySelector<HTMLDetailsElement>("details.message-block")!.open).toBe(true);
+});
+
+it("resumes following when the user reaches bottom before the queued scroll callback", () => {
+  const events = [runEvent(1, { type: "cycle.started", test_run_id: runId, task_run_id: taskRunId, cycle_count: 1 })];
+  const page = render(<EventTimeline events={events} controls />);
+  const scroller = page.container.querySelector<HTMLDivElement>(".event-scroll")!;
+  let scrollTop = 0;
+  let scrollHeight = 1000;
+  Object.defineProperties(scroller, {
+    clientHeight: { get: () => 200 }, scrollHeight: { get: () => scrollHeight },
+    scrollTop: { get: () => scrollTop, set: (value: number) => { scrollTop = Math.max(0, Math.min(value, scrollHeight - 200)); } }
+  });
+  const append = () => {
+    events.push(runEvent(events.length + 1, { type: "cycle.started", test_run_id: runId, task_run_id: taskRunId, cycle_count: events.length + 1 }));
+    page.rerender(<EventTimeline events={[...events]} controls />);
+  };
+  append();
+  expect(scrollTop).toBe(800);
+  fireEvent.wheel(scroller, { deltaY: -200 }); scrollTop = 600; fireEvent.scroll(scroller);
+  scrollHeight = 1100; append();
+  expect(scrollTop).toBe(600);
+  fireEvent.keyDown(scroller, { key: "End" }); scrollTop = 900;
+  scrollHeight = 1200; append();
+  expect(scrollTop).toBe(1000);
+  fireEvent.scroll(scroller);
+  scrollHeight = 1300; append();
+  expect(scrollTop).toBe(1100);
+  fireEvent.pointerDown(scroller); scrollTop = 900;
+  scrollHeight = 1400; append();
+  expect(scrollTop).toBe(900);
+});
+
+it.each(["pointer", "keyboard"])("keeps following when a %s-collapsed message clamps the scroll position", (activation) => {
+  const event = runEvent(1, { type: "message.appended", test_run_id: runId, task_run_id: taskRunId,
+    message: { role: "tool", message_id: "long-message", tool_call_id: "call-long", name: "fixture_inspect", status: "success",
+      content: [{ type: "text", text: "长观察\n".repeat(20) }] } });
+  const page = render(<EventTimeline events={[event]} controls />);
+  const scroller = page.container.querySelector<HTMLDivElement>(".event-scroll")!;
+  let scrollTop = 0;
+  let scrollHeight = 1200;
+  Object.defineProperties(scroller, {
+    clientHeight: { get: () => 200 }, scrollHeight: { get: () => scrollHeight },
+    scrollTop: { get: () => scrollTop, set: (value: number) => { scrollTop = Math.max(0, Math.min(value, scrollHeight - 200)); } }
+  });
+  fireEvent.click(screen.getByRole("button", { name: "展开" }));
+  page.rerender(<EventTimeline events={[event]} controls />);
+  expect(scrollTop).toBe(1000);
+  if (activation === "keyboard") {
+    fireEvent.pointerDown(scroller);
+    fireEvent.keyDown(screen.getByRole("button", { name: "收起" }), { key: "Enter" });
+  } else fireEvent.pointerDown(screen.getByRole("button", { name: "收起" }));
+  fireEvent.click(screen.getByRole("button", { name: "收起" }));
+  scrollHeight = 1000; scrollTop = 800; fireEvent.scroll(scroller);
+  scrollHeight = 1200;
+  page.rerender(<EventTimeline events={[event, runEvent(2, { type: "cycle.started", test_run_id: runId, task_run_id: taskRunId, cycle_count: 2 })]} controls />);
+  expect(scrollTop).toBe(1000);
 });
 
 it("distinguishes unmet Goal conditions from product failures in successful history summaries", async () => {

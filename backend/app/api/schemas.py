@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Generic, Literal, TypeVar
 from collections.abc import Sequence
 
@@ -187,8 +188,23 @@ class TestRunPageQuery(TestRunFilterQuery):
     offset: int = Field(default=0, ge=0)
 
 
+class TestRunStatisticsQuery(TestRunFilterQuery):
+    """Statistics-only HTTP grouping context, supplied by the viewing browser."""
+
+    time_zone: str = Field(min_length=1, description="Browser IANA time zone used for creation-day grouping.")
+
+    @field_validator("time_zone")
+    @classmethod
+    def time_zone_exists(cls, time_zone: str) -> str:
+        try:
+            ZoneInfo(time_zone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("Unknown IANA time zone") from exc
+        return time_zone
+
+
 class TestRunDailyStatistics(BaseModel):
-    """Read-only aggregates grouped by creation day in Asia/Shanghai."""
+    """Read-only aggregates grouped by creation day in the requested time zone."""
 
     date: date
     run_count: int

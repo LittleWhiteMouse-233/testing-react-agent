@@ -7,7 +7,8 @@ task/artifact joins. No projection is persisted.
 """
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import date, timezone
+from zoneinfo import ZoneInfo
 from uuid import uuid4
 
 from sqlalchemy import Select, case, func, or_, select
@@ -16,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.schemas import (
     PageResponse, TestCaseListResponse, TestRunDailyStatistics, TestRunFilterQuery,
-    TestRunListResponse, TestRunPageQuery, TestRunStatisticsResponse,
+    TestRunListResponse, TestRunPageQuery, TestRunStatisticsQuery, TestRunStatisticsResponse,
 )
 from app.domain.execution import StoredRunEvent, ArtifactType, TaskRunStatus, TestRunStatus, TestRunVerdict
 from app.domain.planning import TestCase, TestCaseContent, TestPlan
@@ -148,7 +149,7 @@ async def list_test_runs(
 
 
 async def test_run_statistics(
-    sessions: async_sessionmaker[AsyncSession], filters: TestRunFilterQuery,
+    sessions: async_sessionmaker[AsyncSession], filters: TestRunStatisticsQuery,
 ) -> TestRunStatisticsResponse:
     runs = filtered_test_runs(filters).subquery()
     duration = case((
@@ -156,22 +157,29 @@ async def test_run_statistics(
         & runs.c.started_at.is_not(None) & runs.c.finished_at.is_not(None),
         (func.julianday(runs.c.finished_at) - func.julianday(runs.c.started_at)) * 86400.0,
     ), else_=None)
-    day = func.date(runs.c.created_at, "+8 hours")
+    browser_time_zone = ZoneInfo(filters.time_zone)
+    daily_totals: dict[date, tuple[int, int, float]] = {}
     async with read_snapshot(sessions) as session:
         total, average = (await session.execute(select(func.count(), func.avg(duration)).select_from(runs))).one()
         counts = dict((await session.execute(
             select(runs.c.verdict, func.count()).where(runs.c.verdict.is_not(None)).group_by(runs.c.verdict)
         )).tuples().all())
-        daily_rows = (await session.execute(
-            select(day, func.count(), func.avg(duration), func.coalesce(func.sum(duration), 0))
-            .select_from(runs).group_by(day).order_by(day)
-        )).all()
+        # SQLite stores UTC without an offset; only project the facts needed for grouping.
+        daily_rows = await session.stream(select(runs.c.created_at, duration).select_from(runs))
+        async for created_at, duration_seconds in daily_rows:
+            local_day = created_at.replace(tzinfo=timezone.utc).astimezone(browser_time_zone).date()
+            count, timed_count, total_duration = daily_totals.get(local_day, (0, 0, 0.0))
+            daily_totals[local_day] = (
+                count + 1, timed_count + (duration_seconds is not None),
+                total_duration + (duration_seconds or 0),
+            )
     return TestRunStatisticsResponse(
         run_count=total, verdict_counts={verdict: counts.get(verdict, 0) for verdict in TestRunVerdict},
         average_duration_seconds=average,
         daily=[TestRunDailyStatistics(date=day_value, run_count=count,
-            average_duration_seconds=average_duration, total_duration_seconds=total_duration)
-            for day_value, count, average_duration, total_duration in daily_rows],
+            average_duration_seconds=total_duration / timed_count if timed_count else None,
+            total_duration_seconds=total_duration)
+            for day_value, (count, timed_count, total_duration) in sorted(daily_totals.items())],
     )
 
 

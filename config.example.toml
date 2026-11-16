@@ -4,8 +4,6 @@
 # TEST_AGENT_CONFIG_PATH optionally selects another complete configuration file.
 # All relative paths, including that selector, are resolved from the project root.
 
-app_name = "Android TV Test Agent"
-app_version = "0.1.0"
 debug = false
 cors_origins = ["http://localhost:5173"]
 mcp_config_path = "./mcp_servers/mcp.json"

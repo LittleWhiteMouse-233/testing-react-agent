@@ -26,22 +26,34 @@ from config_support import app_config_values, write_app_config
 from mcp_support import build_client, create_plan, finish_turn, start_run, wait_for_run
 
 
+def test_application_identity_is_builtin_and_not_editable_settings(tmp_path: Path) -> None:
+    with build_client(tmp_path) as client:
+        schema = client.get("/openapi.json").json()
+        assert schema["info"]["title"] == "ReAct Testing Harness"
+        assert schema["info"]["version"] == "0.1.0"
+        snapshot = client.get("/api/settings").json()
+        for field in ("app_name", "app_version"):
+            assert field not in snapshot["settings"]
+            assert field not in snapshot["settings_schema"]["properties"]
+        assert client.get("/health").json()["version"] == "0.1.0"
+
+
 def test_explicit_config_path_owns_both_startup_read_and_settings_save(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     configuration = app_config_values(tmp_path)
-    configuration["app_name"] = "Selected configuration"
+    configuration["capability_discovery_timeout_seconds"] = 91
     config_path = write_app_config(tmp_path, configuration)
     monkeypatch.setenv("TEST_AGENT_CONFIG_PATH", str(tmp_path / "unselected.toml"))
     with TestClient(create_app(get_settings(config_path))) as client:
         snapshot = client.get("/api/settings").json()
-        assert snapshot["settings"]["app_name"] == "Selected configuration"
+        assert snapshot["settings"]["capability_discovery_timeout_seconds"] == 91
         assert "config_path" not in snapshot["settings"]
         assert "config_path" not in snapshot["settings_schema"]["properties"]
         for profile in snapshot["settings"]["llm"]["profiles"]:
             profile.pop("api_key_configured")
-        snapshot["settings"]["app_name"] = "Saved selected configuration"
+        snapshot["settings"]["capability_discovery_timeout_seconds"] = 42
         response = client.put("/api/settings", json={"version": snapshot["version"], "settings": snapshot["settings"]})
         assert response.status_code == 200, response.text
-    assert get_settings(config_path).app_name == "Saved selected configuration"
+    assert get_settings(config_path).capability_discovery_timeout_seconds == 42
     assert not (tmp_path / "unselected.toml").exists()
 
 
@@ -308,10 +320,10 @@ def test_saved_startup_values_do_not_change_current_health_or_cors(tmp_path: Pat
         draft = snapshot["settings"]
         for profile in draft["llm"]["profiles"]:
             profile.pop("api_key_configured")
-        draft.update(app_version="new-version", cors_origins=["https://next.example"])
+        draft.update(cors_origins=["https://next.example"])
         saved = client.put("/api/settings", json={"version": snapshot["version"], "settings": draft})
         assert saved.status_code == 200
-        assert saved.json()["settings"]["app_version"] == "new-version"
+        assert saved.json()["settings"]["cors_origins"] == ["https://next.example"]
         assert saved.json()["restart_required"] is True
         assert client.get("/health").json()["version"] == "0.1.0"
         for origin, expected_status in (("http://localhost:5173", 200), ("https://next.example", 400)):

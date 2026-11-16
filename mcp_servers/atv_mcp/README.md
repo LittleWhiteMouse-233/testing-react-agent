@@ -1,6 +1,6 @@
 # ATV MCP：Android TV 控制服务
 
-ATV MCP 通过 ADB 提供电视按键、文字输入、等待和截图能力，可由 TestPilot 或其他 MCP 客户端通过 stdio 调用。本服务独立维护设备配置和依赖；测试用例、计划及报告由[主应用](../../README.md)管理。
+ATV MCP 通过 ADB 提供电视按键、文字输入、等待和截图能力，可由 ReAct Testing Harness 或其他 MCP 客户端通过 stdio 调用。本服务独立维护设备配置和依赖；测试用例、计划及报告由[主应用](../../README.md)管理。
 
 本包也提供可在独立 Python 脚本中使用的异步控制器，见[从 Python 控制电视](#从-python-控制电视)。
 

@@ -43,7 +43,7 @@ export function RunReportContent({ runId }: { runId: string }) {
     {report.awaitingFinalResult && <Alert type="info" title="已收到结束通知，等待服务端最终结果" />}
     <section className="report-summary"><h3>执行概要</h3><div className="summary-grid">
       <div><small>状态</small><StatusBadge status={run.verdict ?? run.status} /></div>
-      <div><small>开始时间</small><strong>{formatTime(run.started_at)}</strong><small>Asia/Shanghai · +08</small></div>
+      <div><small>开始时间</small><strong>{formatTime(run.started_at)}</strong><small>{Intl.DateTimeFormat().resolvedOptions().timeZone}</small></div>
       <div><small>时长</small><strong><ElapsedTime startedAt={run.started_at} finishedAt={run.finished_at} active={!finished} /></strong><small>分:秒</small></div>
       <div><small>执行次数</small><strong>{executionCount}</strong><small>{plan.content.tasks.length} 项计划任务 · {completed} 次已结束</small></div>
     </div></section>

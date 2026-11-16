@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes import router
-from app.config import Settings, get_settings
+from app.config import APP_DESCRIPTION, APP_NAME, APP_VERSION, Settings, get_settings
 from app.api.schemas import ApiError, api_validation_error
 from app.container import Container
 from app.persistence.db import ensure_sqlite_database_directory, init_database
@@ -43,8 +43,9 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
         logger.info("Application shutdown completed")
 
     instance = FastAPI(
-        title=settings.app_name,
-        version=settings.app_version,
+        title=APP_NAME,
+        version=APP_VERSION,
+        description=APP_DESCRIPTION,
         debug=settings.debug,
         lifespan=lifespan,
     )
@@ -88,6 +89,6 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
 
     @instance.get("/health")
     async def health() -> dict[str, str]:
-        return {"status": "ok", "version": settings.app_version}
+        return {"status": "ok", "version": APP_VERSION}
 
     return instance
