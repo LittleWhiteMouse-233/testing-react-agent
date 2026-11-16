@@ -6,9 +6,8 @@ from dataclasses import dataclass, field
 from collections.abc import Sequence
 
 from app.domain.activity import AgentActivity
-from app.domain.errors import describe_exception
 from app.domain.execution import TestRun, TestRunEnvironmentSnapshot, TestRunStatus
-from app.config import SettingsService
+from app.config import APP_VERSION, SettingsService
 from app.execution.executor import RunExecutor
 from app.persistence.run_repository import (
     ActiveRunExists,
@@ -51,7 +50,6 @@ class RunService:
         settings_service: SettingsService,
         prompt_catalog: PromptCatalog,
         capabilities: CapabilityProvider,
-        app_version: str,
     ) -> None:
         self.repository = repository
         self.test_case_lock = test_case_lock
@@ -59,7 +57,6 @@ class RunService:
         self.settings_service = settings_service
         self.prompt_catalog = prompt_catalog
         self.capabilities = capabilities
-        self.app_version = app_version
         self._work: _RunWork | None = None
         self._closing = False
 
@@ -141,7 +138,7 @@ class RunService:
             execution_model=model_profile,
             execution=execution_settings,
             prompt_fingerprints_by_task_type=self.prompt_catalog.prompt_fingerprints_by_task_type,
-            app_version=self.app_version,
+            app_version=APP_VERSION,
             execution_protocol_version="12",
         )
         try:

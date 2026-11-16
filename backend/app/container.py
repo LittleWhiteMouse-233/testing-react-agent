@@ -4,7 +4,7 @@ from functools import partial
 
 from app.api.repository import read_test_run_report
 from app.artifacts import ArtifactStore
-from app.config import APP_VERSION, Settings, SettingsService
+from app.config import Settings, SettingsService
 from app.domain.activity import AgentActivity
 from app.event_stream import EventBus, RunEventWriter
 from app.domain.planning import PlanningEvent
@@ -59,7 +59,6 @@ class Container:
             repository=self.repository,
             executor=self.executor,
             settings_service=self.settings_service,
-            app_version=APP_VERSION,
             prompt_catalog=prompt_catalog,
             capabilities=self.capabilities,
         )

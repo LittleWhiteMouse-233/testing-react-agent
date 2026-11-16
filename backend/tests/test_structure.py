@@ -541,7 +541,6 @@ def test_process_boundaries_do_not_restore_obsolete_dependency_ownership() -> No
     assert not (app_root / "llm" / "snapshots.py").exists()
 
     run_service_parameters = signature(RunService).parameters
-    assert "app_version" in run_service_parameters
     assert "settings" not in run_service_parameters
     assert "active_run_registry" not in run_service_parameters
     assert "registry" not in signature(RunExecutor).parameters
