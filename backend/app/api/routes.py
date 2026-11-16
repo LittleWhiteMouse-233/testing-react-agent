@@ -485,6 +485,6 @@ async def export_test_run_report(
 async def get_artifact(artifact_id: ArtifactId, request: Request) -> Response:
     try:
         content, mime_type = await container(request).artifacts.load_content(artifact_id)
-    except LookupError as exc:
-        raise problem(404, "artifact_not_found", str(exc)) from exc
+    except (LookupError, FileNotFoundError) as exc:
+        raise problem(404, "artifact_not_found", f"Artifact not found: {artifact_id}") from exc
     return Response(content=content, media_type=mime_type)

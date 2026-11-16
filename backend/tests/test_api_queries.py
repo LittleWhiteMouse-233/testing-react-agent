@@ -1,5 +1,6 @@
 """UI read contracts: source-backed counts, pagination and browser-local day boundaries."""
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
@@ -67,6 +68,29 @@ def test_history_queries_join_existing_facts_without_writes(tmp_path: Path) -> N
         assert client.get(f"/api/runs/{run_id}/report").status_code == 404
         assert read_records(tmp_path) == mcp_before
         assert writes == []
+
+
+def test_missing_artifact_file_returns_404_without_error_logs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    with build_client(tmp_path) as client:
+        run_id = start_run(client, create_plan(client))
+        wait_for_run(client, run_id)
+        report = client.get(f"/api/runs/{run_id}").json()
+        artifact_id = report["artifacts"][0]["id"]
+        image_path, = (tmp_path / "artifacts").rglob(f"{artifact_id}.*")
+        assert image_path.resolve().is_relative_to(tmp_path.resolve())
+        image_path.unlink()
+
+        caplog.clear()
+        response = client.get(f"/api/artifacts/{artifact_id}")
+        assert response.status_code == 404
+        assert response.json()["code"] == "artifact_not_found"
+        assert artifact_id in response.json()["message"]
+        assert str(tmp_path) not in response.json()["message"]
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+        assert client.get(f"/api/runs/{run_id}").json() == report
+        assert client.get(f"/api/artifacts/{uuid4()}").status_code == 404
 
 
 def test_run_filter_statistics_are_unpaginated_and_use_half_open_utc_range(tmp_path: Path) -> None:
