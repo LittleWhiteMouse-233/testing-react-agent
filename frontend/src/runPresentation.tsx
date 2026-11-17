@@ -1,5 +1,5 @@
 import { Button, Empty, Image, Select } from "antd";
-import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { StoredRunEvent, TaskRun, TestRunListResponse, TestRunReport, TestTaskDefinition } from "./api/contracts";
 import { artifactUrl } from "./api/client";
@@ -80,8 +80,8 @@ export function TaskCard({ task, status, progress, children, jumpTargetTitle, ac
       <div className="task-title"><h3>{task.title}</h3><span className={"pill " + task.type}>{task.type.toUpperCase()}</span>{status}</div>
       {progress}
     </div></summary>
-    <div className="task-card-details"><h4>目标</h4><p className="task-text-scroll">{task.goal}</p>
-      <h4>成功标准</h4><ul className="task-text-scroll">{task.success_criteria.map((criterion, index) => <li key={index}>{criterion}</li>)}</ul>
+    <div className="task-card-details"><h4>目标</h4><p className="task-text">{task.goal}</p>
+      <h4>成功标准</h4><ul className="task-text">{task.success_criteria.map((criterion, index) => <li key={index}>{criterion}</li>)}</ul>
       {task.type === "goal" && <p className="muted">未满足时回到任务 {task.jump_back_to_task_no ?? "待选择"}{jumpTargetTitle && " · " + jumpTargetTitle}</p>}
       {children}
     </div>
@@ -90,13 +90,28 @@ export function TaskCard({ task, status, progress, children, jumpTargetTitle, ac
 
 function MessageText({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const textElement = useRef<HTMLDivElement>(null);
   const contentId = useId();
-  return <div className="message-block"><div id={contentId} className={"message-text" + (expanded ? "" : " message-preview")}>{text}</div>
-    <button type="button" className="message-toggle" aria-expanded={expanded} aria-controls={contentId} onClick={() => setExpanded(!expanded)}>{expanded ? "收起" : "展开"}</button>
+  const characterCount = useMemo(() => Array.from(text).length, [text]);
+  useLayoutEffect(() => {
+    const element = textElement.current!;
+    const measure = () => {
+      // Closed report sections have no layout; ResizeObserver measures them when opened.
+      if (!element.clientWidth) return;
+      setOverflows(element.scrollHeight > Number.parseFloat(getComputedStyle(element).lineHeight) * 3 + 1);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [text]);
+  return <div className="message-block"><div ref={textElement} id={contentId} className={"message-text" + (expanded ? "" : " message-preview")}>{text}</div>
+    {overflows && <div className="message-actions"><button type="button" className="message-toggle" aria-expanded={expanded} aria-controls={contentId} onClick={() => setExpanded(!expanded)}>{expanded ? "收起" : "展开"}</button><span className="message-count">共 {characterCount} 字</span></div>}
   </div>;
 }
 
-export function RunEventContent({ stored, collapsible = false }: { stored: StoredRunEvent; collapsible?: boolean }) {
+export function RunEventContent({ stored, collapseImages = false }: { stored: StoredRunEvent; collapseImages?: boolean }) {
   const event = stored.event;
   if (event.type === "message.appended") {
     const message = event.message;
@@ -105,23 +120,23 @@ export function RunEventContent({ stored, collapsible = false }: { stored: Store
         {message.role === "tool" && <><span>{message.name}</span><span>{message.status}</span><span className="mono">↳ {message.tool_call_id}</span></>}
       </div>
       {message.content.map((block, index) => block.type === "text"
-        ? collapsible ? <MessageText key={index} text={block.text} /> : <div key={index} className="message-text">{block.text}</div>
-        : collapsible ? <details key={index} className="message-block image-block"><summary>图片 <span className="mono">{block.artifact_id}</span></summary>
+        ? <MessageText key={index} text={block.text} />
+        : collapseImages ? <details key={index} className="message-block image-block"><summary>图片 <span className="mono">{block.artifact_id}</span></summary>
           <Image width={180} src={artifactUrl(block.artifact_id)} fallback={imageUnavailableUrl} alt={`图片 ${block.artifact_id}`} />
         </details> : <Image key={index} width={180} src={artifactUrl(block.artifact_id)} fallback={imageUnavailableUrl} alt={`图片 ${block.artifact_id}`} />)}
       {message.role === "ai" && message.tool_calls.map((call) => <details className="tool-call" key={call.id}>
         <summary>{call.name} <span className="mono">{call.id}</span></summary><pre>{JSON.stringify(call.arguments, null, 2)}</pre>
       </details>)}
       {message.role === "ai" && message.invalid_tool_calls.map((call, index) => <div className="error-text" key={index}>
-        {collapsible ? <MessageText text={`无效调用 · ${call.name} · ${call.error}\n${call.arguments}`} /> : <>无效调用 · {call.name} · {call.error}<pre>{call.arguments}</pre></>}
+        <MessageText text={`无效调用 · ${call.name} · ${call.error}\n${call.arguments}`} />
       </div>)}
     </div>;
   }
   switch (event.type) {
     case "cycle.started": return <>第 {event.cycle_count} 轮</>;
     case "tool.started": return <>调用 <span className="mono">{event.call_id}</span></>;
-    case "execution.error": return <div className="error-text">{collapsible ? <MessageText text={`${event.reason_code} · ${event.message}`} /> : <>{event.reason_code} · {event.message}</>}</div>;
-    case "message.validation_failed": return <div className="error-text">{collapsible ? <MessageText text={`${event.message_id} · 尝试 ${event.attempt} · ${event.reason}`} /> : <>{event.message_id} · 尝试 {event.attempt} · {event.reason}</>}</div>;
+    case "execution.error": return <div className="error-text"><MessageText text={`${event.reason_code} · ${event.message}`} /></div>;
+    case "message.validation_failed": return <div className="error-text"><MessageText text={`${event.message_id} · 尝试 ${event.attempt} · ${event.reason}`} /></div>;
     case "tasks.skipped": return <>跳过 {event.task_run_ids.length} 个任务</>;
     default: return <>{eventLabels[event.type]}</>;
   }
@@ -201,7 +216,7 @@ export function EventTimeline({ events, controls = false }: { events: StoredRunE
           <time className="mono">{formatTime(stored.occurred_at, true)}</time>
           <div className="event-kind"><span>#{stored.sequence}</span><strong>{eventLabels[stored.event.type]}</strong>
             {stored.event.task_run_id && <span className="mono" title={stored.event.task_run_id}>{stored.event.task_run_id.slice(0, 8)}</span>}
-          </div><div className="event-body"><RunEventContent stored={stored} collapsible={controls} /></div>
+          </div><div className="event-body"><RunEventContent stored={stored} collapseImages={controls} /></div>
         </div>)}
       </div>
     </div>

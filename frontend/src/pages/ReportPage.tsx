@@ -57,13 +57,13 @@ export function RunReportContent({ runId }: { runId: string }) {
     </details>
     <div className="section-heading"><h3>执行记录 · 时间线</h3><span>{plan.content.tasks.length} 项计划 · {executionCount} 次执行 · {messageCount} 条消息 · {images.length} 张图片</span></div>
     {report.events.some((stored) => !stored.event.task_run_id) && <details className="timeline-block"><summary>运行生命周期与错误</summary><EventTimeline events={report.events.filter((stored) => !stored.event.task_run_id)} /></details>}
-    {taskRuns.map((taskRun, index) => {
+    {taskRuns.map((taskRun) => {
       const task = plan.content.tasks.find((entry) => entry.test_task_id === taskRun.test_task_id)!;
       const executionNo = (executionCounts.get(task.test_task_id) ?? 0) + (taskRun.started_at !== null ? 1 : 0);
       if (taskRun.started_at !== null) executionCounts.set(task.test_task_id, executionNo);
       const events = report.events.filter((stored) => stored.event.task_run_id === taskRun.id);
       const taskImages = images.filter((artifact) => artifact.task_run_id === taskRun.id);
-      return <details className="timeline-block" key={taskRun.id} open={index === 0 ? true : undefined}>
+      return <details className="timeline-block" key={taskRun.id}>
         <summary><span className={"task-number " + task.definition.type}>{task.definition.task_no}</span><div className="timeline-task-heading"><h3>{task.definition.title}</h3><small>记录 #{taskRun.sequence} · {taskRun.started_at !== null ? "第 " + executionNo + " 次执行" : "未执行"} · {task.definition.type.toUpperCase()} · {events.filter((stored) => stored.event.type === "message.appended").length} 条消息 · {taskImages.length} 张图片</small></div>
           <TaskStatusBadge task={task.definition} taskRun={taskRun} finished={finished} /><ElapsedTime startedAt={taskRun.started_at} finishedAt={taskRun.finished_at} active={taskRun.status === "running"} />
         </summary>

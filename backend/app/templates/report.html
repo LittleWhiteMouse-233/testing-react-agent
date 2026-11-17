@@ -5,19 +5,72 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{{ report.detail.test_plan.content.title }} - 测试报告</title>
   <style>
-    body{font-family:system-ui,sans-serif;max-width:1080px;margin:40px auto;padding:0 24px;color:#17202a}
+    body{font-family:system-ui,sans-serif;max-width:1080px;margin:40px auto;padding:0 24px;color:#17202a;line-height:1.6}
     header{border-bottom:3px solid #1677ff;padding-bottom:20px}.result{font-size:32px;font-weight:700}
     .PASS{color:#389e0d}.FAIL{color:#cf1322}.BLOCKED{color:#d46b08}.CANCELLED{color:#595959}
-    section{margin:28px 0}.task{border:1px solid #d9d9d9;border-radius:10px;padding:18px;margin:14px 0}
-    img{max-width:100%;border:1px solid #eee}.meta{color:#667085}code,pre{white-space:pre-wrap;overflow-wrap:anywhere}
+    section{margin:28px 0}.task,.task-events,.skill-package{border:1px solid #d9d9d9;border-radius:10px;padding:18px;margin:14px 0;min-width:0}
+    .task-events>summary{font-weight:600}.task-events[open]>summary{margin-bottom:18px}
+    summary,button{cursor:pointer}summary{overflow-wrap:anywhere}summary:focus-visible,button:focus-visible{outline:2px solid #1677ff;outline-offset:3px}
+    img{max-width:100%;border:1px solid #eee}.meta,.message-count{color:#667085}code,pre,.task p,.skill-package p{white-space:pre-wrap;overflow-wrap:anywhere}
+    .message-block{margin:10px 0}.message-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}
+    .message-preview{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+    .message-actions{display:flex;align-items:baseline;gap:10px;font-size:12px}.message-actions[hidden]{display:none}
+    .message-toggle{border:0;background:transparent;color:#1677ff;padding:4px 0;font:inherit}
+    .skill-package h4{margin:0 0 8px}.skill-package ul{padding-left:24px}.skill-package li{margin:10px 0}
+    .task>h3{margin-top:0}.task ul,.plan-tasks ul{padding-left:24px}.plan-tasks>li{margin:18px 0}
+    @media(max-width:600px){body{margin:20px auto;padding:0 12px}.task,.task-events,.skill-package{padding:12px}}
   </style>
 </head>
 <body>
+  {% macro message_text(text, content_id) -%}
+    <div class="message-block"><div id="{{ content_id }}" class="message-text message-preview">{{ text | e | replace('\r', '&#13;' | safe) }}</div>
+      <div class="message-actions" hidden><button type="button" class="message-toggle" aria-expanded="false" aria-controls="{{ content_id }}">展开</button><span class="message-count">共 {{ text | length }} 字</span></div>
+    </div>
+  {%- endmacro %}
+  {% macro event_list(entries) -%}
+    {% for entry in entries %}
+      <article class="task" data-event-sequence="{{ entry.sequence }}">
+        <div class="meta">{{ entry.sequence }} · {{ entry.event.type }}</div>
+        {% if entry.event.type == 'message.appended' %}
+          {% set message = entry.event.message %}
+          <p class="meta">{{ message.role }} · {{ message.message_id }}{% if message.role == 'tool' %} · {{ message.name }} · {{ message.status }} · {{ message.tool_call_id }}{% endif %}</p>
+          {% for block in message.content %}
+            {% if block.type == 'text' %}
+              {{ message_text(block.text, 'event-' ~ entry.sequence ~ '-text-' ~ loop.index0) }}
+            {% elif block.type == 'image_artifact' and image_data_urls.get(block.artifact_id) %}
+              <img src="{{ image_data_urls[block.artifact_id] }}" alt="运行图片 {{ block.artifact_id }}">
+            {% endif %}
+          {% endfor %}
+          {% if message.role == 'ai' %}
+            {% for call in message.tool_calls %}
+              <details><summary>{{ call.name }} · {{ call.id }}</summary><pre>{{ call.arguments | tojson(indent=2) }}</pre></details>
+            {% endfor %}
+            {% for call in message.invalid_tool_calls %}
+              {% set invalid_text = '无效调用 · ' ~ (call.name if call.name is not none else 'null') ~ ' · ' ~ (call.error if call.error is not none else 'null') ~ '\n' ~ (call.arguments if call.arguments is not none else 'null') %}
+              {{ message_text(invalid_text, 'event-' ~ entry.sequence ~ '-invalid-' ~ loop.index0) }}
+            {% endfor %}
+          {% endif %}
+        {% elif entry.event.type == 'execution.error' %}
+          {{ message_text(entry.event.reason_code ~ ' · ' ~ entry.event.message, 'event-' ~ entry.sequence ~ '-error') }}
+        {% elif entry.event.type == 'message.validation_failed' %}
+          {{ message_text(entry.event.message_id ~ ' · 尝试 ' ~ entry.event.attempt ~ ' · ' ~ entry.event.reason, 'event-' ~ entry.sequence ~ '-validation') }}
+        {% endif %}
+        <details><summary>事件详情</summary><pre>{{ entry.event.model_dump(mode='json') | tojson(indent=2) }}</pre></details>
+      </article>
+    {% else %}<p class="meta">没有任务事件</p>{% endfor %}
+  {%- endmacro %}
+  {% macro task_heading(task, task_run) -%}
+    任务 {{ task.definition.task_no }} · {% if task_run.started_at %}第 {{ execution_numbers[task_run.id] }} 次执行{% else %}未执行{% endif %} · {{ task.definition.title }}
+  {%- endmacro %}
+  {% macro task_status(task, task_run) -%}
+    {{ '条件未满足' if task.definition.type == 'goal' and task_run.status == 'failed' else task_status_labels[task_run.status] }}
+  {%- endmacro %}
   <header>
     <div class="meta">{{ app_name }}</div>
     <p class="meta">{{ app_description }}</p>
     <h1>{{ report.detail.test_plan.content.title }}</h1>
     <div class="result {{ report.detail.run.verdict }}">{{ report.detail.run.verdict }}</div>
+    <p><strong>总耗时：</strong>{{ run_duration }} <span class="meta">分:秒</span></p>
   </header>
   <section>
     <h2>运行快照</h2>
@@ -25,10 +78,11 @@
     <p>规划额外输入：</p>
     <pre>{{ report.detail.test_plan.planning_context.user_input or '无' }}</pre>
     <p>执行模型：{{ report.detail.environment.execution_model.id }}</p>
-    <h3>确认的任务计划</h3>
-    <ol>{% for task in report.detail.test_plan.content.tasks %}
+    <h3>确认的任务计划 · 原始顺序</h3>
+    <ol class="plan-tasks">{% for task in report.detail.test_plan.content.tasks %}
       <li><strong>任务 {{ task.definition.task_no }} · {{ task.definition.title }}</strong>（{{ task.definition.type }}）
-        <p>{{ task.definition.goal }}</p><p>{{ task.definition.success_criteria | join('；') }}</p>
+        <p><strong>目标：</strong>{{ task.definition.goal }}</p>
+        <strong>成功标准：</strong><ul>{% for criterion in task.definition.success_criteria %}<li>{{ criterion }}</li>{% endfor %}</ul>
         {% if task.definition.type == 'goal' %}<p>未满足时回到任务 {{ task.definition.jump_back_to_task_no }}</p>{% endif %}
       </li>
     {% endfor %}</ol>
@@ -42,7 +96,17 @@
     {% if capability_catalog.resource_catalog.local_root %}<p>本地根目录：{{ capability_catalog.resource_catalog.local_root }}</p>{% endif %}
     {% for column in capability_catalog.columns %}
       <h4>{{ '已选' if column.selected else '未选' }} · {{ column.id }}</h4>
-      {% for resource in capability_catalog.resource_catalog.resources if capability_catalog.resource_column_id(resource.source_id, resource.uri) == column.id %}
+      {% for skill in skill_entries if capability_catalog.resource_column_id(skill.source_id, skill.uri) == column.id %}
+        <article class="skill-package">
+          <h4>{{ skill.name }} · {{ '已选' if column.selected else '未选' }}</h4>
+          <p class="meta">入口 · {{ skill.source_id }} · <code>{{ skill.uri }}</code></p>
+          {% if skill.description %}<p>{{ skill.description }}</p>{% endif %}
+          <ul>{% for resource in resources_by_skill.get((skill.source_id, skill.uri), []) %}
+            <li><strong>{{ relative_resource_path(skill.uri, resource.uri) }}</strong><br><code>{{ resource.uri }}</code>{% if resource.description %}<p>{{ resource.description }}</p>{% endif %}</li>
+          {% endfor %}</ul>
+        </article>
+      {% endfor %}
+      {% for resource in ungrouped_resources if capability_catalog.resource_column_id(resource.source_id, resource.uri) == column.id %}
         <p><strong>{{ resource.name }}</strong> · {{ resource.source_id }} · <code>{{ resource.uri }}</code></p>
         {% if resource.description %}<p>{{ resource.description }}</p>{% endif %}
       {% endfor %}
@@ -52,45 +116,57 @@
     {% endfor %}
   </section>
   <section>
-    <h2>任务结果</h2>
-    {% set execution_counts = {} %}
+    <h2>任务结果 · 实际执行顺序</h2>
     {% for task_run in report.detail.task_runs %}
       {% set task = report.detail.test_plan.content.tasks | selectattr('test_task_id', 'equalto', task_run.test_task_id) | first %}
-      {% set execution_no = execution_counts.get(task_run.test_task_id, 0) %}
-      {% if task_run.started_at %}
-        {% set execution_no = execution_no + 1 %}
-        {% set _ = execution_counts.update({task_run.test_task_id: execution_no}) %}
-      {% endif %}
       <article class="task">
-        <h3>任务 {{ task.definition.task_no }} · {% if task_run.started_at %}第 {{ execution_no }} 次执行{% else %}未执行{% endif %} · {{ task.definition.title }} — {{ '条件未满足' if task.definition.type == 'goal' and task_run.status == 'failed' else task_run.status }}</h3>
-        <p class="meta">执行记录 #{{ task_run.sequence }}</p>
+        <h3>{{ task_heading(task, task_run) }}</h3>
+        <p class="meta">执行记录 #{{ task_run.sequence }} · 耗时 {{ task_durations[task_run.id] }}（分:秒） · {{ task_run.cycle_count }} 轮</p>
         <p><strong>目标：</strong>{{ task.definition.goal }}</p>
-        <p><strong>标准：</strong>{{ task.definition.success_criteria | join('；') }}</p>
-        <p><strong>结论：</strong>{{ task_run.result.summary if task_run.result else '无' }}（{{ task_run.cycle_count }} cycles）</p>
-        {% if task_run.result %}<p><strong>原因：</strong>{{ task_run.result.reason_code }}</p>{% endif %}
+        <strong>成功标准：</strong><ul>{% for criterion in task.definition.success_criteria %}<li>{{ criterion }}</li>{% endfor %}</ul>
+        <p><strong>结论：</strong>{{ task_status(task, task_run) }}</p>
+        <p><strong>分析：</strong>{{ task_run.result.summary if task_run.result else '无' }}</p>
+        {% if task_run.result %}<p><strong>原因：</strong>{{ reason_labels[task_run.result.reason_code] }}（{{ task_run.result.reason_code }}）</p>{% endif %}
         {% if task_run.result and task_run.result.memory %}<p><strong>跨任务记忆：</strong></p><pre>{{ task_run.result.memory }}</pre>{% endif %}
       </article>
     {% endfor %}
+    {% if unstarted_tasks %}<h3>未执行任务</h3>{% for task in unstarted_tasks %}
+      <article class="task"><h4>任务 {{ task.definition.task_no }} · {{ task.definition.title }}</h4><p>未执行 · 耗时 —</p></article>
+    {% endfor %}{% endif %}
   </section>
   <section>
-    <h2>事实记录</h2>
+    <h2>事实记录 · 按任务执行</h2>
     <p>{{ report.events | length }} 个事件，{{ report.artifacts | length }} 个 Artifact。</p>
-    {% for entry in report.events %}
-      <article class="task">
-        <div class="meta">{{ entry.sequence }} · {{ entry.event.type }}</div>
-        {% if entry.event.type == 'message.appended' %}
-          <p>{{ entry.event.message.role }}</p>
-          {% for block in entry.event.message.content %}
-            {% if block.type == 'text' %}
-              <pre>{{ block.text }}</pre>
-            {% elif block.type == 'image_artifact' and image_data_urls.get(block.artifact_id) %}
-              <img src="{{ image_data_urls[block.artifact_id] }}" alt="运行图片 {{ block.artifact_id }}">
-            {% endif %}
-          {% endfor %}
-        {% endif %}
-        <details><summary>事件详情</summary><pre>{{ entry.event | tojson(indent=2) }}</pre></details>
-      </article>
+    {% if events_by_task_run_id.get(none) %}
+      <details class="task-events" data-task-run-id="run"><summary>运行生命周期与错误</summary>{{ event_list(events_by_task_run_id[none]) }}</details>
+    {% endif %}
+    {% for task_run in report.detail.task_runs %}
+      {% set task = report.detail.test_plan.content.tasks | selectattr('test_task_id', 'equalto', task_run.test_task_id) | first %}
+      <details class="task-events" data-task-run-id="{{ task_run.id }}"><summary>{{ task_heading(task, task_run) }} · {{ task_status(task, task_run) }} · 记录 #{{ task_run.sequence }}</summary>
+        {{ event_list(events_by_task_run_id.get(task_run.id, [])) }}
+      </details>
     {% endfor %}
   </section>
+  <script>
+    (() => {
+      const measure = (text) => {
+        if (!text.clientWidth) return;
+        text.nextElementSibling.hidden = text.scrollHeight <= parseFloat(getComputedStyle(text).lineHeight) * 3 + 1;
+      };
+      const observer = new ResizeObserver((entries) => entries.forEach((entry) => measure(entry.target)));
+      document.querySelectorAll('.message-block').forEach((block) => {
+        const text = block.querySelector('.message-text');
+        const button = block.querySelector('.message-toggle');
+        observer.observe(text);
+        measure(text);
+        button.addEventListener('click', () => {
+          const expanded = button.getAttribute('aria-expanded') !== 'true';
+          button.setAttribute('aria-expanded', String(expanded));
+          button.textContent = expanded ? '收起' : '展开';
+          text.classList.toggle('message-preview', !expanded);
+        });
+      });
+    })();
+  </script>
 </body>
 </html>

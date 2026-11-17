@@ -268,10 +268,10 @@ dd { margin-left: 0; font-size: 12px; white-space: pre-wrap; }
 .task-card .pill.judge { color: #7c3aed; background: #f3eeff; }
 .task-card-details { padding: 0 12px 12px; font-size: 12px; }
 .task-card-details h4 { font-size: 11px; color: var(--muted); margin: 8px 0 4px; }
-.task-text-scroll { font-size: 12px; line-height: 1.6; max-height: 4.8em; overflow-y: auto; white-space: pre-wrap; margin: 0; }
-ul.task-text-scroll { padding-left: 18px; }
-.task-text-scroll li { margin: 0; }
-.task-card-details > p:not(.task-text-scroll) { white-space: pre-wrap; margin: 8px 0 0; }
+.task-text { font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+ul.task-text { padding-left: 18px; }
+.task-text li { margin: 0; }
+.task-card-details > p:not(.task-text) { white-space: pre-wrap; margin: 8px 0 0; }
 .task-runtime { gap: 8px; }
 .observation-images, .frozen-resources { min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow: auto; }
 .observation-image-area { flex: 1; min-height: 0; container-type: size; display: grid; place-items: center; }
@@ -282,6 +282,8 @@ ul.task-text-scroll { padding-left: 18px; }
 .message-block { margin: 6px 0; }
 .message-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .message-toggle { border: 0; background: transparent; padding: 2px 0; font-size: 10px; color: var(--accent); }
+.message-actions { display: flex; align-items: baseline; gap: 8px; }
+.message-count { color: var(--muted); font-size: 10px; }
 .image-block { padding: 6px; background: #f5f7fa; border-radius: 4px; }
 .image-block summary { color: #52719b; overflow-wrap: anywhere; }
 .ant-modal { top: 24px; padding-bottom: 0; max-width: calc(100vw - 48px); }

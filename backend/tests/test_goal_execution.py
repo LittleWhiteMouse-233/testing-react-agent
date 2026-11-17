@@ -202,3 +202,13 @@ def test_cancel_during_reentered_goal_preserves_failure_history_and_exception_pr
             assert len(executions) == 6
             assert executions[-1]["status"] == "cancelled"
             assert all(entry["status"] != "skipped" for entry in executions)
+        exported = client.post(f"/api/runs/{detail['run']['id']}/exports", json={"format": "html"})
+        assert exported.status_code == 201, exported.text
+        html = client.get(f"/api/artifacts/{exported.json()['id']}").text
+        assert "条件未满足" in html and "实际执行顺序" in html
+        assert "结论：</strong>阻塞" in html if model_error else "结论：</strong>取消" in html
+        if model_error:
+            assert "结论：</strong>跳过" in html
+        else:
+            assert "未执行任务" in html and "任务 4 · Task 4" in html
+        assert html.count('class="task-events"') == len(executions) + 1

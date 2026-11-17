@@ -27,6 +27,8 @@ let report: TestRunReport;
 let queryClient: QueryClient;
 let sources: TestEventSource[];
 let requests: URL[];
+let textHeights: Map<string, number>;
+let resizeCallbacks: Set<() => void>;
 class TestEventSource implements RunEventSource {
   onmessage: RunEventSource["onmessage"] = null;
   onopen: RunEventSource["onopen"] = null;
@@ -37,9 +39,29 @@ class TestEventSource implements RunEventSource {
 
 beforeEach(() => {
   report = runReport(); sources = []; requests = [];
+  textHeights = new Map(); resizeCallbacks = new Set();
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   vi.stubGlobal("AbortController", class { constructor() { return transferableAbortController(); } });
-  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(private callback: () => void) {}
+    observe() { resizeCallbacks.add(this.callback); }
+    unobserve() {}
+    disconnect() { resizeCallbacks.delete(this.callback); }
+  });
+  // jsdom has no text layout; provide measured dimensions at the browser boundary.
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains("message-text") ? 200 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains("message-text") ? textHeights.get(this.textContent ?? "") ?? (this.textContent ?? "").split("\n").length * 20 : 0;
+  });
+  const computedStyle = window.getComputedStyle.bind(window);
+  vi.spyOn(window, "getComputedStyle").mockImplementation((element) => {
+    const style = computedStyle(element);
+    return element.classList.contains("message-text") ? new Proxy(style, {
+      get: (target, property) => property === "lineHeight" ? "20px" : Reflect.get(target, property)
+    }) : style;
+  });
   vi.stubGlobal("matchMedia", vi.fn((query) => ({ matches: false, media: query, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent() {} })));
   vi.stubGlobal("EventSource", TestEventSource);
   vi.stubGlobal("fetch", vi.fn(async (request: Request) => {
@@ -74,6 +96,7 @@ it.each(["execution", "report"])("shows unavailable images in thumbnails and the
   simulateImageLoading((source) => source.includes("/api/artifacts/"));
   renderPage(`/runs/${runId}${page === "report" ? "/report" : ""}`);
   await screen.findByText("设置页面验证");
+  if (page === "report") fireEvent.click(document.querySelector("details.timeline-block > summary")!);
   const thumbnails = screen.getAllByRole("img").filter((image) =>
     image.getAttribute("alt") === "最新运行图片" || image.getAttribute("alt") === `图片 ${imageId}`);
   expect(thumbnails).toHaveLength(2);
@@ -133,6 +156,7 @@ it("shows every execution of a repeated task in the report", async () => {
   expect(screen.getByText("已根据截图检查版本号")).toBeInTheDocument();
   expect(screen.getByText("第二轮节点")).toBeInTheDocument();
   expect(document.querySelectorAll("details.timeline-block")).toHaveLength(2);
+  expect([...document.querySelectorAll<HTMLDetailsElement>("details.timeline-block")].every((task) => !task.open)).toBe(true);
 });
 
 function renderPage(path: string, history = false) {
@@ -325,9 +349,49 @@ it("uses whole-filter counts and retains pagination when opening and closing a r
   expect(requests.find((url) => url.pathname.endsWith("statistics"))?.searchParams.get("time_zone")).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
   fireEvent.click(link);
   await screen.findByRole("dialog");
+  await screen.findByText("执行概要");
+  const taskDetails = document.querySelector<HTMLDetailsElement>("details.timeline-block")!;
+  expect(taskDetails.open).toBe(false);
+  fireEvent.click(taskDetails.querySelector("summary")!);
+  expect(taskDetails.open).toBe(true);
   expect(screen.getByTestId("location")).toHaveTextContent("page=2");
   fireEvent.click(screen.getByRole("button", { name: /close/i }));
   await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/runs?from=2026-09-01&to=2026-09-30&page=2&verdict=PASS"));
+  fireEvent.click(await screen.findByRole("link", { name: runId.slice(0, 8) }));
+  await screen.findByRole("dialog");
+  await screen.findByText("执行概要");
+  expect(document.querySelector<HTMLDetailsElement>("details.timeline-block")!.open).toBe(false);
+});
+
+it.each([false, true])("previews long text with its original character count when live controls=%s", (controls) => {
+  const text = "首段 😀 \r\n第二行\n第三行\n第四行";
+  const stored = runEvent(1, { type: "message.appended", test_run_id: runId, task_run_id: taskRunId,
+    message: { role: "human", message_id: "long-text", content: [{ type: "text", text }, { type: "text", text: "短消息" }] } });
+  const page = render(<EventTimeline events={[stored]} controls={controls} />);
+  expect(screen.getByText(`共 ${Array.from(text).length} 字`)).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "展开" })).toHaveLength(1);
+  const preview = screen.getByText(text, { exact: true, normalizer: (value) => value });
+  expect(preview).toHaveClass("message-preview");
+  fireEvent.click(screen.getByRole("button", { name: "展开" }));
+  expect(preview).not.toHaveClass("message-preview");
+  page.rerender(<EventTimeline events={[stored, runEvent(2, { type: "cycle.started", test_run_id: runId, task_run_id: taskRunId, cycle_count: 2 })]} controls={controls} />);
+  expect(screen.getByRole("button", { name: "收起" })).toHaveAttribute("aria-expanded", "true");
+  textHeights.set(text, 40);
+  act(() => resizeCallbacks.forEach((callback) => callback()));
+  expect(screen.queryByRole("button", { name: "收起" })).not.toBeInTheDocument();
+  expect(screen.queryByText(/^共 \d+ 字$/)).not.toBeInTheDocument();
+  textHeights.set(text, 100);
+  act(() => resizeCallbacks.forEach((callback) => callback()));
+  expect(screen.getByRole("button", { name: "收起" })).toHaveAttribute("aria-expanded", "true");
+  fireEvent.click(screen.getByRole("button", { name: "收起" }));
+  expect(preview).toHaveClass("message-preview");
+  expect(screen.getByText(`共 ${Array.from(text).length} 字`)).toBeInTheDocument();
+});
+
+it("shows short message text in full without an expansion control", () => {
+  render(<EventTimeline events={report.events} controls />);
+  expect(screen.queryByRole("button", { name: "展开" })).not.toBeInTheDocument();
+  expect(screen.queryByText(/^共 \d+ 字$/)).not.toBeInTheDocument();
 });
 
 it("keeps tool call text and identifiers together in the event body", () => {

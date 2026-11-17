@@ -5,15 +5,52 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
+import posixpath
+from datetime import datetime
 from pathlib import Path
+from collections import defaultdict
 from collections.abc import Awaitable, Callable
+from urllib.parse import unquote, urlsplit
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pydantic import BaseModel, ConfigDict
 
 from app.artifacts import ArtifactStore
 from app.config import APP_DESCRIPTION, APP_NAME
-from app.domain.execution import Artifact, ArtifactType, StoredRunEvent, TestRunDetail
+from app.domain.execution import Artifact, ArtifactType, ReasonCode, StoredRunEvent, TaskRunStatus, TestRunDetail
+from app.domain.resources import ResourceDefinitionSnapshot, is_resource_in_skill_package, top_level_skills
+
+
+TASK_STATUS_LABELS: dict[TaskRunStatus, str] = {
+    TaskRunStatus.RUNNING: "运行中", TaskRunStatus.PASSED: "通过", TaskRunStatus.FAILED: "失败",
+    TaskRunStatus.BLOCKED: "阻塞", TaskRunStatus.SKIPPED: "跳过", TaskRunStatus.CANCELLED: "取消",
+}
+REASON_LABELS: dict[ReasonCode, str] = {
+    ReasonCode.COMPLETED: "正常完成", ReasonCode.ASSERTION_FAILED: "成功标准未满足",
+    ReasonCode.GOAL_UNREACHABLE: "目标无法达成", ReasonCode.CYCLE_LIMIT: "决策轮次达到上限",
+    ReasonCode.GOAL_FAILURE_LIMIT: "Goal 累计失败达到上限", ReasonCode.MODEL_UNAVAILABLE: "模型不可用",
+    ReasonCode.INVALID_MODEL_RESPONSE: "模型响应无效", ReasonCode.AGENT_BLOCKED: "任务受阻",
+    ReasonCode.TOOL_FAILED: "工具交互失败", ReasonCode.PROCESS_RESTARTED: "进程中断后重启",
+    ReasonCode.GLOBAL_FAIL_FAST: "前序任务终止后跳过", ReasonCode.USER_CANCELLED: "用户取消",
+    ReasonCode.MODEL_CONTEXT_EXCEEDED: "模型上下文超限", ReasonCode.UNEXPECTED_ERROR: "未处理的执行错误",
+}
+
+
+def format_elapsed(started_at: datetime | None, finished_at: datetime | None) -> str:
+    if started_at is None or finished_at is None:
+        return "—"
+    # Browser Date parses each timestamp at millisecond precision before Math.round.
+    started_at = started_at.replace(microsecond=started_at.microsecond // 1000 * 1000)
+    finished_at = finished_at.replace(microsecond=finished_at.microsecond // 1000 * 1000)
+    seconds = max(0, math.floor((finished_at - started_at).total_seconds() + 0.5))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def relative_resource_path(skill_uri: str, resource_uri: str) -> str:
+    """Display a known package member relative to its frozen entry, without filesystem I/O."""
+    return posixpath.relpath(unquote(urlsplit(resource_uri).path),
+                            posixpath.dirname(unquote(urlsplit(skill_uri).path)))
 
 
 class TestRunReport(BaseModel):
@@ -72,12 +109,46 @@ class ReportService:
                 artifact.id: image_data_url
                 for artifact, image_data_url in zip(images, loaded, strict=True)
             }
+            events_by_task_run_id: dict[str | None, list[StoredRunEvent]] = defaultdict(list)
+            for stored_event in report.events:
+                events_by_task_run_id[stored_event.event.task_run_id].append(stored_event)
+            execution_counts: dict[str, int] = defaultdict(int)
+            execution_numbers: dict[str, int] = {}
+            for task_run in report.detail.task_runs:
+                if task_run.started_at is not None:
+                    execution_counts[task_run.test_task_id] += 1
+                execution_numbers[task_run.id] = execution_counts[task_run.test_task_id]
+            capability_catalog = report.detail.environment.capability_catalog
+            skill_entries = top_level_skills(capability_catalog.resource_catalog)
+            resources_by_skill: dict[tuple[str, str], list[ResourceDefinitionSnapshot]] = defaultdict(list)
+            ungrouped_resources: list[ResourceDefinitionSnapshot] = []
+            for resource in capability_catalog.resource_catalog.resources:
+                skill = next((entry for entry in skill_entries if entry.source_id == resource.source_id
+                              and is_resource_in_skill_package(entry.uri, resource.uri)), None)
+                if skill is None:
+                    ungrouped_resources.append(resource)
+                elif resource.uri != skill.uri:
+                    resources_by_skill[(skill.source_id, skill.uri)].append(resource)
+            recorded_task_ids = {task_run.test_task_id for task_run in report.detail.task_runs}
             content = self.templates.get_template("report.html").render(
                 report=report_dump,
                 app_name=APP_NAME,
                 app_description=APP_DESCRIPTION,
                 image_data_urls=image_data_urls,
-                capability_catalog=report.detail.environment.capability_catalog,
+                capability_catalog=capability_catalog,
+                run_duration=format_elapsed(report.detail.run.started_at, report.detail.run.finished_at),
+                task_durations={task_run.id: format_elapsed(task_run.started_at, task_run.finished_at)
+                                for task_run in report.detail.task_runs},
+                execution_numbers=execution_numbers,
+                events_by_task_run_id=events_by_task_run_id,
+                unstarted_tasks=[task for task in report.detail.test_plan.content.tasks
+                                 if task.test_task_id not in recorded_task_ids],
+                task_status_labels=TASK_STATUS_LABELS,
+                reason_labels=REASON_LABELS,
+                skill_entries=skill_entries,
+                resources_by_skill=resources_by_skill,
+                ungrouped_resources=ungrouped_resources,
+                relative_resource_path=relative_resource_path,
             ).encode("utf-8")
             artifact_type = ArtifactType.HTML_EXPORT
             mime_type, extension = "text/html; charset=utf-8", "html"
