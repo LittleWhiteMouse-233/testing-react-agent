@@ -18,8 +18,13 @@ from pydantic import BaseModel, ConfigDict
 
 from app.artifacts import ArtifactStore
 from app.config import APP_DESCRIPTION, APP_NAME
-from app.domain.execution import Artifact, ArtifactType, ReasonCode, StoredRunEvent, TaskRunStatus, TestRunDetail
-from app.domain.resources import ResourceDefinitionSnapshot, is_resource_in_skill_package, top_level_skills
+from app.domain.execution import (
+    Artifact, ArtifactType, ReasonCode, StoredRunEvent, TaskRun, TaskRunStatus, TestRunDetail,
+)
+from app.domain.planning import TestTask
+from app.domain.resources import (
+    ResourceCatalogSnapshot, ResourceDefinitionSnapshot, is_resource_in_skill_package, top_level_skills,
+)
 
 
 TASK_STATUS_LABELS: dict[TaskRunStatus, str] = {
@@ -53,6 +58,47 @@ def relative_resource_path(skill_uri: str, resource_uri: str) -> str:
                             posixpath.dirname(unquote(urlsplit(skill_uri).path)))
 
 
+def group_events_by_task_run(events: list[StoredRunEvent]) -> dict[str | None, list[StoredRunEvent]]:
+    events_by_task_run_id: dict[str | None, list[StoredRunEvent]] = defaultdict(list)
+    for stored_event in events:
+        events_by_task_run_id[stored_event.event.task_run_id].append(stored_event)
+    return events_by_task_run_id
+
+
+def number_task_executions(task_runs: list[TaskRun]) -> dict[str, int]:
+    execution_counts: dict[str, int] = defaultdict(int)
+    execution_numbers: dict[str, int] = {}
+    for task_run in task_runs:
+        if task_run.started_at is not None:
+            execution_counts[task_run.test_task_id] += 1
+        execution_numbers[task_run.id] = execution_counts[task_run.test_task_id]
+    return execution_numbers
+
+
+def find_unstarted_tasks(detail: TestRunDetail) -> list[TestTask]:
+    recorded_task_ids = {task_run.test_task_id for task_run in detail.task_runs}
+    return [task for task in detail.test_plan.content.tasks if task.test_task_id not in recorded_task_ids]
+
+
+def group_resources_by_skill(
+    resource_catalog: ResourceCatalogSnapshot,
+) -> dict[ResourceDefinitionSnapshot | None, list[ResourceDefinitionSnapshot]]:
+    """Group frozen resource references without copying facts or reading their sources."""
+    resources_by_skill: dict[ResourceDefinitionSnapshot | None, list[ResourceDefinitionSnapshot]] = {
+        skill: [] for skill in top_level_skills(resource_catalog)
+    }
+    resources_by_skill[None] = []
+    for resource in resource_catalog.resources:
+        skill = next((entry for entry in resources_by_skill if entry is not None
+                      and entry.source_id == resource.source_id
+                      and is_resource_in_skill_package(entry.uri, resource.uri)), None)
+        if skill is None:
+            resources_by_skill[None].append(resource)
+        elif resource.uri != skill.uri:
+            resources_by_skill[skill].append(resource)
+    return resources_by_skill
+
+
 class TestRunReport(BaseModel):
     """报告事实组合；canonical detail 中的事实不会在顶层复制。
 
@@ -83,14 +129,28 @@ class ReportService:
             loader=FileSystemLoader(Path(__file__).resolve().parent / "templates"),
             autoescape=select_autoescape(["html"]),
         )
+        self.templates.globals.update(
+            app_name=APP_NAME,
+            app_description=APP_DESCRIPTION,
+            task_status_labels=TASK_STATUS_LABELS,
+            reason_labels=REASON_LABELS,
+        )
+        self.templates.filters.update(
+            group_events_by_task_run=group_events_by_task_run,
+            number_task_executions=number_task_executions,
+            find_unstarted_tasks=find_unstarted_tasks,
+            group_resources_by_skill=group_resources_by_skill,
+            format_elapsed=format_elapsed,
+            relative_resource_path=relative_resource_path,
+        )
 
     async def build(self, test_run_id: str) -> TestRunReport:
         return await self.read_report(test_run_id)
 
     async def export(self, test_run_id: str, export_format: str) -> Artifact:
         report = await self.build(test_run_id)
-        report_dump = report.model_dump(mode="json")
         if export_format == "json":
+            report_dump = report.model_dump(mode="json")
             content = json.dumps(
                 report_dump, ensure_ascii=False, indent=2
             ).encode("utf-8")
@@ -109,46 +169,9 @@ class ReportService:
                 artifact.id: image_data_url
                 for artifact, image_data_url in zip(images, loaded, strict=True)
             }
-            events_by_task_run_id: dict[str | None, list[StoredRunEvent]] = defaultdict(list)
-            for stored_event in report.events:
-                events_by_task_run_id[stored_event.event.task_run_id].append(stored_event)
-            execution_counts: dict[str, int] = defaultdict(int)
-            execution_numbers: dict[str, int] = {}
-            for task_run in report.detail.task_runs:
-                if task_run.started_at is not None:
-                    execution_counts[task_run.test_task_id] += 1
-                execution_numbers[task_run.id] = execution_counts[task_run.test_task_id]
-            capability_catalog = report.detail.environment.capability_catalog
-            skill_entries = top_level_skills(capability_catalog.resource_catalog)
-            resources_by_skill: dict[tuple[str, str], list[ResourceDefinitionSnapshot]] = defaultdict(list)
-            ungrouped_resources: list[ResourceDefinitionSnapshot] = []
-            for resource in capability_catalog.resource_catalog.resources:
-                skill = next((entry for entry in skill_entries if entry.source_id == resource.source_id
-                              and is_resource_in_skill_package(entry.uri, resource.uri)), None)
-                if skill is None:
-                    ungrouped_resources.append(resource)
-                elif resource.uri != skill.uri:
-                    resources_by_skill[(skill.source_id, skill.uri)].append(resource)
-            recorded_task_ids = {task_run.test_task_id for task_run in report.detail.task_runs}
             content = self.templates.get_template("report.html").render(
-                report=report_dump,
-                app_name=APP_NAME,
-                app_description=APP_DESCRIPTION,
+                report=report,
                 image_data_urls=image_data_urls,
-                capability_catalog=capability_catalog,
-                run_duration=format_elapsed(report.detail.run.started_at, report.detail.run.finished_at),
-                task_durations={task_run.id: format_elapsed(task_run.started_at, task_run.finished_at)
-                                for task_run in report.detail.task_runs},
-                execution_numbers=execution_numbers,
-                events_by_task_run_id=events_by_task_run_id,
-                unstarted_tasks=[task for task in report.detail.test_plan.content.tasks
-                                 if task.test_task_id not in recorded_task_ids],
-                task_status_labels=TASK_STATUS_LABELS,
-                reason_labels=REASON_LABELS,
-                skill_entries=skill_entries,
-                resources_by_skill=resources_by_skill,
-                ungrouped_resources=ungrouped_resources,
-                relative_resource_path=relative_resource_path,
             ).encode("utf-8")
             artifact_type = ArtifactType.HTML_EXPORT
             mime_type, extension = "text/html; charset=utf-8", "html"

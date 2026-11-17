@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>{{ report.detail.test_plan.content.title }} - 测试报告</title>
+  {% set detail = report.detail %}
+  <title>{{ detail.test_plan.content.title }} - 测试报告</title>
   <style>
     body{font-family:system-ui,sans-serif;max-width:1080px;margin:40px auto;padding:0 24px;color:#17202a;line-height:1.6}
     header{border-bottom:3px solid #1677ff;padding-bottom:20px}.result{font-size:32px;font-weight:700}
@@ -22,6 +23,11 @@
   </style>
 </head>
 <body>
+  {% set capability_catalog = detail.environment.capability_catalog %}
+  {% set events_by_task_run_id = report.events | group_events_by_task_run %}
+  {% set execution_numbers = detail.task_runs | number_task_executions %}
+  {% set unstarted_tasks = detail | find_unstarted_tasks %}
+  {% set resources_by_skill = capability_catalog.resource_catalog | group_resources_by_skill %}
   {% macro message_text(text, content_id) -%}
     <div class="message-block"><div id="{{ content_id }}" class="message-text message-preview">{{ text | e | replace('\r', '&#13;' | safe) }}</div>
       <div class="message-actions" hidden><button type="button" class="message-toggle" aria-expanded="false" aria-controls="{{ content_id }}">展开</button><span class="message-count">共 {{ text | length }} 字</span></div>
@@ -68,18 +74,18 @@
   <header>
     <div class="meta">{{ app_name }}</div>
     <p class="meta">{{ app_description }}</p>
-    <h1>{{ report.detail.test_plan.content.title }}</h1>
-    <div class="result {{ report.detail.run.verdict }}">{{ report.detail.run.verdict }}</div>
-    <p><strong>总耗时：</strong>{{ run_duration }} <span class="meta">分:秒</span></p>
+    <h1>{{ detail.test_plan.content.title }}</h1>
+    <div class="result {{ detail.run.verdict }}">{{ detail.run.verdict }}</div>
+    <p><strong>总耗时：</strong>{{ detail.run.started_at | format_elapsed(detail.run.finished_at) }} <span class="meta">分:秒</span></p>
   </header>
   <section>
     <h2>运行快照</h2>
-    <p>计划版本：{{ report.detail.test_plan.version_number }}</p>
+    <p>计划版本：{{ detail.test_plan.version_number }}</p>
     <p>规划额外输入：</p>
-    <pre>{{ report.detail.test_plan.planning_context.user_input or '无' }}</pre>
-    <p>执行模型：{{ report.detail.environment.execution_model.id }}</p>
+    <pre>{{ detail.test_plan.planning_context.user_input or '无' }}</pre>
+    <p>执行模型：{{ detail.environment.execution_model.id }}</p>
     <h3>确认的任务计划 · 原始顺序</h3>
-    <ol class="plan-tasks">{% for task in report.detail.test_plan.content.tasks %}
+    <ol class="plan-tasks">{% for task in detail.test_plan.content.tasks %}
       <li><strong>任务 {{ task.definition.task_no }} · {{ task.definition.title }}</strong>（{{ task.definition.type }}）
         <p><strong>目标：</strong>{{ task.definition.goal }}</p>
         <strong>成功标准：</strong><ul>{% for criterion in task.definition.success_criteria %}<li>{{ criterion }}</li>{% endfor %}</ul>
@@ -96,17 +102,17 @@
     {% if capability_catalog.resource_catalog.local_root %}<p>本地根目录：{{ capability_catalog.resource_catalog.local_root }}</p>{% endif %}
     {% for column in capability_catalog.columns %}
       <h4>{{ '已选' if column.selected else '未选' }} · {{ column.id }}</h4>
-      {% for skill in skill_entries if capability_catalog.resource_column_id(skill.source_id, skill.uri) == column.id %}
+      {% for skill, references in resources_by_skill.items() if skill is not none and capability_catalog.resource_column_id(skill.source_id, skill.uri) == column.id %}
         <article class="skill-package">
           <h4>{{ skill.name }} · {{ '已选' if column.selected else '未选' }}</h4>
           <p class="meta">入口 · {{ skill.source_id }} · <code>{{ skill.uri }}</code></p>
           {% if skill.description %}<p>{{ skill.description }}</p>{% endif %}
-          <ul>{% for resource in resources_by_skill.get((skill.source_id, skill.uri), []) %}
-            <li><strong>{{ relative_resource_path(skill.uri, resource.uri) }}</strong><br><code>{{ resource.uri }}</code>{% if resource.description %}<p>{{ resource.description }}</p>{% endif %}</li>
+          <ul>{% for resource in references %}
+            <li><strong>{{ skill.uri | relative_resource_path(resource.uri) }}</strong><br><code>{{ resource.uri }}</code>{% if resource.description %}<p>{{ resource.description }}</p>{% endif %}</li>
           {% endfor %}</ul>
         </article>
       {% endfor %}
-      {% for resource in ungrouped_resources if capability_catalog.resource_column_id(resource.source_id, resource.uri) == column.id %}
+      {% for resource in resources_by_skill[none] if capability_catalog.resource_column_id(resource.source_id, resource.uri) == column.id %}
         <p><strong>{{ resource.name }}</strong> · {{ resource.source_id }} · <code>{{ resource.uri }}</code></p>
         {% if resource.description %}<p>{{ resource.description }}</p>{% endif %}
       {% endfor %}
@@ -117,11 +123,11 @@
   </section>
   <section>
     <h2>任务结果 · 实际执行顺序</h2>
-    {% for task_run in report.detail.task_runs %}
-      {% set task = report.detail.test_plan.content.tasks | selectattr('test_task_id', 'equalto', task_run.test_task_id) | first %}
+    {% for task_run in detail.task_runs %}
+      {% set task = detail.test_plan.content.tasks | selectattr('test_task_id', 'equalto', task_run.test_task_id) | first %}
       <article class="task">
         <h3>{{ task_heading(task, task_run) }}</h3>
-        <p class="meta">执行记录 #{{ task_run.sequence }} · 耗时 {{ task_durations[task_run.id] }}（分:秒） · {{ task_run.cycle_count }} 轮</p>
+        <p class="meta">执行记录 #{{ task_run.sequence }} · 耗时 {{ task_run.started_at | format_elapsed(task_run.finished_at) }}（分:秒） · {{ task_run.cycle_count }} 轮</p>
         <p><strong>目标：</strong>{{ task.definition.goal }}</p>
         <strong>成功标准：</strong><ul>{% for criterion in task.definition.success_criteria %}<li>{{ criterion }}</li>{% endfor %}</ul>
         <p><strong>结论：</strong>{{ task_status(task, task_run) }}</p>
@@ -140,8 +146,8 @@
     {% if events_by_task_run_id.get(none) %}
       <details class="task-events" data-task-run-id="run"><summary>运行生命周期与错误</summary>{{ event_list(events_by_task_run_id[none]) }}</details>
     {% endif %}
-    {% for task_run in report.detail.task_runs %}
-      {% set task = report.detail.test_plan.content.tasks | selectattr('test_task_id', 'equalto', task_run.test_task_id) | first %}
+    {% for task_run in detail.task_runs %}
+      {% set task = detail.test_plan.content.tasks | selectattr('test_task_id', 'equalto', task_run.test_task_id) | first %}
       <details class="task-events" data-task-run-id="{{ task_run.id }}"><summary>{{ task_heading(task, task_run) }} · {{ task_status(task, task_run) }} · 记录 #{{ task_run.sequence }}</summary>
         {{ event_list(events_by_task_run_id.get(task_run.id, [])) }}
       </details>

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from app import reporting
+from app.domain.resources import ResourceCatalogSnapshot, ResourceDefinitionSnapshot
 from mcp_support import build_client, create_plan, finish_turn, replay_call, start_run, text_block, tool_turn, wait_for_run
 
 
@@ -55,6 +56,51 @@ def test_elapsed_time_matches_browser_timestamp_millisecond_precision() -> None:
     started_at = datetime(2026, 11, 17, microsecond=999, tzinfo=UTC)
     finished_at = datetime(2026, 11, 17, microsecond=500001, tzinfo=UTC)
     assert reporting.format_elapsed(started_at, finished_at) == "00:01"
+
+
+def test_skill_resource_groups_reference_each_source_resource_once() -> None:
+    first_skill = ResourceDefinitionSnapshot(
+        source_id="mcp:first", uri="skill://guide/SKILL.md", name="First guide", is_skill_manifest=True,
+    )
+    first_reference = ResourceDefinitionSnapshot(
+        source_id="mcp:first", uri="skill://guide/references/watch.md", name="First reference",
+    )
+    nested_skill = ResourceDefinitionSnapshot(
+        source_id="mcp:first", uri="skill://guide/child/SKILL.md", name="Nested guide", is_skill_manifest=True,
+    )
+    second_skill = ResourceDefinitionSnapshot(
+        source_id="mcp:second", uri="skill://guide/SKILL.md", name="Second guide", is_skill_manifest=True,
+    )
+    second_reference = ResourceDefinitionSnapshot(
+        source_id="mcp:second", uri="skill://guide/references/watch.md", name="Second reference",
+    )
+    empty_skill = ResourceDefinitionSnapshot(
+        source_id="mcp:first", uri="skill://empty/SKILL.md", name="Empty guide", is_skill_manifest=True,
+    )
+    ordinary_resource = ResourceDefinitionSnapshot(
+        source_id="mcp:first", uri="resource://standalone/notes.txt", name="Notes",
+    )
+    unrelated_reference = ResourceDefinitionSnapshot(
+        source_id="mcp:other", uri="skill://guide/references/watch.md", name="Unrelated reference",
+    )
+    catalog = ResourceCatalogSnapshot(resources=[
+        first_reference, first_skill, nested_skill, second_skill, second_reference,
+        empty_skill, ordinary_resource, unrelated_reference,
+    ])
+    original_catalog = catalog.model_dump(mode="json")
+
+    resource_groups = reporting.group_resources_by_skill(catalog)
+
+    assert list(resource_groups) == [first_skill, second_skill, empty_skill, None]
+    assert resource_groups[first_skill] == [first_reference, nested_skill]
+    assert resource_groups[second_skill] == [second_reference]
+    assert resource_groups[empty_skill] == []
+    assert resource_groups[None] == [ordinary_resource, unrelated_reference]
+    grouped_resources = [skill for skill in resource_groups if skill is not None]
+    grouped_resources.extend(resource for references in resource_groups.values() for resource in references)
+    assert len(grouped_resources) == len(catalog.resources)
+    assert {id(resource) for resource in grouped_resources} == {id(resource) for resource in catalog.resources}
+    assert catalog.model_dump(mode="json") == original_catalog
 
 
 def test_html_preserves_plan_reentries_events_and_skill_hierarchy(tmp_path: Path) -> None:
