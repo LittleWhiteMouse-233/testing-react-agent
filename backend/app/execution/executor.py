@@ -35,7 +35,7 @@ from app.domain.execution import (
 from app.domain.ids import TaskRunId
 from app.domain.planning import TestTask, TestTaskType
 from app.execution.task_agent import MESSAGE_PUBLISHING_NODES, TaskAgentContext, TaskAgentFactory, TaskAgentBuildParams
-from app.execution.task_agent_events import TaskAgentEventRecorder
+from app.execution.task_agent_events import TaskAgentEventRecorder, TaskNodeTiming
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.event_stream.projector import project_run_message
 
@@ -200,19 +200,18 @@ class RunExecutor:
         checkpointer: BaseCheckpointSaver[Any],
     ) -> TaskAgentCompletion:
         task_context = build_params.task_context
+        recorder = TaskAgentEventRecorder(self.repository, test_run_id, task_context.task_run_id)
         graph, initial_state, runtime_context = await self.agent_factory.build(
             build_params=build_params,
             run_cancellation_event=run_cancellation_event,
             checkpointer=checkpointer,
-            event_recorder=TaskAgentEventRecorder(
-                repository=self.repository, test_run_id=test_run_id, task_run_id=task_context.task_run_id,
-            ),
+            event_recorder=recorder,
         )
         completion: TaskAgentCompletion | None = None
         async for part in graph.astream(
             initial_state,
             context=runtime_context,
-            config={"configurable": {"thread_id": f"task-run:{task_context.task_run_id}"},
+            config={"callbacks": [TaskNodeTiming(recorder)], "configurable": {"thread_id": f"task-run:{task_context.task_run_id}"},
                     "recursion_limit": runtime_context.max_cycles * 8 + 20},
             # Product events are awaited directly; public messages come from State updates.
             stream_mode="updates",

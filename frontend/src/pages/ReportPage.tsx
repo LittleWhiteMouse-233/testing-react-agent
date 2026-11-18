@@ -62,6 +62,7 @@ export function RunReportContent({ runId }: { runId: string }) {
       const executionNo = (executionCounts.get(task.test_task_id) ?? 0) + (taskRun.started_at !== null ? 1 : 0);
       if (taskRun.started_at !== null) executionCounts.set(task.test_task_id, executionNo);
       const events = report.events.filter((stored) => stored.event.task_run_id === taskRun.id);
+      const statistics = report.data?.task_statistics?.[taskRun.id];
       const taskImages = images.filter((artifact) => artifact.task_run_id === taskRun.id);
       return <details className="timeline-block" key={taskRun.id}>
         <summary><span className={"task-number " + task.definition.type}>{task.definition.task_no}</span><div className="timeline-task-heading"><h3>{task.definition.title}</h3><small>记录 #{taskRun.sequence} · {taskRun.started_at !== null ? "第 " + executionNo + " 次执行" : "未执行"} · {task.definition.type.toUpperCase()} · {events.filter((stored) => stored.event.type === "message.appended").length} 条消息 · {taskImages.length} 张图片</small></div>
@@ -71,6 +72,10 @@ export function RunReportContent({ runId }: { runId: string }) {
           {task.definition.type === "goal" && <p>未满足时回到任务 {task.definition.jump_back_to_task_no}</p>}
           {taskRun.result && <div className="result-note"><p>{taskRun.result.summary}</p><small>{taskRun.result.reason_code} · {taskRun.cycle_count} / {taskMaxCycles(task.definition.type, detail.environment)} 轮</small></div>}
           {taskRun.result?.memory && <div className="task-memory"><strong>跨任务记忆</strong><p>{taskRun.result.memory}</p></div>}
+          {statistics && <section><h4>工具调用</h4>
+            {Object.entries(statistics.tools).map(([name, count]) => <p key={name}>{name} · 调用 {count.calls} 次 · 成功 {count.successes} 次</p>)}
+            <h4>节点耗时</h4>{Object.entries(statistics.nodes).map(([name, timing]) => <p key={name}>{name} · {timing.elapsed_seconds.toFixed(3)} 秒 · {timing.task_percent == null ? "—" : timing.task_percent.toFixed(1) + "%"}</p>)}
+          </section>}
           {events.length ? <EventTimeline events={events} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有任务事件" />}
           {taskImages.length > 0 && <Image.PreviewGroup fallback={imageUnavailableUrl}><div className="image-grid">{taskImages.map((artifact) => <figure key={artifact.id}><Image src={artifactUrl(artifact.id)} fallback={imageUnavailableUrl} alt={"图片 " + artifact.id} />
             <figcaption>{formatTime(artifact.created_at)}</figcaption></figure>)}</div></Image.PreviewGroup>}

@@ -17,6 +17,7 @@ export function runReport(verdict: TestRunVerdict | null = "PASS"): TestRunRepor
   const status = verdict === "PASS" ? "passed" : verdict === "FAIL" ? "failed" : verdict === "BLOCKED" ? "blocked" : verdict === "CANCELLED" ? "cancelled" : "running";
   return {
     test_case_archived: false,
+    task_statistics: {},
     detail: {
       run: { id: runId, test_plan_id: runId, status: verdict ? "finished" : "running", verdict,
         created_at: createdAt, started_at: createdAt, finished_at: verdict ? "2026-09-14T02:23:47Z" : null },

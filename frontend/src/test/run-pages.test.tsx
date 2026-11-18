@@ -98,8 +98,8 @@ it.each(["execution", "report"])("shows unavailable images in thumbnails and the
   await screen.findByText("设置页面验证");
   if (page === "report") fireEvent.click(document.querySelector("details.timeline-block > summary")!);
   const thumbnails = screen.getAllByRole("img").filter((image) =>
-    image.getAttribute("alt") === "最新运行图片" || image.getAttribute("alt") === `图片 ${imageId}`);
-  expect(thumbnails).toHaveLength(2);
+    image.getAttribute("alt") === `图片 ${imageId}`);
+  expect(thumbnails).toHaveLength(page === "report" ? 2 : 1);
   await waitFor(() => thumbnails.forEach((image) => expect(image.getAttribute("src")).toMatch(/^data:image\/svg\+xml/)));
   fireEvent.click(thumbnails[page === "report" ? 1 : 0]!);
   await waitFor(() => {
@@ -109,30 +109,43 @@ it.each(["execution", "report"])("shows unavailable images in thumbnails and the
   });
 });
 
-it("loads the next observed image after the previous image became unavailable", async () => {
+it("updates context, active resources and tool counts from the task event stream", async () => {
   report = runReport(null);
-  simulateImageLoading((source) => source.endsWith(imageId));
+  report.detail.environment.capability_catalog.resource_catalog.resources.push({
+    source_id: "local", uri: "file:///guide", name: "Guide", is_skill_manifest: false
+  });
   renderPage(`/runs/${runId}`);
-  const latestImage = await screen.findByRole("img", { name: "最新运行图片" });
-  await waitFor(() => expect(latestImage.getAttribute("src")).toMatch(/^data:image\/svg\+xml/));
-  const nextImageId = "55555555-5555-4555-8555-555555555555";
-  act(() => sources[0]!.onmessage?.(new MessageEvent("message", { data: JSON.stringify(runEvent(2, {
-    type: "message.appended", test_run_id: runId, task_run_id: taskRunId,
-    message: { role: "tool", message_id: "message-2", tool_call_id: "call-2", name: "fixture_inspect", status: "success",
-      content: [{ type: "image_artifact", artifact_id: nextImageId }] }
-  })) })));
-  await waitFor(() => expect(latestImage.getAttribute("src")).toBe(`/api/artifacts/${nextImageId}`));
-});
-
-it.each([false, true])("preserves the empty image state when finished=%s", async (finished) => {
-  report = runReport(finished ? "PASS" : null);
-  report.events = []; report.artifacts = [];
-  renderPage(`/runs/${runId}`);
-  expect(await screen.findByText(finished ? "本次运行没有图片" : "等待首次图片…")).toBeInTheDocument();
-  expect(screen.queryByRole("img", { name: "最新运行图片" })).not.toBeInTheDocument();
+  await screen.findByText("等待首次模型请求");
+  await waitFor(() => expect(sources[0]).toBeDefined());
+  const emit = (sequence: number, event: Parameters<typeof runEvent>[1]) => act(() => {
+    sources[0]!.onmessage?.(new MessageEvent("message", { data: JSON.stringify(runEvent(sequence, event)) }));
+  });
+  const ids = { test_run_id: runId, task_run_id: taskRunId };
+  emit(2, { ...ids, type: "context.updated", context: { input_budget_tokens: 1000,
+    tokens: { system_prompt: 10, user_messages: 20, tool_definitions: 40, skill_body: 0, tool_calls: 0, tool_return_text: 0, tool_return_nontext: 0, assistant_messages: 0 },
+    active_resources: { local: ["file:///guide"] } } });
+  expect(screen.getByRole("meter")).toHaveAttribute("aria-valuenow", "70");
+  expect(screen.getByText("激活")).toBeInTheDocument();
+  emit(3, { ...ids, type: "tool.started", tool_name: "fixture_inspect", call_id: "call" });
+  emit(4, { ...ids, type: "tool.succeeded", tool_name: "fixture_inspect", call_id: "call" });
+  expect(screen.getByText(/调用 1 次 · 成功 1 次/)).toBeInTheDocument();
+  emit(5, { ...ids, type: "task.started", task_run_id: imageId });
+  expect(screen.getByText("等待首次模型请求")).toBeInTheDocument();
+  expect(screen.queryByText("激活")).toBeNull();
+  expect(screen.getByText(/调用 0 次 · 成功 0 次/)).toBeInTheDocument();
 });
 
 function Location() { const location = useLocation(); return <output data-testid="location">{location.pathname}{location.search}</output>; }
+
+it("shows task-specific tool counts and node durations in the finished report", async () => {
+  report.task_statistics = { [taskRunId]: {
+    tools: { fixture_inspect: { calls: 3, successes: 2 } },
+    nodes: { model: { elapsed_seconds: 9.125, task_percent: 25.347 } }
+  } };
+  renderPage(`/runs/${runId}/report`);
+  expect(await screen.findByText("fixture_inspect · 调用 3 次 · 成功 2 次")).toBeInTheDocument();
+  expect(screen.getByText("model · 9.125 秒 · 25.3%")).toBeInTheDocument();
+});
 
 it("shows frozen Skill resource addresses and templates in run resources", () => {
   report.detail.environment.capability_catalog.resource_catalog = {
@@ -395,11 +408,11 @@ it("shows short message text in full without an expansion control", () => {
 });
 
 it("keeps tool call text and identifiers together in the event body", () => {
-  const stored = runEvent(7, { type: "tool.started", test_run_id: runId, task_run_id: taskRunId, call_id: "finish-blocked" });
+  const stored = runEvent(7, { type: "tool.started", test_run_id: runId, task_run_id: taskRunId, tool_name: "finish_task", call_id: "finish-blocked" });
   const page = render(<EventTimeline events={[stored]} />);
   const row = page.container.querySelector(".event-row")!;
   expect(row.children).toHaveLength(3);
-  expect(row.children[2]).toHaveTextContent("调用 finish-blocked");
+  expect(row.children[2]).toHaveTextContent("finish_task finish-blocked");
 });
 
 it("collapses each message block independently and retains expansion when events arrive", () => {

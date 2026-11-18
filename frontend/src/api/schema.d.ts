@@ -403,6 +403,65 @@ export interface components {
             selected: boolean;
         };
         /**
+         * ContextTokens
+         * @description Estimated request tokens partitioned into disjoint display categories.
+         */
+        ContextTokens: {
+            /**
+             * Assistant Messages
+             * @default 0
+             */
+            assistant_messages: number;
+            /**
+             * Skill Body
+             * @default 0
+             */
+            skill_body: number;
+            /**
+             * System Prompt
+             * @default 0
+             */
+            system_prompt: number;
+            /**
+             * Tool Calls
+             * @default 0
+             */
+            tool_calls: number;
+            /**
+             * Tool Definitions
+             * @default 0
+             */
+            tool_definitions: number;
+            /**
+             * Tool Return Nontext
+             * @default 0
+             */
+            tool_return_nontext: number;
+            /**
+             * Tool Return Text
+             * @default 0
+             */
+            tool_return_text: number;
+            /**
+             * User Messages
+             * @default 0
+             */
+            user_messages: number;
+        };
+        /** ContextUpdatedEvent */
+        ContextUpdatedEvent: {
+            context: components["schemas"]["ModelContextSnapshot"];
+            /** Task Run Id */
+            task_run_id: string | null;
+            /** Test Run Id */
+            test_run_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "context.updated";
+        };
+        /**
          * CycleStartedEvent
          * @description TaskAgent 在首次模型请求前开始逻辑决策轮；开始即计轮，传输重试不另计。
          */
@@ -743,6 +802,47 @@ export interface components {
              * @enum {string}
              */
             type: "message.validation_failed";
+        };
+        /** ModelContextSnapshot */
+        ModelContextSnapshot: {
+            /** Active Resources */
+            active_resources: {
+                [key: string]: string[];
+            };
+            /** Input Budget Tokens */
+            input_budget_tokens: number;
+            tokens: components["schemas"]["ContextTokens"];
+        };
+        /** NodeExecutionEvent */
+        NodeExecutionEvent: {
+            /**
+             * Finished At
+             * Format: date-time
+             */
+            finished_at: string;
+            /** Node Name */
+            node_name: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Task Run Id */
+            task_run_id: string | null;
+            /** Test Run Id */
+            test_run_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "node.execution";
+        };
+        /** NodeTiming */
+        NodeTiming: {
+            /** Elapsed Seconds */
+            elapsed_seconds: number;
+            /** Task Percent */
+            task_percent: number | null;
         };
         /** PageResponse[TestCaseListResponse] */
         PageResponse_TestCaseListResponse_: {
@@ -1312,7 +1412,7 @@ export interface components {
          */
         StoredRunEvent: {
             /** Event */
-            event: components["schemas"]["MessageAppendedEvent"] | components["schemas"]["MessageValidationFailedEvent"] | components["schemas"]["RunLifecycleEvent"] | components["schemas"]["TaskLifecycleEvent"] | components["schemas"]["CycleStartedEvent"] | components["schemas"]["ToolStartedEvent"] | components["schemas"]["ExecutionErrorEvent"] | components["schemas"]["TasksSkippedEvent"];
+            event: components["schemas"]["MessageAppendedEvent"] | components["schemas"]["MessageValidationFailedEvent"] | components["schemas"]["RunLifecycleEvent"] | components["schemas"]["TaskLifecycleEvent"] | components["schemas"]["CycleStartedEvent"] | components["schemas"]["ToolCallEvent"] | components["schemas"]["ContextUpdatedEvent"] | components["schemas"]["NodeExecutionEvent"] | components["schemas"]["ExecutionErrorEvent"] | components["schemas"]["TasksSkippedEvent"];
             /** Event Id */
             event_id: string;
             /**
@@ -1370,6 +1470,17 @@ export interface components {
             reason_code: components["schemas"]["ReasonCode"];
             /** Summary */
             summary: string;
+        };
+        /** TaskRunStatistics */
+        TaskRunStatistics: {
+            /** Nodes */
+            nodes: {
+                [key: string]: components["schemas"]["NodeTiming"];
+            };
+            /** Tools */
+            tools: {
+                [key: string]: components["schemas"]["ToolCallCounts"];
+            };
         };
         /**
          * TaskRunStatus
@@ -1658,6 +1769,10 @@ export interface components {
             detail: components["schemas"]["TestRunDetail"];
             /** Events */
             events: components["schemas"]["StoredRunEvent"][];
+            /** Task Statistics */
+            task_statistics: {
+                [key: string]: components["schemas"]["TaskRunStatistics"];
+            };
             /** Test Case Archived */
             test_case_archived: boolean;
         };
@@ -1738,6 +1853,41 @@ export interface components {
             title?: string | null;
         };
         /**
+         * ToolCallCounts
+         * @description Calls and successful results for one named tool within one TaskRun.
+         */
+        ToolCallCounts: {
+            /**
+             * Calls
+             * @default 0
+             */
+            calls: number;
+            /**
+             * Successes
+             * @default 0
+             */
+            successes: number;
+        };
+        /**
+         * ToolCallEvent
+         * @description 发起、撤回或成功返回一次工具调用。
+         */
+        ToolCallEvent: {
+            /** Call Id */
+            call_id: string;
+            /** Task Run Id */
+            task_run_id: string | null;
+            /** Test Run Id */
+            test_run_id: string;
+            /** Tool Name */
+            tool_name: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "tool.started" | "tool.succeeded" | "tool.withdrawn";
+        };
+        /**
          * ToolCatalogSnapshot
          * @description The complete TaskAgent tool catalog frozen for one execution.
          */
@@ -1761,23 +1911,6 @@ export interface components {
             name: string;
             /** Source Id */
             source_id: string;
-        };
-        /**
-         * ToolStartedEvent
-         * @description 工具通过取消安全边界并即将执行的事实。
-         */
-        ToolStartedEvent: {
-            /** Call Id */
-            call_id: string;
-            /** Task Run Id */
-            task_run_id: string | null;
-            /** Test Run Id */
-            test_run_id: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "tool.started";
         };
     };
     responses: never;

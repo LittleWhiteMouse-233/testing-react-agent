@@ -419,3 +419,39 @@ def test_image_window_does_not_retain_previous_history() -> None:
 def test_image_window_requires_at_least_one_history_round(history_rounds: int) -> None:
     with pytest.raises(ValueError, match="Image history must retain at least one round"):
         ModelImageWindow(history_rounds=history_rounds)
+
+
+def test_context_usage_partitions_selected_input():
+    window = ModelContextWindow(model_profile=model_profile(), tools=(finish_task,))
+    messages = [SystemMessage("system"), HumanMessage("task"), *observation_messages(
+        "inspect", image_message("image", encoded_size=20).content,
+    )]
+    snapshot = window.describe_request(window.select_messages(messages))
+    assert snapshot.input_budget_tokens == 6656
+    assert sum(snapshot.tokens.model_dump().values()) == window.estimate_request_tokens(messages)
+    assert snapshot.tokens.tool_return_nontext == 1024
+    assert snapshot.tokens.tool_calls > 0
+    assert snapshot.tokens.tool_definitions > 0
+
+
+def test_resource_activation_requires_one_complete_selected_read():
+    profile = model_profile()
+    window = ModelContextWindow(model_profile=profile, tools=())
+    uri = "file:///docs/guide"
+    def read(call_id: str, body: str | list[str | dict[str, Any]]) -> list[AnyMessage]:
+        return [
+            AIMessage(content="reading", tool_calls=[{"id": call_id, "name": "read_resource",
+                      "args": {"source_id": "local", "uri": uri}}]),
+            ToolMessage(name="read_resource", tool_call_id=call_id, content=body, artifact=uri),
+        ]
+
+    first = read("first", [
+        {"type": "text", "text": "retained text"},
+        {"type": "text", "text": "image expired", "extras": {"artifact_id": "saved"}},
+    ])
+    second = read("second", image_message("image", encoded_size=20).content)
+    assert window.describe_request(first).active_resources == {}
+    active = window.describe_request([*first, *second])
+    assert active.active_resources == {"local": [uri]}
+    assert active.tokens.assistant_messages and active.tokens.tool_calls
+    assert window.describe_request([]).active_resources == {}

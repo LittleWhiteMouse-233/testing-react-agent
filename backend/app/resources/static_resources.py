@@ -32,6 +32,8 @@ from app.resources.mcp import MCPClientProvider
 
 
 ResourceContent = TextContentBlock | ImageContentBlock
+# LangChain content_and_artifact: the resolved URI stays outside model-visible content.
+ResourceReadResult = tuple[list[ResourceContent], str | None]
 LOAD_SKILL_TOOL_NAME = "load_skill"
 _TEXT_APPLICATION_MIMES = {"application/json", "application/xml", "application/yaml", "application/x-yaml", "application/toml", "application/javascript"}
 
@@ -219,7 +221,7 @@ class SkillResourceProvider:
 
     async def read_resource(
         self, source_id: str, uri: str, base_uri: str | None = None, *, runtime: ToolRuntime[ResourceToolContext],
-    ) -> list[ResourceContent]:
+    ) -> ResourceReadResult:
         """Read a complete URI, or resolve a relative reference against an explicit base_uri.
 
         Copy the current document URI as base_uri; directory bases must end in '/'.
@@ -232,12 +234,13 @@ class SkillResourceProvider:
             known_mime = next((entry.mime_type for entry in runtime.context.capability_catalog.resource_catalog.resources
                                if entry.source_id == source_id and entry.uri == resolved_uri), None)
         if _is_unsupported_mime(known_mime):
-            return [create_text_block(text=f"Unsupported binary resource type: {known_mime} ({resolved_uri}). Only text and images can be read.")]
+            return [create_text_block(text=f"Unsupported binary resource type: {known_mime} ({resolved_uri}). Only text and images can be read.")], None
         contents = await self._read_resource_contents(source_id, resolved_uri)
         for content in contents:
             if _is_unsupported_mime(content.mime_type):
-                return [create_text_block(text=f"Unsupported binary resource type: {content.mime_type} ({content.uri}). Only text and images can be read.")]
+                return [create_text_block(text=f"Unsupported binary resource type: {content.mime_type} ({content.uri}). Only text and images can be read.")], None
         blocks: list[ResourceContent] = []
+        complete_read = bool(contents)
         for content in contents:
             blocks.append(create_text_block(text=json.dumps({
                 "source_id": source_id, "uri": content.uri, "mime_type": content.mime_type,
@@ -247,10 +250,11 @@ class SkillResourceProvider:
             elif _normalize_mime_type(content.mime_type).startswith("image/"):
                 blocks.append(create_image_block(base64=content.blob, mime_type=_normalize_mime_type(content.mime_type)))
             else:
+                complete_read = False
                 blocks.append(create_text_block(text=f"Unsupported binary resource type: {content.mime_type or 'unknown'}. Only text and images can be read."))
-        return blocks
+        return blocks, resolved_uri if complete_read else None
 
-    async def load_skill(self, source_id: str, uri: str, *, runtime: ToolRuntime[ResourceToolContext]) -> list[ResourceContent]:
+    async def load_skill(self, source_id: str, uri: str, *, runtime: ToolRuntime[ResourceToolContext]) -> ResourceReadResult:
         """Load one SKILL.md into this task's retained instructions; never load attachments.
 
         Accepts nested Skill entries even if absent from the initial summaries.
@@ -290,5 +294,6 @@ class SkillResourceProvider:
 
     def build_resource_tools(self) -> tuple[BaseTool, ...]:
         return tuple(StructuredTool.from_function(coroutine=handler, handle_tool_error=True,
+                                                  response_format="content" if handler == self.list_resources else "content_and_artifact",
                                                   metadata={"tool_source": "builtin:skill"})
                      for handler in (self.load_skill, self.read_resource, self.list_resources))

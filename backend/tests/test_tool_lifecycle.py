@@ -207,7 +207,7 @@ async def test_cancellation_at_model_or_event_boundary_prevents_further_calls(
     elif boundary == "invalid_response":
         event_recorder.record_message_validation_failed.side_effect = request_cancel
     else:
-        event_recorder.record_tool_started.side_effect = request_cancel
+        event_recorder.record_tool_call.side_effect = request_cancel
 
     model = ScriptedChatModelClient(build_model_profile(), turns=[
         AIMessage(content="invalid") if boundary == "invalid_response" else tool_turn(1, "observe"),
@@ -232,6 +232,8 @@ async def test_cancellation_at_model_or_event_boundary_prevents_further_calls(
     assert final_state["completion"].status.value == "cancelled"
     assert final_state["completion"].result.reason_code.value == "user_cancelled"
     assert calls == 0
+    if boundary == "tool_start":
+        assert [call.args[0] for call in event_recorder.record_tool_call.await_args_list] == ["tool.started", "tool.withdrawn"]
     assert final_state["cycle_count"] == (0 if boundary == "before_cycle" else 1)
     assert final_state["completion"].cycle_count == final_state["cycle_count"]
     assert len(model.invocations) == (0 if boundary in {"before_cycle", "cycle_start"} else 1)

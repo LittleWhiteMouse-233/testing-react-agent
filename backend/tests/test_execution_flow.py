@@ -331,6 +331,8 @@ def test_required_context_over_budget_blocks_without_calling_model(tmp_path: Pat
         assert detail["task_runs"][0]["result"]["reason_code"] == "model_context_exceeded"
         assert detail["task_runs"][0]["cycle_count"] == 1
         assert len(model.invocations) == model_call_count
+        events = client.get(f"/api/runs/{detail['run']['id']}").json()["events"]
+        assert all(stored["event"]["type"] != "context.updated" for stored in events)
 
 
 @pytest.mark.parametrize("act_limit,judge_limit,counts", [(1, 3, [1, 0]), (3, 1, [2, 1])])
@@ -824,6 +826,15 @@ def test_image_retention_reaches_state_and_terminal_checkpoint(
     asyncio.run(verify_checkpoint())
 
 
+def test_tool_counts_distinguish_calls_reusing_provider_id_across_rounds(tmp_path: Path) -> None:
+    with build_client(tmp_path, calls=[replay_call(), replay_call(error=True)],
+                      turns=[tool_turn(1), tool_turn(1), finish_turn(3)]) as client:
+        run_id = start_run(client, create_plan(client))
+        task = wait_for_run(client, run_id)["task_runs"][0]
+        counts = client.get(f"/api/runs/{run_id}").json()["task_statistics"][task["id"]]["tools"]
+        assert counts["fixture_inspect"] == {"calls": 2, "successes": 1}
+
+
 def test_model_transport_retry_does_not_consume_a_decision_round(tmp_path: Path) -> None:
     with build_client(tmp_path, turns=[TimeoutError("transient"), tool_turn(1), finish_turn(2)]) as client:
         run_id = start_run(client, create_plan(client))
@@ -832,6 +843,7 @@ def test_model_transport_retry_does_not_consume_a_decision_round(tmp_path: Path)
         assert detail["task_runs"][0]["cycle_count"] == 2
         events = [entry["event"] for entry in client.get(f"/api/runs/{run_id}").json()["events"]]
         assert [event["cycle_count"] for event in events if event["type"] == "cycle.started"] == [1, 2]
+        assert sum(event["type"] == "node.execution" and event["node_name"] == "model" for event in events) == 3
         starts = [index for index, event in enumerate(events) if event["type"] == "cycle.started"]
         replies = [index for index, event in enumerate(events)
                    if event["type"] == "message.appended" and event["message"]["role"] == "ai"]

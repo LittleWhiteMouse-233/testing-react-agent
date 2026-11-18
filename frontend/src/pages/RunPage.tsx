@@ -1,12 +1,11 @@
 import { StopOutlined } from "@ant-design/icons";
-import { Alert, Button, Empty, Image, Spin, message } from "antd";
+import { Alert, Button, Empty, Spin, message } from "antd";
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
-import { $api, apiErrorMessage, artifactUrl } from "../api/client";
-import { latestImageArtifactId } from "../api/runEvents";
+import { $api, apiErrorMessage } from "../api/client";
 import { useRunReport } from "../api/useRunReport";
-import { ElapsedTime, EventTimeline, imageUnavailableUrl, RunResources, StatusBadge, TaskCard, TaskStatusBadge, taskCycleCount, taskMaxCycles } from "../runPresentation";
+import { ContextUsage, ElapsedTime, EventTimeline, taskMonitor, RunResources, StatusBadge, TaskCard, TaskStatusBadge, taskCycleCount, taskMaxCycles } from "../runPresentation";
 import PageHeading from "../PageHeading";
 
 function RunState({ children }: { children: ReactNode }) {
@@ -45,7 +44,7 @@ function RunExecution({ runId }: { runId: string }) {
   const activeTask = taskRuns.find((task) => task.status === "running");
   const activeIndex = plan.content.tasks.findIndex((task) => task.test_task_id === activeTask?.test_task_id);
   const executionCount = taskRuns.filter((task) => task.started_at !== null).length;
-  const imageId = latestImageArtifactId(report.events);
+  const monitor = taskMonitor(report.events, taskRuns.filter((task) => task.started_at).at(-1)?.id);
   return <>
     <PageHeading actions={<>{report.data.test_case_archived ? <Button disabled>用例已归档</Button> : <Link to={"/cases/" + plan.test_case_id + "/plan"}><Button>查看最新计划</Button></Link>}
         {finished ? <Link to={"/runs/" + runId + "/report"}><Button type="primary">查看执行记录</Button></Link> :
@@ -75,9 +74,8 @@ function RunExecution({ runId }: { runId: string }) {
           </TaskCard>;
         })}</div>
       </aside>
-      <section className="execution-observation"><section className="observation-images"><div className="section-heading"><div><small>运行观察</small><h2>最新图片</h2></div><span>v{plan.version_number}</span></div>
-        <div className="observation-image-area"><div className="latest-image">{imageId ? <Image src={artifactUrl(imageId)} fallback={imageUnavailableUrl} alt="最新运行图片" /> : <Empty description={finished ? "本次运行没有图片" : "等待首次图片…"} />}</div></div>
-        </section><section className="frozen-resources"><div className="section-heading"><div><small>本次运行冻结的资源</small><h2>工具与模型</h2></div></div><div className="resource-scroll"><RunResources report={report.data} /></div></section>
+      <section className="execution-observation"><ContextUsage context={monitor.context} finished={finished} />
+        <section className="frozen-resources"><div className="section-heading"><div><small>本次运行冻结的资源</small><h2>工具与模型</h2></div></div><div className="resource-scroll"><RunResources report={report.data} monitor={monitor} /></div></section>
       </section>
       <section className="execution-events"><div className="section-heading"><div><small>持久化运行事实</small><h2>事件流</h2></div><span className={"connection " + report.connection}>{report.contractError ? "已停止" : ({ connecting: "连接中", connected: "实时连接", reconnecting: "正在重连", awaiting_result: "等待最终结果", finished: "已结束" }[report.connection])}</span></div>
         <EventTimeline events={report.events} controls /><footer className="event-footer">{report.events.length} 条事件 · 按保存顺序显示</footer>

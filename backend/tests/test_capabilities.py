@@ -230,7 +230,7 @@ async def test_local_other_scope_blocks_package_aliases_before_reading_bytes(tmp
             await provider.read_resource("local", uri, base_uri=(tmp_path / "a.md").as_uri(), runtime=runtime)
     assert reads == []
     (tmp_path / "new.md").write_text("new same-column resource", encoding="utf-8")
-    loaded = await provider.read_resource("local", "new.md", base_uri=(tmp_path / "a.md").as_uri(), runtime=runtime)
+    loaded, _ = await provider.read_resource("local", "new.md", base_uri=(tmp_path / "a.md").as_uri(), runtime=runtime)
     assert any(block.get("text") == "new same-column resource" for block in loaded)
     listed = json.loads(await provider.list_resources(runtime=runtime))
     assert {resource["name"] for resource in listed["resources"]} == {"a.md"}

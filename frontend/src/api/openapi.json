@@ -238,6 +238,110 @@
         "title": "CapabilityColumnSnapshot",
         "type": "object"
       },
+      "ContextTokens": {
+        "additionalProperties": false,
+        "description": "Estimated request tokens partitioned into disjoint display categories.",
+        "properties": {
+          "assistant_messages": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Assistant Messages",
+            "type": "integer"
+          },
+          "skill_body": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Skill Body",
+            "type": "integer"
+          },
+          "system_prompt": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "System Prompt",
+            "type": "integer"
+          },
+          "tool_calls": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Tool Calls",
+            "type": "integer"
+          },
+          "tool_definitions": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Tool Definitions",
+            "type": "integer"
+          },
+          "tool_return_nontext": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Tool Return Nontext",
+            "type": "integer"
+          },
+          "tool_return_text": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Tool Return Text",
+            "type": "integer"
+          },
+          "user_messages": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "User Messages",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "system_prompt",
+          "tool_definitions",
+          "user_messages",
+          "skill_body",
+          "tool_calls",
+          "tool_return_text",
+          "tool_return_nontext",
+          "assistant_messages"
+        ],
+        "title": "ContextTokens",
+        "type": "object"
+      },
+      "ContextUpdatedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/ModelContextSnapshot"
+          },
+          "task_run_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Run Id"
+          },
+          "test_run_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Test Run Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "context.updated",
+            "default": "context.updated",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "test_run_id",
+          "task_run_id",
+          "context"
+        ],
+        "title": "ContextUpdatedEvent",
+        "type": "object"
+      },
       "CycleStartedEvent": {
         "additionalProperties": false,
         "description": "TaskAgent 在首次模型请求前开始逻辑决策轮；开始即计轮，传输重试不另计。",
@@ -894,6 +998,112 @@
           "reason"
         ],
         "title": "MessageValidationFailedEvent",
+        "type": "object"
+      },
+      "ModelContextSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "active_resources": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Active Resources",
+            "type": "object"
+          },
+          "input_budget_tokens": {
+            "exclusiveMinimum": 0.0,
+            "title": "Input Budget Tokens",
+            "type": "integer"
+          },
+          "tokens": {
+            "$ref": "#/components/schemas/ContextTokens"
+          }
+        },
+        "required": [
+          "input_budget_tokens",
+          "tokens",
+          "active_resources"
+        ],
+        "title": "ModelContextSnapshot",
+        "type": "object"
+      },
+      "NodeExecutionEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "finished_at": {
+            "format": "date-time",
+            "title": "Finished At",
+            "type": "string"
+          },
+          "node_name": {
+            "title": "Node Name",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "task_run_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Run Id"
+          },
+          "test_run_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Test Run Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "node.execution",
+            "default": "node.execution",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "test_run_id",
+          "task_run_id",
+          "node_name",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "NodeExecutionEvent",
+        "type": "object"
+      },
+      "NodeTiming": {
+        "properties": {
+          "elapsed_seconds": {
+            "title": "Elapsed Seconds",
+            "type": "number"
+          },
+          "task_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Percent"
+          }
+        },
+        "required": [
+          "elapsed_seconds",
+          "task_percent"
+        ],
+        "title": "NodeTiming",
         "type": "object"
       },
       "PageResponse_TestCaseListResponse_": {
@@ -2209,17 +2419,21 @@
           "event": {
             "discriminator": {
               "mapping": {
+                "context.updated": "#/components/schemas/ContextUpdatedEvent",
                 "cycle.started": "#/components/schemas/CycleStartedEvent",
                 "execution.error": "#/components/schemas/ExecutionErrorEvent",
                 "message.appended": "#/components/schemas/MessageAppendedEvent",
                 "message.validation_failed": "#/components/schemas/MessageValidationFailedEvent",
+                "node.execution": "#/components/schemas/NodeExecutionEvent",
                 "run.cancelled": "#/components/schemas/RunLifecycleEvent",
                 "run.finished": "#/components/schemas/RunLifecycleEvent",
                 "run.started": "#/components/schemas/RunLifecycleEvent",
                 "task.finished": "#/components/schemas/TaskLifecycleEvent",
                 "task.started": "#/components/schemas/TaskLifecycleEvent",
                 "tasks.skipped": "#/components/schemas/TasksSkippedEvent",
-                "tool.started": "#/components/schemas/ToolStartedEvent"
+                "tool.started": "#/components/schemas/ToolCallEvent",
+                "tool.succeeded": "#/components/schemas/ToolCallEvent",
+                "tool.withdrawn": "#/components/schemas/ToolCallEvent"
               },
               "propertyName": "type"
             },
@@ -2240,7 +2454,13 @@
                 "$ref": "#/components/schemas/CycleStartedEvent"
               },
               {
-                "$ref": "#/components/schemas/ToolStartedEvent"
+                "$ref": "#/components/schemas/ToolCallEvent"
+              },
+              {
+                "$ref": "#/components/schemas/ContextUpdatedEvent"
+              },
+              {
+                "$ref": "#/components/schemas/NodeExecutionEvent"
               },
               {
                 "$ref": "#/components/schemas/ExecutionErrorEvent"
@@ -2424,6 +2644,30 @@
           "summary"
         ],
         "title": "TaskRunResult",
+        "type": "object"
+      },
+      "TaskRunStatistics": {
+        "properties": {
+          "nodes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NodeTiming"
+            },
+            "title": "Nodes",
+            "type": "object"
+          },
+          "tools": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ToolCallCounts"
+            },
+            "title": "Tools",
+            "type": "object"
+          }
+        },
+        "required": [
+          "tools",
+          "nodes"
+        ],
+        "title": "TaskRunStatistics",
         "type": "object"
       },
       "TaskRunStatus": {
@@ -3192,6 +3436,13 @@
             "title": "Events",
             "type": "array"
           },
+          "task_statistics": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TaskRunStatistics"
+            },
+            "title": "Task Statistics",
+            "type": "object"
+          },
           "test_case_archived": {
             "title": "Test Case Archived",
             "type": "boolean"
@@ -3200,6 +3451,7 @@
         "required": [
           "detail",
           "events",
+          "task_statistics",
           "artifacts",
           "test_case_archived"
         ],
@@ -3418,6 +3670,79 @@
         "title": "ToolAnnotationsSnapshot",
         "type": "object"
       },
+      "ToolCallCounts": {
+        "additionalProperties": false,
+        "description": "Calls and successful results for one named tool within one TaskRun.",
+        "properties": {
+          "calls": {
+            "default": 0,
+            "title": "Calls",
+            "type": "integer"
+          },
+          "successes": {
+            "default": 0,
+            "title": "Successes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "successes"
+        ],
+        "title": "ToolCallCounts",
+        "type": "object"
+      },
+      "ToolCallEvent": {
+        "additionalProperties": false,
+        "description": "发起、撤回或成功返回一次工具调用。",
+        "properties": {
+          "call_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Call Id",
+            "type": "string"
+          },
+          "task_run_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Run Id"
+          },
+          "test_run_id": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "title": "Test Run Id",
+            "type": "string"
+          },
+          "tool_name": {
+            "title": "Tool Name",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "tool.started",
+              "tool.succeeded",
+              "tool.withdrawn"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "test_run_id",
+          "task_run_id",
+          "type",
+          "tool_name",
+          "call_id"
+        ],
+        "title": "ToolCallEvent",
+        "type": "object"
+      },
       "ToolCatalogSnapshot": {
         "additionalProperties": false,
         "description": "The complete TaskAgent tool catalog frozen for one execution.",
@@ -3471,48 +3796,6 @@
           "annotations"
         ],
         "title": "ToolDefinitionSnapshot",
-        "type": "object"
-      },
-      "ToolStartedEvent": {
-        "additionalProperties": false,
-        "description": "工具通过取消安全边界并即将执行的事实。",
-        "properties": {
-          "call_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Call Id",
-            "type": "string"
-          },
-          "task_run_id": {
-            "anyOf": [
-              {
-                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Run Id"
-          },
-          "test_run_id": {
-            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
-            "title": "Test Run Id",
-            "type": "string"
-          },
-          "type": {
-            "const": "tool.started",
-            "default": "tool.started",
-            "title": "Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "test_run_id",
-          "task_run_id",
-          "call_id"
-        ],
-        "title": "ToolStartedEvent",
         "type": "object"
       }
     }

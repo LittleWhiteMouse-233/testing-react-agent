@@ -1256,6 +1256,7 @@ it("hides cached planning operations when an archived case is refetched", async 
 it("shows the saved planning input in the online report", async () => {
   const plan = savedPlan(1, "报告保留的规划输入");
   const report: TestRunReport = {
+    task_statistics: {},
     test_case_archived: false,
     detail: { test_plan: plan, run: {
       id: "run", test_plan_id: plan.id, status: "finished", verdict: "PASS",

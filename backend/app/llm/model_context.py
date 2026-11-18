@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import cast
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage, trim_messages
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage, trim_messages
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import BaseTool
 
+from app.domain.execution import ContextTokens, ModelContextSnapshot
 from app.domain.errors import ModelContextBudgetExceeded
 from app.domain.resources import LLMProfileSettings
 from app.resources.static_resources import LOAD_SKILL_TOOL_NAME
@@ -34,12 +35,64 @@ class ModelContextWindow:
     def estimate_request_tokens(self, messages: Sequence[BaseMessage]) -> int:
         """Estimate message envelopes, images and the complete tool schemas."""
 
+        return self._estimate_tokens(messages, self._tools)
+
+    def _estimate_tokens(self, messages: Sequence[BaseMessage], tools: Sequence[BaseTool] = ()) -> int:
         return count_tokens_approximately(
             messages,
             chars_per_token=self._model_profile.characters_per_token,
             tokens_per_image=self._model_profile.tokens_per_image,
-            tools=list(self._tools),
+            tools=list(tools),
         )
+
+    def describe_request(self, selected: Sequence[BaseMessage]) -> ModelContextSnapshot:
+        """Partition the exact window accepted by select_messages, including message envelopes."""
+        tokens = ContextTokens(tool_definitions=self.estimate_request_tokens([]))
+        active_resources: dict[str, set[str]] = {}
+        resource_sources: dict[str, str] = {}
+        for message in selected:
+            total = self._estimate_tokens([message])
+            if isinstance(message, SystemMessage):
+                tokens.system_prompt += total
+            elif isinstance(message, HumanMessage):
+                tokens.user_messages += total
+            elif isinstance(message, AIMessage):
+                for call in message.tool_calls:
+                    if call["name"] in {"read_resource", LOAD_SKILL_TOOL_NAME} and (call_id := call.get("id")):
+                        source = call["args"].get("source_id")
+                        if isinstance(source, str):
+                            resource_sources[call_id] = source
+                if message.tool_calls or message.invalid_tool_calls:
+                    # Preserve the estimator's handling of provider-native call blocks.
+                    body = message.content
+                    if isinstance(body, list):
+                        body = [block for block in body if not isinstance(block, dict)
+                                or block.get("type") not in {"tool_call", "invalid_tool_call", "tool_use", "function_call"}]
+                    assistant = self._estimate_tokens([message.model_copy(update={
+                        "content": body, "tool_calls": [], "invalid_tool_calls": [],
+                    })]) if body else 0
+                    tokens.assistant_messages += assistant
+                    tokens.tool_calls += total - assistant
+                else:
+                    tokens.assistant_messages += total
+            elif isinstance(message, ToolMessage):
+                blocks = message.content_blocks
+                images = sum(block.get("type") == "image" for block in blocks)
+                image_tokens = images * self._model_profile.tokens_per_image
+                tokens.tool_return_nontext += image_tokens
+                is_resource = message.name in {"read_resource", LOAD_SKILL_TOOL_NAME} and isinstance(message.artifact, str)
+                if is_resource and message.name == LOAD_SKILL_TOOL_NAME:
+                    tokens.skill_body += total - image_tokens
+                else:
+                    tokens.tool_return_text += total - image_tokens
+                if is_resource and message.status == "success" and not any(
+                    block.get("type") == "text" and (block.get("extras") or {}).get("artifact_id") for block in blocks
+                ):
+                    source = resource_sources.get(message.tool_call_id)
+                    if source is not None:
+                        active_resources.setdefault(source, set()).add(cast(str, message.artifact))
+        return ModelContextSnapshot(input_budget_tokens=self._input_budget_tokens, tokens=tokens,
+                                    active_resources={source: sorted(uris) for source, uris in active_resources.items()})
 
     def exceeds_input_budget(self, token_count: int) -> bool:
         return token_count > self._input_budget_tokens

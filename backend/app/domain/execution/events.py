@@ -55,10 +55,46 @@ class CycleStartedEvent(RunEventBase):
     cycle_count: int = Field(ge=1)
 
 
-class ToolStartedEvent(RunEventBase):
-    """工具通过取消安全边界并即将执行的事实。"""
+class ContextTokens(BaseModel):
+    """Estimated request tokens partitioned into disjoint display categories."""
 
-    type: Literal["tool.started"] = "tool.started"
+    model_config = ConfigDict(extra="forbid", json_schema_serialization_defaults_required=True)
+
+    system_prompt: int = Field(default=0, ge=0)
+    tool_definitions: int = Field(default=0, ge=0)
+    user_messages: int = Field(default=0, ge=0)
+    skill_body: int = Field(default=0, ge=0)
+    tool_calls: int = Field(default=0, ge=0)
+    tool_return_text: int = Field(default=0, ge=0)
+    tool_return_nontext: int = Field(default=0, ge=0)
+    assistant_messages: int = Field(default=0, ge=0)
+
+
+class ModelContextSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    input_budget_tokens: int = Field(gt=0)
+    tokens: ContextTokens
+    active_resources: dict[str, list[str]]  # Canonical URIs grouped by source.
+
+
+class ContextUpdatedEvent(RunEventBase):
+    type: Literal["context.updated"] = "context.updated"
+    context: ModelContextSnapshot
+
+
+class NodeExecutionEvent(RunEventBase):
+    type: Literal["node.execution"] = "node.execution"
+    node_name: str
+    started_at: datetime
+    finished_at: datetime
+
+
+class ToolCallEvent(RunEventBase):
+    """发起、撤回或成功返回一次工具调用。"""
+
+    type: Literal["tool.started", "tool.succeeded", "tool.withdrawn"]
+    tool_name: str
     call_id: ToolCallId
 
 
@@ -83,7 +119,9 @@ RunEvent = Annotated[
     | RunLifecycleEvent
     | TaskLifecycleEvent
     | CycleStartedEvent
-    | ToolStartedEvent
+    | ToolCallEvent
+    | ContextUpdatedEvent
+    | NodeExecutionEvent
     | ExecutionErrorEvent
     | TasksSkippedEvent,
     Field(discriminator="type"),

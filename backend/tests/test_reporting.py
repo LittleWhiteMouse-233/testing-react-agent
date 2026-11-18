@@ -128,11 +128,21 @@ def test_html_preserves_plan_reentries_events_and_skill_hierarchy(tmp_path: Path
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "PASS"
         report = client.get(f"/api/runs/{run_id}").json()
+        statistics = report["task_statistics"]
+        first, _, reentry, _ = [statistics[task["id"]] for task in detail["task_runs"]]
+        assert first["tools"]["finish_task"] == reentry["tools"]["finish_task"] == {"calls": 1, "successes": 1}
+        assert len(first["tools"]) == 2 and len(reentry["tools"]) == 1
+        assert {"initialize", "cycle_guard", "model", "validate", "announce_tool", "tools", "after_tools"} == set(first["nodes"])
+        assert all(node["elapsed_seconds"] >= 0 and node["task_percent"] >= 0 for node in first["nodes"].values())
+        assert 0 < sum(node["task_percent"] for node in first["nodes"].values()) <= 100
+        incremental = client.get(f"/api/runs/{run_id}", params={"events_after": report["events"][-1]["sequence"]}).json()
+        assert incremental["events"] == [] and incremental["task_statistics"] == statistics
         # Export must use the frozen catalog, even after source files change.
         manifest.write_text("Changed on disk", encoding="utf-8")
         exported = client.post(f"/api/runs/{run_id}/exports", json={"format": "html"})
         assert exported.status_code == 201, exported.text
         html = client.get(f"/api/artifacts/{exported.json()['id']}").text
+        assert "finish_task · 调用 1 次 · 成功 1 次" in html and "节点耗时" in html
         assert "总耗时" in html and "分:秒" in html
         assert "确认的任务计划" in html and "原始顺序" in html and "实际执行顺序" in html
         assert "第 2 次执行" in html and "条件未满足" in html

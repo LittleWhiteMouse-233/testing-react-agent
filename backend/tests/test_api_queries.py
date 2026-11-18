@@ -235,7 +235,7 @@ def test_run_report_event_cursor_filters_sql_and_preserves_report_facts(tmp_path
         statement, parameters = event_queries[0]
         assert "run_events.sequence > ?" in statement
         assert "ORDER BY run_events.sequence" in statement
-        assert parameters == (run_id, cursor_sequence)
+        assert parameters == (run_id, cursor_sequence, "node.execution", "tool.started", "tool.succeeded", "tool.withdrawn")
         last_sequence = report["events"][-1]["sequence"]
         for cursor_sequence in (last_sequence, last_sequence + 100):
             assert client.get(endpoint, params={"events_after": cursor_sequence}).json() == {

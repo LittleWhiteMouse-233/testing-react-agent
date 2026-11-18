@@ -202,7 +202,8 @@ class TaskAgentFactory:
         graph.add_edge(START, "initialize")
         graph.add_edge("initialize", "cycle_guard")
         graph.add_conditional_edges("cycle_guard", lambda state: state["route"], {"model": "model", "end": END})
-        graph.add_edge("model", "validate")
+        graph.add_conditional_edges("model", lambda state: "end" if state["completion"] else "validate",
+                                    {"end": END, "validate": "validate"})
         graph.add_conditional_edges("validate", lambda state: state["route"],
                                     {"tools": "announce_tool", "cycle_guard": "cycle_guard", "end": END})
         graph.add_conditional_edges("announce_tool", lambda state: state["route"], {"tools": "tools", "end": END})
@@ -262,10 +263,12 @@ class _TaskRuntime:
     async def call_model(self, state: TaskAgentGraphState) -> dict[str, object]:
         if self.bound_model is None:
             self.bound_model = self.model_client.create_model().bind_tools(self.tools, parallel_tool_calls=False)
+        selected = self.model_context_window.select_messages(state["messages"])
+        await self.event_recorder.record_context(self.model_context_window.describe_request(selected))
+        if self.run_cancellation_event.is_set():
+            return self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"])
         try:
-            response = await asyncio.wait_for(self.bound_model.ainvoke(self.model_context_window.select_messages(
-                state["messages"],
-            )), timeout=self.model_client.timeout_seconds)
+            response = await asyncio.wait_for(self.bound_model.ainvoke(selected), timeout=self.model_client.timeout_seconds)
         except TimeoutError as exc:
             raise ModelCallTimeout("Model call timed out") from exc
         if not isinstance(response, AIMessage):
@@ -309,11 +312,13 @@ class _TaskRuntime:
     async def announce_tool(self, state: TaskAgentGraphState) -> dict[str, object]:
         call = _latest_ai_call(state["messages"])
         if not self.run_cancellation_event.is_set():
-            await self.event_recorder.record_tool_started(cast(str, call["id"]))
-        if self.run_cancellation_event.is_set():
-            return {"messages": [ToolMessage(content="Cancelled before execution", tool_call_id=call["id"], name=call["name"], status="error")],
+            await self.event_recorder.record_tool_call("tool.started", cast(str, call["id"]), call["name"], state["cycle_count"])
+            if not self.run_cancellation_event.is_set():
+                return {"route": "tools"}
+            # Cancellation arrived while the start notice was being persisted.
+            await self.event_recorder.record_tool_call("tool.withdrawn", cast(str, call["id"]), call["name"], state["cycle_count"])
+        return {"messages": [ToolMessage(content="Cancelled before execution", tool_call_id=call["id"], name=call["name"], status="error")],
                     **self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled before tool execution", state["cycle_count"])}
-        return {"route": "tools"}
 
     def handle_tool_error(
         self, state: TaskAgentGraphState, error: NodeError,
@@ -380,7 +385,8 @@ class _TaskRuntime:
                 )})
         except Exception as exc:
             raise ToolCallError("Tool result processing failed") from exc
-        return result.model_copy(update={"content": content, "artifact": None})
+        resource_uri = result.artifact if result.name in {"read_resource", "load_skill"} and isinstance(result.artifact, str) else None
+        return result.model_copy(update={"content": content, "artifact": resource_uri})
 
     async def after_tools(self, state: TaskAgentGraphState) -> dict[str, object]:
         tool_message = state["messages"][-1]
@@ -389,6 +395,8 @@ class _TaskRuntime:
         existing_artifact_id = (call["args"]["artifact_id"]
                                 if call["name"] == read_image_artifact.name and tool_message.status == "success" else None)
         tool_message = await self._prepare_tool_result(tool_message, existing_artifact_id=existing_artifact_id)
+        if tool_message.status == "success":
+            await self.event_recorder.record_tool_call("tool.succeeded", tool_message.tool_call_id, call["name"], state["cycle_count"])
         messages = cast(list[BaseMessage], add_messages(cast(Messages, state["messages"]), [tool_message]))
         # Product image retention policy; add_messages replaces these messages
         # by ID without mutating earlier State snapshots or persisted events.

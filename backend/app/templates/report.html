@@ -20,6 +20,12 @@
     .skill-package h4{margin:0 0 8px}.skill-package ul{padding-left:24px}.skill-package li{margin:10px 0}
     .task>h3{margin-top:0}.task ul,.plan-tasks ul{padding-left:24px}.plan-tasks>li{margin:18px 0}
     @media(max-width:600px){body{margin:20px auto;padding:0 12px}.task,.task-events,.skill-package{padding:12px}}
+.event-role {display:inline-block;padding:1px 5px;border-radius:4px;font-size:12px}
+.role-tool { color: #26654a; background: #e4f1e9; }
+.role-system { color: #795b22; background: #f5edd9; }
+.role-human { color: #245c85; background: #e3eef6; }
+.role-ai { color: #674782; background: #eee7f6; }
+.role-application { color: #464b54; background: #eceef0; }
   </style>
 </head>
 <body>
@@ -36,10 +42,10 @@
   {% macro event_list(entries) -%}
     {% for entry in entries %}
       <article class="task" data-event-sequence="{{ entry.sequence }}">
-        <div class="meta">{{ entry.sequence }} · {{ entry.event.type }}</div>
+        <div class="meta"><span class="event-role role-{{ entry.event.message.role if entry.event.type == 'message.appended' else 'application' }}">{{ entry.event.message.role if entry.event.type == 'message.appended' else 'application' }}</span> · {{ entry.sequence }} · {{ entry.event.type }}</div>
         {% if entry.event.type == 'message.appended' %}
           {% set message = entry.event.message %}
-          <p class="meta">{{ message.role }} · {{ message.message_id }}{% if message.role == 'tool' %} · {{ message.name }} · {{ message.status }} · {{ message.tool_call_id }}{% endif %}</p>
+          <p class="meta">{{ message.message_id }}{% if message.role == 'tool' %} · {{ message.name }} · {{ message.status }} · {{ message.tool_call_id }}{% endif %}</p>
           {% for block in message.content %}
             {% if block.type == 'text' %}
               {{ message_text(block.text, 'event-' ~ entry.sequence ~ '-text-' ~ loop.index0) }}
@@ -130,6 +136,11 @@
         <p class="meta">执行记录 #{{ task_run.sequence }} · 耗时 {{ task_run.started_at | format_elapsed(task_run.finished_at) }}（分:秒） · {{ task_run.cycle_count }} 轮</p>
         <p><strong>目标：</strong>{{ task.definition.goal }}</p>
         <strong>成功标准：</strong><ul>{% for criterion in task.definition.success_criteria %}<li>{{ criterion }}</li>{% endfor %}</ul>
+        {% set statistics = report.task_statistics.get(task_run.id) %}
+        {% if statistics %}
+          <h4>工具调用</h4>{% for name, count in statistics.tools.items() %}<p>{{ name }} · 调用 {{ count.calls }} 次 · 成功 {{ count.successes }} 次</p>{% endfor %}
+          <h4>节点耗时</h4>{% for name, timing in statistics.nodes.items() %}<p>{{ name }} · {{ '%.3f' | format(timing.elapsed_seconds) }} 秒 · {{ ('%.1f%%' | format(timing.task_percent)) if timing.task_percent is not none else '—' }}</p>{% endfor %}
+        {% endif %}
         <p><strong>结论：</strong>{{ task_status(task, task_run) }}</p>
         <p><strong>分析：</strong>{{ task_run.result.summary if task_run.result else '无' }}</p>
         {% if task_run.result %}<p><strong>原因：</strong>{{ reason_labels[task_run.result.reason_code] }}（{{ task_run.result.reason_code }}）</p>{% endif %}

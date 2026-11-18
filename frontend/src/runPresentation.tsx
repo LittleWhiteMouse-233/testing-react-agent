@@ -1,4 +1,4 @@
-import { Button, Empty, Image, Select } from "antd";
+import { Button, Empty, Image, Select, Tooltip } from "antd";
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { StoredRunEvent, TaskRun, TestRunListResponse, TestRunReport, TestTaskDefinition } from "./api/contracts";
@@ -68,7 +68,8 @@ export function taskCycleCount(taskRun: TaskRun, events: StoredRunEvent[]) {
 const eventLabels: Record<StoredRunEvent["event"]["type"], string> = {
   "message.appended": "消息", "message.validation_failed": "消息校验失败", "run.started": "运行开始",
   "run.finished": "运行结束", "run.cancelled": "运行取消", "task.started": "任务开始", "task.finished": "任务结束",
-  "cycle.started": "决策轮开始", "tool.started": "工具开始", "execution.error": "执行错误", "tasks.skipped": "任务跳过"
+  "cycle.started": "决策轮开始", "tool.started": "工具开始", "tool.succeeded": "工具成功", "tool.withdrawn": "工具发起已撤回",
+  "context.updated": "上下文更新", "node.execution": "节点执行", "execution.error": "执行错误", "tasks.skipped": "任务跳过"
 };
 
 export function TaskCard({ task, status, progress, children, jumpTargetTitle, active = false }: {
@@ -116,7 +117,7 @@ export function RunEventContent({ stored, collapseImages = false }: { stored: St
   if (event.type === "message.appended") {
     const message = event.message;
     return <div className="message-content">
-      <div className="message-meta"><span>{message.role}</span><span className="mono">{message.message_id}</span>
+      <div className="message-meta"><span className={"event-role role-" + message.role}>{message.role}</span><span className="mono">{message.message_id}</span>
         {message.role === "tool" && <><span>{message.name}</span><span>{message.status}</span><span className="mono">↳ {message.tool_call_id}</span></>}
       </div>
       {message.content.map((block, index) => block.type === "text"
@@ -134,7 +135,11 @@ export function RunEventContent({ stored, collapseImages = false }: { stored: St
   }
   switch (event.type) {
     case "cycle.started": return <>第 {event.cycle_count} 轮</>;
-    case "tool.started": return <>调用 <span className="mono">{event.call_id}</span></>;
+    case "context.updated": return <>输入约 {Object.values(event.context.tokens).reduce((sum, value) => sum + value, 0)} token</>;
+    case "node.execution": return <>{event.node_name}</>;
+    case "tool.started":
+    case "tool.withdrawn":
+    case "tool.succeeded": return <>{event.tool_name} <span className="mono">{event.call_id}</span></>;
     case "execution.error": return <div className="error-text"><MessageText text={`${event.reason_code} · ${event.message}`} /></div>;
     case "message.validation_failed": return <div className="error-text"><MessageText text={`${event.message_id} · 尝试 ${event.attempt} · ${event.reason}`} /></div>;
     case "tasks.skipped": return <>跳过 {event.task_run_ids.length} 个任务</>;
@@ -216,21 +221,69 @@ export function EventTimeline({ events, controls = false }: { events: StoredRunE
           <time className="mono">{formatTime(stored.occurred_at, true)}</time>
           <div className="event-kind"><span>#{stored.sequence}</span><strong>{eventLabels[stored.event.type]}</strong>
             {stored.event.task_run_id && <span className="mono" title={stored.event.task_run_id}>{stored.event.task_run_id.slice(0, 8)}</span>}
-          </div><div className="event-body"><RunEventContent stored={stored} collapseImages={controls} /></div>
+          </div><div className="event-body">{stored.event.type !== "message.appended" && <span className="event-role role-application">application</span>}<RunEventContent stored={stored} collapseImages={controls} /></div>
         </div>)}
       </div>
     </div>
   </section>;
 }
 
-export function RunResources({ report }: { report: TestRunReport }) {
+type ContextSnapshot = Extract<StoredRunEvent["event"], { type: "context.updated" }>["context"];
+
+const contextCategories = {
+  system_prompt: ["系统提示词", "#91672d"], tool_definitions: ["工具定义", "#24658a"],
+  user_messages: ["用户消息", "#388070"], skill_body: ["Skill 正文", "#866295"],
+  tool_calls: ["工具调用", "#a2513c"], tool_return_text: ["工具返回文字", "#4a6a37"],
+  tool_return_nontext: ["工具返回非文字", "#525ba9"], assistant_messages: ["助手消息", "#8b456e"]
+} as const satisfies Record<keyof ContextSnapshot["tokens"], [string, string]>;
+
+export function ContextUsage({ context, finished }: { context?: ContextSnapshot; finished: boolean }) {
+  const parts = (Object.keys(contextCategories) as (keyof typeof contextCategories)[]).map((key) => {
+    const [label, color] = contextCategories[key];
+    const tokens = context?.tokens[key] ?? 0;
+    return { label, color, tokens, percent: context ? tokens * 100 / context.input_budget_tokens : 0 };
+  });
+  return <section className="context-usage"><div className="section-heading"><h2>上下文占用</h2>
+    <small>{context ? finished ? "最后一次模型请求" : "最近一次模型请求" : finished ? "没有模型请求" : "等待首次模型请求"}</small></div>
+    <Tooltip trigger={["hover", "focus"]} color="#ffffff" title={context && <div className="context-tooltip">
+      {parts.map(({ label, color, tokens, percent }) => <div key={label} style={{ color }}>
+        {label} · 约 {tokens.toLocaleString()} token · {percent.toFixed(1)}%
+      </div>)}</div>}>
+      <div className="context-bar" tabIndex={0} role="meter" aria-label="上下文占用"
+        aria-valuemin={0} aria-valuemax={context?.input_budget_tokens} aria-valuenow={context && parts.reduce((n, p) => n + p.tokens, 0)}>
+        {parts.map(({ label, color, percent }) => <span key={label} style={{ backgroundColor: color, width: percent + "%" }} />)}
+      </div>
+    </Tooltip>
+  </section>;
+}
+
+export function taskMonitor(events: StoredRunEvent[], lastStartedId?: string) {
+  const latestStart = events.filter(({ event }) => event.type === "task.started").at(-1);
+  const taskId = latestStart?.event.task_run_id ?? lastStartedId;
+  let context: ContextSnapshot | undefined;
+  const tools = new Map<string, { calls: number; successes: number }>();
+  for (const { event } of events) {
+    if (event.task_run_id !== taskId) continue;
+    if (event.type === "context.updated") context = event.context;
+    if (event.type === "tool.started" || event.type === "tool.succeeded" || event.type === "tool.withdrawn") {
+      const count = tools.get(event.tool_name) ?? { calls: 0, successes: 0 };
+      if (event.type === "tool.started") count.calls++;
+      else if (event.type === "tool.withdrawn") count.calls--;
+      else count.successes++;
+      tools.set(event.tool_name, count);
+    }
+  }
+  return { context, tools };
+}
+
+export function RunResources({ report, monitor }: { report: TestRunReport; monitor?: ReturnType<typeof taskMonitor> }) {
   const { environment, test_plan: plan } = report.detail;
   const catalog = environment.capability_catalog;
   const availableTools = catalog.tool_catalog.tools.filter((tool) => tool.source_id.startsWith("builtin:") ||
     catalog.columns.some((column) => column.id === tool.source_id && column.selected));
   return <div className="resource-grid">
     <section className="resource-card"><h3>工具目录 <span>{availableTools.length} 个可用 / {catalog.tool_catalog.tools.length} 个已发现</span></h3>
-      <div className="resource-tools">{catalog.tool_catalog.tools.map((tool) => <details key={tool.name}><summary>{tool.name}<small>{tool.source_id} · {availableTools.includes(tool) ? "可用" : "未启用"}</small></summary>
+      <div className="resource-tools">{catalog.tool_catalog.tools.map((tool) => <details key={tool.name}><summary>{tool.name}<small>{monitor && <span>调用 {monitor.tools.get(tool.name)?.calls ?? 0} 次 · 成功 {monitor.tools.get(tool.name)?.successes ?? 0} 次 · </span>}{tool.source_id} · {availableTools.includes(tool) ? "可用" : "未启用"}</small></summary>
         <p>{tool.description}</p><pre>{JSON.stringify(tool.input_schema, null, 2)}</pre>
       </details>)}</div>
     </section>
@@ -238,7 +291,7 @@ export function RunResources({ report }: { report: TestRunReport }) {
       {catalog.resource_catalog.local_root && <p>本地根目录：<code>{catalog.resource_catalog.local_root}</code></p>}
       {catalog.columns.map((column) => <p key={column.id}><strong>{column.selected ? "已选" : "未选"}</strong> · <code>{column.id}</code></p>)}
       <div className="resource-tools">{catalog.resource_catalog.resources.map((resource) => <details key={`${resource.source_id}:${resource.uri}`}>
-        <summary>{resource.name}<small>{resource.source_id}</small></summary>
+        <summary>{resource.name} {monitor?.context?.active_resources[resource.source_id]?.includes(resource.uri) && <b className="resource-active">激活</b>}<small>{resource.source_id}</small></summary>
         <code>{resource.uri}</code>{resource.description && <p>{resource.description}</p>}
         {resource.mime_type && <p>{resource.mime_type}</p>}
       </details>)}
