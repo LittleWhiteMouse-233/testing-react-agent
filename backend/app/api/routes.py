@@ -29,12 +29,11 @@ from app.api.schemas import (
     TestRunStatisticsResponse,
 )
 from app.container import Container
-from app.domain.execution import Artifact, TestRun, TestRunStatus
+from app.domain.execution import TestRunReport, Artifact, TestRun, TestRunStatus
 from app.domain.ids import ArtifactId, TestCaseId, TestPlanId, TestRunId
 from app.domain.errors import PlanningUserInputRequired, TestCaseBusy, TestCaseHasActiveRun, TestCasePlanning, TestPlanNotLatest
 from app.domain.planning import PlanningEvent, TestCase, TestCaseContent, TestPlan
 from app.domain.resources import CapabilityCatalog, CapabilityColumnSelection, CapabilityCatalogChanged
-from app.reporting import TestRunReport
 from app.execution.run_service import RunConflict
 from app.resources.mcp import MCPConnectionError
 
@@ -462,7 +461,9 @@ async def export_test_run_report(
     test_run_id: TestRunId, payload: ReportExportRequest, request: Request
 ) -> Artifact:
     try:
-        return await container(request).reports.export(test_run_id, payload.format)
+        services = container(request)
+        report = await repository.read_test_run_report(services.sessions, test_run_id)
+        return await services.reports.export(report, payload.format)
     except LookupError as exc:
         raise problem(404, "test_run_not_found", str(exc)) from exc
 

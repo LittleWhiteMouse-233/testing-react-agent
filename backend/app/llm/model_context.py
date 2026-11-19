@@ -45,12 +45,12 @@ class ModelContextWindow:
             tools=list(tools),
         )
 
-    def describe_request(self, selected: Sequence[BaseMessage]) -> ModelContextSnapshot:
+    def build_context_snapshot(self, selected_messages: Sequence[BaseMessage]) -> ModelContextSnapshot:
         """Partition the exact window accepted by select_messages, including message envelopes."""
         tokens = ContextTokens(tool_definitions=self.estimate_request_tokens([]))
         active_resources: dict[str, set[str]] = {}
         resource_sources: dict[str, str] = {}
-        for message in selected:
+        for message in selected_messages:
             total = self._estimate_tokens([message])
             if isinstance(message, SystemMessage):
                 tokens.system_prompt += total

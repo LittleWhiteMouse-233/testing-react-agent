@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
@@ -23,7 +23,8 @@ from langgraph.graph import END, START, MessagesState, StateGraph, add_messages
 from langgraph.graph.message import Messages
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, ToolRuntime
-from langgraph.types import Command, RetryPolicy
+from langgraph.prebuilt.tool_node import ToolCallRequest
+from langgraph.types import Command, RetryPolicy, StreamWriter
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from app.domain.errors import (
@@ -31,17 +32,16 @@ from app.domain.errors import (
     ModelCallTimeout,
 )
 from app.domain.execution import (
-    ExecutionSettings,
+    ContextUpdatedEvent, CycleStartedEvent, ExecutionSettings, MessageValidationFailedEvent, ToolCallEvent,
     TaskAgentCompletion,
     ReasonCode,
     TaskRunResult,
     TaskRunStatus,
 )
 from app.domain.resources import LLMProfileSettings, CapabilityCatalog, CapabilityColumnSnapshot, ResourceDefinitionSnapshot, top_level_skills
-from app.domain.ids import ArtifactId, TaskRunId
+from app.domain.ids import ArtifactId, TaskRunId, TestRunId
 from app.domain.planning import TestTask, TestTaskType
 from app.llm import ModelContextWindow, ModelImageWindow
-from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.artifacts import ArtifactStore
 from app import llm
 from app.llm import ChatModelClient, should_retry_model_call
@@ -96,6 +96,7 @@ class TaskAgentContext:
     completed TaskRuns remain authoritative. Live dependencies stay separate.
     """
 
+    test_run_id: TestRunId
     task_run_id: TaskRunId
     task: TestTask
     memory_text: str
@@ -166,7 +167,6 @@ class TaskAgentFactory:
     async def build(
         self, *, build_params: TaskAgentBuildParams,
         run_cancellation_event: asyncio.Event, checkpointer: BaseCheckpointSaver[Any] | None,
-        event_recorder: TaskAgentEventRecorder,
     ) -> tuple[CompiledStateGraph[TaskAgentGraphState, TaskAgentRuntimeContext], TaskAgentGraphState, TaskAgentRuntimeContext]:
         model_client = llm.create_model_client(build_params.model_profile)
         prompt = self.prompt_catalog.prompt_for_task_type(build_params.task_context.task.definition.type)
@@ -180,7 +180,6 @@ class TaskAgentFactory:
             available_skills=top_level_skills(build_params.capability_catalog.visible_resources()),
             model_context_window=ModelContextWindow(model_profile=model_client.profile_snapshot, tools=build_params.tools),
             model_image_window=ModelImageWindow(history_rounds=runtime_context.execution.image_history_rounds),
-            event_recorder=event_recorder,
         )
         graph = StateGraph(TaskAgentGraphState, context_schema=TaskAgentRuntimeContext)
         graph.add_node("initialize", runtime.initialize)
@@ -193,7 +192,7 @@ class TaskAgentFactory:
         graph.add_node("announce_tool", runtime.announce_tool)
         nodes_before_tools = set(graph.nodes)
         graph.add_node(
-            "tools", ToolNode(build_params.tools), timeout=runtime_context.execution.tool_call_timeout_seconds,
+            "tools", ToolNode(build_params.tools, awrap_tool_call=runtime.execute_unless_cancelled), timeout=runtime_context.execution.tool_call_timeout_seconds,
             # LangGraph 1.2.9 supports NodeError injection but omits it from StateNode's type.
             error_handler=runtime.handle_tool_error,  # type: ignore[reportArgumentType]
         )
@@ -232,7 +231,6 @@ class _TaskRuntime:
     available_skills: list[ResourceDefinitionSnapshot]
     model_context_window: ModelContextWindow
     model_image_window: ModelImageWindow
-    event_recorder: TaskAgentEventRecorder
     bound_model: Any = field(default=None, init=False)
 
     async def initialize(self, state: TaskAgentGraphState) -> dict[str, object]:
@@ -247,35 +245,35 @@ class _TaskRuntime:
             }, ensure_ascii=False)),
         ], "route": "cycle_guard"}
 
-    async def cycle_guard(self, state: TaskAgentGraphState) -> dict[str, object]:
+    async def cycle_guard(self, state: TaskAgentGraphState, writer: StreamWriter) -> dict[str, object]:
         if self.run_cancellation_event.is_set():
             return self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"])
         if state["cycle_count"] >= self.runtime_context.max_cycles:
             return self._completion(TaskRunStatus.BLOCKED, ReasonCode.CYCLE_LIMIT,
                                     "Decision round limit reached", state["cycle_count"])
         cycle_count = state["cycle_count"] + 1
-        await self.event_recorder.record_cycle_started(cycle_count)
-        update: dict[str, object] = {"cycle_count": cycle_count, "route": "model"}
-        if self.run_cancellation_event.is_set():
-            update.update(self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", cycle_count))
-        return update
+        task = self.runtime_context.task_context
+        writer(CycleStartedEvent(test_run_id=task.test_run_id, task_run_id=task.task_run_id, cycle_count=cycle_count))
+        return {"cycle_count": cycle_count, "route": "model"}
 
-    async def call_model(self, state: TaskAgentGraphState) -> dict[str, object]:
-        if self.bound_model is None:
-            self.bound_model = self.model_client.create_model().bind_tools(self.tools, parallel_tool_calls=False)
-        selected = self.model_context_window.select_messages(state["messages"])
-        await self.event_recorder.record_context(self.model_context_window.describe_request(selected))
+    async def call_model(self, state: TaskAgentGraphState, writer: StreamWriter) -> dict[str, object]:
         if self.run_cancellation_event.is_set():
             return self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled by user", state["cycle_count"])
+        if self.bound_model is None:
+            self.bound_model = self.model_client.create_model().bind_tools(self.tools, parallel_tool_calls=False)
+        task = self.runtime_context.task_context
+        selected_messages = self.model_context_window.select_messages(state["messages"])
+        writer(ContextUpdatedEvent(test_run_id=task.test_run_id, task_run_id=task.task_run_id,
+                                   context=self.model_context_window.build_context_snapshot(selected_messages)))
         try:
-            response = await asyncio.wait_for(self.bound_model.ainvoke(selected), timeout=self.model_client.timeout_seconds)
+            response = await asyncio.wait_for(self.bound_model.ainvoke(selected_messages), timeout=self.model_client.timeout_seconds)
         except TimeoutError as exc:
             raise ModelCallTimeout("Model call timed out") from exc
         if not isinstance(response, AIMessage):
             raise TypeError("chat model must return AIMessage")
         return {"messages": [response], "model_response_attempt": state["model_response_attempt"] + 1}
 
-    async def validate_message(self, state: TaskAgentGraphState) -> dict[str, object]:
+    async def validate_message(self, state: TaskAgentGraphState, writer: StreamWriter) -> dict[str, object]:
         message = state["messages"][-1]
         assert isinstance(message, AIMessage)
         reason: str | None = None
@@ -295,7 +293,9 @@ class _TaskRuntime:
         if reason is None:
             return {"route": "tools"}
         assert message.id is not None
-        await self.event_recorder.record_message_validation_failed(message.id, state["model_response_attempt"], reason)
+        task = self.runtime_context.task_context
+        writer(MessageValidationFailedEvent(test_run_id=task.test_run_id, task_run_id=task.task_run_id,
+                                            message_id=message.id, attempt=state["model_response_attempt"], reason=reason))
         repairs: list[BaseMessage] = [ToolMessage(content=reason, tool_call_id=call["id"], name=call["name"], status="error")
                                     for call in message.tool_calls if call.get("id")]
         if self.run_cancellation_event.is_set():
@@ -309,16 +309,35 @@ class _TaskRuntime:
         repairs.append(HumanMessage(content=f"Return one allowed tool call with a new id. {reason}"))
         return {"messages": repairs, "route": "cycle_guard"}
 
-    async def announce_tool(self, state: TaskAgentGraphState) -> dict[str, object]:
+    async def announce_tool(self, state: TaskAgentGraphState, writer: StreamWriter) -> dict[str, object]:
         call = _latest_ai_call(state["messages"])
-        if not self.run_cancellation_event.is_set():
-            await self.event_recorder.record_tool_call("tool.started", cast(str, call["id"]), call["name"], state["cycle_count"])
-            if not self.run_cancellation_event.is_set():
-                return {"route": "tools"}
-            # Cancellation arrived while the start notice was being persisted.
-            await self.event_recorder.record_tool_call("tool.withdrawn", cast(str, call["id"]), call["name"], state["cycle_count"])
-        return {"messages": [ToolMessage(content="Cancelled before execution", tool_call_id=call["id"], name=call["name"], status="error")],
-                    **self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED, "Cancelled before tool execution", state["cycle_count"])}
+        if self.run_cancellation_event.is_set():
+            return {"messages": [_cancelled_tool_reply(call)],
+                    **self._completion(TaskRunStatus.CANCELLED, ReasonCode.USER_CANCELLED,
+                                       "Cancelled before tool execution", state["cycle_count"])}
+        writer(self._tool_event("tool.started", call, state["cycle_count"]))
+        return {"route": "tools"}
+
+    async def execute_unless_cancelled(
+        self, request: ToolCallRequest,
+        execute: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        if self.run_cancellation_event.is_set():
+            return _cancelled_tool_reply(request.tool_call)
+        return await execute(request)
+
+    def _tool_event(
+        self, phase: Literal["tool.started", "tool.succeeded"], call: ToolCall, cycle_count: int,
+    ) -> ToolCallEvent:
+        task = self.runtime_context.task_context
+        return ToolCallEvent(
+            test_run_id=task.test_run_id,
+            task_run_id=task.task_run_id,
+            type=phase,
+            cycle_count=cycle_count,
+            call_id=cast(str, call["id"]),
+            tool_name=call["name"],
+        )
 
     def handle_tool_error(
         self, state: TaskAgentGraphState, error: NodeError,
@@ -388,7 +407,7 @@ class _TaskRuntime:
         resource_uri = result.artifact if result.name in {"read_resource", "load_skill"} and isinstance(result.artifact, str) else None
         return result.model_copy(update={"content": content, "artifact": resource_uri})
 
-    async def after_tools(self, state: TaskAgentGraphState) -> dict[str, object]:
+    async def after_tools(self, state: TaskAgentGraphState, writer: StreamWriter) -> dict[str, object]:
         tool_message = state["messages"][-1]
         assert isinstance(tool_message, ToolMessage)
         call = _latest_ai_call(state["messages"])
@@ -396,7 +415,7 @@ class _TaskRuntime:
                                 if call["name"] == read_image_artifact.name and tool_message.status == "success" else None)
         tool_message = await self._prepare_tool_result(tool_message, existing_artifact_id=existing_artifact_id)
         if tool_message.status == "success":
-            await self.event_recorder.record_tool_call("tool.succeeded", tool_message.tool_call_id, call["name"], state["cycle_count"])
+            writer(self._tool_event("tool.succeeded", call, state["cycle_count"]))
         messages = cast(list[BaseMessage], add_messages(cast(Messages, state["messages"]), [tool_message]))
         # Product image retention policy; add_messages replaces these messages
         # by ID without mutating earlier State snapshots or persisted events.
@@ -424,6 +443,10 @@ class _TaskRuntime:
         return {"completion": TaskAgentCompletion(status=status,
                     result=TaskRunResult(reason_code=reason_code, summary=summary or reason_code.value, memory=memory),
                     cycle_count=cycle_count), "route": "end"}
+
+
+def _cancelled_tool_reply(call: ToolCall) -> ToolMessage:
+    return ToolMessage(content="Cancelled before execution", tool_call_id=call["id"], name=call["name"], status="error")
 
 
 def _latest_ai_call(messages: Sequence[BaseMessage]) -> ToolCall:

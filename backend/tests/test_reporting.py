@@ -142,7 +142,12 @@ def test_html_preserves_plan_reentries_events_and_skill_hierarchy(tmp_path: Path
         exported = client.post(f"/api/runs/{run_id}/exports", json={"format": "html"})
         assert exported.status_code == 201, exported.text
         html = client.get(f"/api/artifacts/{exported.json()['id']}").text
-        assert "finish_task · 调用 1 次 · 成功 1 次" in html and "节点耗时" in html
+        assert "finish_task · 发起 1 次 · 成功 1 次" in html and "节点耗时" in html
+        for task_run in detail["task_runs"]:
+            task_seconds = (datetime.fromisoformat(task_run["finished_at"]) - datetime.fromisoformat(task_run["started_at"])).total_seconds()
+            for node_name, timing in statistics[task_run["id"]]["nodes"].items():
+                assert timing["task_percent"] == pytest.approx(100 * timing["elapsed_seconds"] / task_seconds)
+                assert f"{node_name} · {timing['elapsed_seconds']:.3f} 秒 · {timing['task_percent']:.1f}%" in html
         assert "总耗时" in html and "分:秒" in html
         assert "确认的任务计划" in html and "原始顺序" in html and "实际执行顺序" in html
         assert "第 2 次执行" in html and "条件未满足" in html

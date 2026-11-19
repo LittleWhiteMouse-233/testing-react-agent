@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from contextlib import aclosing
 from typing import Any, cast
 
 from langchain_core.messages import BaseMessage
@@ -21,8 +22,11 @@ from app.domain.errors import (
     ModelCallTimeout,
 )
 from app.domain.execution import (
+    ContextUpdatedEvent,
+    CycleStartedEvent,
     ExecutionErrorEvent,
     MessageAppendedEvent,
+    MessageValidationFailedEvent,
     ReasonCode,
     RunEvent,
     TaskAgentCompletion,
@@ -30,12 +34,13 @@ from app.domain.execution import (
     TaskRunStatus,
     TestRunVerdict,
     TestRunEnvironmentSnapshot,
+    ToolCallEvent,
     aggregate_test_run_verdict,
 )
 from app.domain.ids import TaskRunId
 from app.domain.planning import TestTask, TestTaskType
 from app.execution.task_agent import MESSAGE_PUBLISHING_NODES, TaskAgentContext, TaskAgentFactory, TaskAgentBuildParams
-from app.execution.task_agent_events import TaskAgentEventRecorder, TaskNodeTiming
+from app.execution.task_agent_events import TaskNodeTiming
 from app.persistence.run_repository import SqlAlchemyRunRepository
 from app.event_stream.projector import project_run_message
 
@@ -104,6 +109,7 @@ class RunExecutor:
                         remaining_after_active_task = test_tasks[task_index + 1 :]
                         build_params = TaskAgentBuildParams(
                             task_context=TaskAgentContext(
+                                test_run_id=test_run_id,
                                 task_run_id=active_task_run_id,
                                 task=test_task,
                                 memory_text=serialize_task_memories(task_memories),
@@ -114,7 +120,6 @@ class RunExecutor:
                             execution=environment.execution,
                         )
                         completion = await self._execute_task(
-                            test_run_id=test_run_id,
                             build_params=build_params,
                             run_cancellation_event=run_cancellation_event,
                             checkpointer=checkpointer,
@@ -194,43 +199,64 @@ class RunExecutor:
     async def _execute_task(
         self,
         *,
-        test_run_id: str,
         build_params: TaskAgentBuildParams,
         run_cancellation_event: asyncio.Event,
         checkpointer: BaseCheckpointSaver[Any],
     ) -> TaskAgentCompletion:
         task_context = build_params.task_context
-        recorder = TaskAgentEventRecorder(self.repository, test_run_id, task_context.task_run_id)
+        test_run_id = task_context.test_run_id
+        task_run_id = task_context.task_run_id
         graph, initial_state, runtime_context = await self.agent_factory.build(
             build_params=build_params,
             run_cancellation_event=run_cancellation_event,
             checkpointer=checkpointer,
-            event_recorder=recorder,
         )
         completion: TaskAgentCompletion | None = None
-        async for part in graph.astream(
+        task_event_prefix = f"{test_run_id}:{task_run_id}"
+        stream = graph.astream(
             initial_state,
             context=runtime_context,
-            config={"callbacks": [TaskNodeTiming(recorder)], "configurable": {"thread_id": f"task-run:{task_context.task_run_id}"},
+            config={"callbacks": [TaskNodeTiming(self.repository, test_run_id, task_run_id)],
+                    "configurable": {"thread_id": f"task-run:{task_run_id}"},
                     "recursion_limit": runtime_context.max_cycles * 8 + 20},
-            # Product events are awaited directly; public messages come from State updates.
-            stream_mode="updates",
+            stream_mode=["updates", "custom"],
             version="v2",
             durability="exit",
-        ):
-            node_updates = part["data"]
-            if not isinstance(node_updates, dict):
-                raise TypeError("LangGraph updates stream must contain a node mapping")
-            await self._publish_message_updates(test_run_id, task_context.task_run_id, node_updates)
-            for update in node_updates.values():
-                if not isinstance(update, dict):
+        )
+        # Await graph cleanup before run() handles a stream consumer failure.
+        # LangGraph implements astream as an async generator but annotates it as AsyncIterator.
+        async with aclosing(stream):  # type: ignore[reportArgumentType]
+            async for part in stream:
+                if part["type"] == "custom":
+                    await self._publish_custom_event(part["data"], task_event_prefix)
                     continue
-                value = update.get("completion")
-                if value is not None:
-                    completion = TaskAgentCompletion.model_validate(value)
+                node_updates = part["data"]
+                if not isinstance(node_updates, dict):
+                    raise TypeError("LangGraph updates stream must contain a node mapping")
+                await self._publish_message_updates(test_run_id, task_run_id, node_updates)
+                for update in node_updates.values():
+                    if not isinstance(update, dict):
+                        continue
+                    value = update.get("completion")
+                    if value is not None:
+                        completion = TaskAgentCompletion.model_validate(value)
         if completion is None:
             raise RuntimeError("TaskAgent ended without TaskAgentCompletion")
         return completion
+
+    async def _publish_custom_event(self, event: object, task_event_prefix: str) -> None:
+        if isinstance(event, CycleStartedEvent):
+            await self.repository.start_cycle(event, dedup_key=f"{task_event_prefix}:{event.cycle_count}:cycle.started")
+        elif isinstance(event, ToolCallEvent):
+            key = f"{task_event_prefix}:{event.cycle_count}:{event.type}:{event.call_id}"
+            await self.repository.append_event(event, dedup_key=key)
+        elif isinstance(event, MessageValidationFailedEvent):
+            key = f"{task_event_prefix}:validation:{event.message_id}:{event.attempt}"
+            await self.repository.append_event(event, dedup_key=key)
+        elif isinstance(event, ContextUpdatedEvent):
+            await self.repository.append_event(event)
+        else:
+            raise TypeError(f"Unexpected TaskAgent custom event: {type(event).__name__}")
 
     async def _publish_message_updates(
         self,

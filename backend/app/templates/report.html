@@ -42,7 +42,7 @@
   {% macro event_list(entries) -%}
     {% for entry in entries %}
       <article class="task" data-event-sequence="{{ entry.sequence }}">
-        <div class="meta"><span class="event-role role-{{ entry.event.message.role if entry.event.type == 'message.appended' else 'application' }}">{{ entry.event.message.role if entry.event.type == 'message.appended' else 'application' }}</span> · {{ entry.sequence }} · {{ entry.event.type }}</div>
+        <div class="meta"><span class="event-role role-{{ entry.event.message.role if entry.event.type == 'message.appended' else 'application' }}">{{ entry.event.message.role if entry.event.type == 'message.appended' else 'application' }}</span> · {{ entry.sequence }} · {{ entry.event.type }}{% if entry.event.type == 'tool.started' %} · 模型发起工具调用{% endif %}</div>
         {% if entry.event.type == 'message.appended' %}
           {% set message = entry.event.message %}
           <p class="meta">{{ message.message_id }}{% if message.role == 'tool' %} · {{ message.name }} · {{ message.status }} · {{ message.tool_call_id }}{% endif %}</p>
@@ -62,6 +62,8 @@
               {{ message_text(invalid_text, 'event-' ~ entry.sequence ~ '-invalid-' ~ loop.index0) }}
             {% endfor %}
           {% endif %}
+        {% elif entry.event.type in ('tool.started', 'tool.succeeded') %}
+          <p>{{ entry.event.tool_name }} · {{ entry.event.call_id }}</p>
         {% elif entry.event.type == 'execution.error' %}
           {{ message_text(entry.event.reason_code ~ ' · ' ~ entry.event.message, 'event-' ~ entry.sequence ~ '-error') }}
         {% elif entry.event.type == 'message.validation_failed' %}
@@ -138,7 +140,7 @@
         <strong>成功标准：</strong><ul>{% for criterion in task.definition.success_criteria %}<li>{{ criterion }}</li>{% endfor %}</ul>
         {% set statistics = report.task_statistics.get(task_run.id) %}
         {% if statistics %}
-          <h4>工具调用</h4>{% for name, count in statistics.tools.items() %}<p>{{ name }} · 调用 {{ count.calls }} 次 · 成功 {{ count.successes }} 次</p>{% endfor %}
+          <h4>工具调用</h4>{% for name, count in statistics.tools.items() %}<p>{{ name }} · 发起 {{ count.calls }} 次 · 成功 {{ count.successes }} 次</p>{% endfor %}
           <h4>节点耗时</h4>{% for name, timing in statistics.nodes.items() %}<p>{{ name }} · {{ '%.3f' | format(timing.elapsed_seconds) }} 秒 · {{ ('%.1f%%' | format(timing.task_percent)) if timing.task_percent is not none else '—' }}</p>{% endfor %}
         {% endif %}
         <p><strong>结论：</strong>{{ task_status(task, task_run) }}</p>

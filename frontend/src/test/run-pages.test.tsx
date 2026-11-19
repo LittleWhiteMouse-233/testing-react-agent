@@ -12,7 +12,7 @@ import HistoryPage from "../pages/HistoryPage";
 import CasesPage from "../pages/CasesPage";
 import { useRunReport } from "../api/useRunReport";
 import { PlanningProgressProvider } from "../api/usePlanningProgress";
-import { EventTimeline, RunResources } from "../runPresentation";
+import { EventTimeline, RunResources, taskMonitor } from "../runPresentation";
 import { caseId, imageId, runEvent, runId, runReport, taskRunId } from "./run-fixtures";
 
 vi.mock("../api/client", async (importOriginal) => {
@@ -126,13 +126,14 @@ it("updates context, active resources and tool counts from the task event stream
     active_resources: { local: ["file:///guide"] } } });
   expect(screen.getByRole("meter")).toHaveAttribute("aria-valuenow", "70");
   expect(screen.getByText("激活")).toBeInTheDocument();
-  emit(3, { ...ids, type: "tool.started", tool_name: "fixture_inspect", call_id: "call" });
-  emit(4, { ...ids, type: "tool.succeeded", tool_name: "fixture_inspect", call_id: "call" });
-  expect(screen.getByText(/调用 1 次 · 成功 1 次/)).toBeInTheDocument();
+  emit(3, { ...ids, type: "tool.started", cycle_count: 1, tool_name: "fixture_inspect", call_id: "call" });
+  expect(screen.getByText(/发起 1 次 · 成功 0 次/)).toBeInTheDocument();
+  emit(4, { ...ids, type: "tool.succeeded", cycle_count: 1, tool_name: "fixture_inspect", call_id: "call" });
+  expect(screen.getByText(/发起 1 次 · 成功 1 次/)).toBeInTheDocument();
   emit(5, { ...ids, type: "task.started", task_run_id: imageId });
   expect(screen.getByText("等待首次模型请求")).toBeInTheDocument();
   expect(screen.queryByText("激活")).toBeNull();
-  expect(screen.getByText(/调用 0 次 · 成功 0 次/)).toBeInTheDocument();
+  expect(screen.getByText(/发起 0 次 · 成功 0 次/)).toBeInTheDocument();
 });
 
 function Location() { const location = useLocation(); return <output data-testid="location">{location.pathname}{location.search}</output>; }
@@ -143,7 +144,7 @@ it("shows task-specific tool counts and node durations in the finished report", 
     nodes: { model: { elapsed_seconds: 9.125, task_percent: 25.347 } }
   } };
   renderPage(`/runs/${runId}/report`);
-  expect(await screen.findByText("fixture_inspect · 调用 3 次 · 成功 2 次")).toBeInTheDocument();
+  expect(await screen.findByText("fixture_inspect · 发起 3 次 · 成功 2 次")).toBeInTheDocument();
   expect(screen.getByText("model · 9.125 秒 · 25.3%")).toBeInTheDocument();
 });
 
@@ -408,7 +409,7 @@ it("shows short message text in full without an expansion control", () => {
 });
 
 it("keeps tool call text and identifiers together in the event body", () => {
-  const stored = runEvent(7, { type: "tool.started", test_run_id: runId, task_run_id: taskRunId, tool_name: "finish_task", call_id: "finish-blocked" });
+  const stored = runEvent(7, { type: "tool.started", test_run_id: runId, task_run_id: taskRunId, cycle_count: 1, tool_name: "finish_task", call_id: "finish-blocked" });
   const page = render(<EventTimeline events={[stored]} />);
   const row = page.container.querySelector(".event-row")!;
   expect(row.children).toHaveLength(3);
@@ -584,8 +585,9 @@ it("fills missed events on reconnect even when SSE has delivered a newer sequenc
     wrapper: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   });
   await waitFor(() => expect(sources).toHaveLength(1));
-  const missed = runEvent(2, { type: "cycle.started", test_run_id: runId, task_run_id: taskRunId, cycle_count: 3 });
-  const received = runEvent(3, { type: "cycle.started", test_run_id: runId, task_run_id: taskRunId, cycle_count: 4 });
+  const call = { test_run_id: runId, task_run_id: taskRunId, cycle_count: 1, tool_name: "fixture_inspect", call_id: "call" };
+  const missed = runEvent(2, { type: "tool.started", ...call });
+  const received = runEvent(3, { type: "tool.succeeded", ...call });
   report.events.push(missed, received);
   act(() => {
     sources[0]!.onerror?.(new Event("error"));
@@ -595,6 +597,7 @@ it("fills missed events on reconnect even when SSE has delivered a newer sequenc
   act(() => sources[0]!.onopen?.(new Event("open")));
   await waitFor(() => expect(result.current.data?.events.map((stored) => stored.sequence)).toEqual([1, 2, 3]));
   expect(result.current.events.map((stored) => stored.sequence)).toEqual([1, 2, 3]);
+  expect(taskMonitor(result.current.events, taskRunId).tools.get("fixture_inspect")).toEqual({ calls: 1, successes: 1 });
   expect(requests.map((url) => url.searchParams.get("events_after"))).toEqual(["0", "1"]);
 });
 

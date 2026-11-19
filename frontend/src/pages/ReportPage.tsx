@@ -73,7 +73,7 @@ export function RunReportContent({ runId }: { runId: string }) {
           {taskRun.result && <div className="result-note"><p>{taskRun.result.summary}</p><small>{taskRun.result.reason_code} · {taskRun.cycle_count} / {taskMaxCycles(task.definition.type, detail.environment)} 轮</small></div>}
           {taskRun.result?.memory && <div className="task-memory"><strong>跨任务记忆</strong><p>{taskRun.result.memory}</p></div>}
           {statistics && <section><h4>工具调用</h4>
-            {Object.entries(statistics.tools).map(([name, count]) => <p key={name}>{name} · 调用 {count.calls} 次 · 成功 {count.successes} 次</p>)}
+            {Object.entries(statistics.tools).map(([name, count]) => <p key={name}>{name} · 发起 {count.calls} 次 · 成功 {count.successes} 次</p>)}
             <h4>节点耗时</h4>{Object.entries(statistics.nodes).map(([name, timing]) => <p key={name}>{name} · {timing.elapsed_seconds.toFixed(3)} 秒 · {timing.task_percent == null ? "—" : timing.task_percent.toFixed(1) + "%"}</p>)}
           </section>}
           {events.length ? <EventTimeline events={events} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有任务事件" />}

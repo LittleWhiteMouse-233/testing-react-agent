@@ -448,7 +448,10 @@ export interface components {
              */
             user_messages: number;
         };
-        /** ContextUpdatedEvent */
+        /**
+         * ContextUpdatedEvent
+         * @description Input context selected for the next model invocation.
+         */
         ContextUpdatedEvent: {
             context: components["schemas"]["ModelContextSnapshot"];
             /** Task Run Id */
@@ -803,7 +806,10 @@ export interface components {
              */
             type: "message.validation_failed";
         };
-        /** ModelContextSnapshot */
+        /**
+         * ModelContextSnapshot
+         * @description Input budget, estimated token use and active resources for one model request.
+         */
         ModelContextSnapshot: {
             /** Active Resources */
             active_resources: {
@@ -813,7 +819,10 @@ export interface components {
             input_budget_tokens: number;
             tokens: components["schemas"]["ContextTokens"];
         };
-        /** NodeExecutionEvent */
+        /**
+         * NodeExecutionEvent
+         * @description Wall-clock interval of one direct task graph node attempt.
+         */
         NodeExecutionEvent: {
             /**
              * Finished At
@@ -837,7 +846,10 @@ export interface components {
              */
             type: "node.execution";
         };
-        /** NodeTiming */
+        /**
+         * NodeTiming
+         * @description Cumulative attempt time for one node and its share of elapsed task time.
+         */
         NodeTiming: {
             /** Elapsed Seconds */
             elapsed_seconds: number;
@@ -1471,7 +1483,10 @@ export interface components {
             /** Summary */
             summary: string;
         };
-        /** TaskRunStatistics */
+        /**
+         * TaskRunStatistics
+         * @description Observed tool counts and node timings for one actual task execution.
+         */
         TaskRunStatistics: {
             /** Nodes */
             nodes: {
@@ -1870,11 +1885,13 @@ export interface components {
         };
         /**
          * ToolCallEvent
-         * @description 发起、撤回或成功返回一次工具调用。
+         * @description 模型发起的有效工具请求，或已成功处理的工具回执。
          */
         ToolCallEvent: {
             /** Call Id */
             call_id: string;
+            /** Cycle Count */
+            cycle_count: number;
             /** Task Run Id */
             task_run_id: string | null;
             /** Test Run Id */
@@ -1885,7 +1902,7 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            type: "tool.started" | "tool.succeeded" | "tool.withdrawn";
+            type: "tool.started" | "tool.succeeded";
         };
         /**
          * ToolCatalogSnapshot

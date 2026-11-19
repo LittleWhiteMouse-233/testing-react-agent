@@ -306,6 +306,7 @@
       },
       "ContextUpdatedEvent": {
         "additionalProperties": false,
+        "description": "Input context selected for the next model invocation.",
         "properties": {
           "context": {
             "$ref": "#/components/schemas/ModelContextSnapshot"
@@ -1002,6 +1003,7 @@
       },
       "ModelContextSnapshot": {
         "additionalProperties": false,
+        "description": "Input budget, estimated token use and active resources for one model request.",
         "properties": {
           "active_resources": {
             "additionalProperties": {
@@ -1032,6 +1034,7 @@
       },
       "NodeExecutionEvent": {
         "additionalProperties": false,
+        "description": "Wall-clock interval of one direct task graph node attempt.",
         "properties": {
           "finished_at": {
             "format": "date-time",
@@ -1082,6 +1085,7 @@
         "type": "object"
       },
       "NodeTiming": {
+        "description": "Cumulative attempt time for one node and its share of elapsed task time.",
         "properties": {
           "elapsed_seconds": {
             "title": "Elapsed Seconds",
@@ -2432,8 +2436,7 @@
                 "task.started": "#/components/schemas/TaskLifecycleEvent",
                 "tasks.skipped": "#/components/schemas/TasksSkippedEvent",
                 "tool.started": "#/components/schemas/ToolCallEvent",
-                "tool.succeeded": "#/components/schemas/ToolCallEvent",
-                "tool.withdrawn": "#/components/schemas/ToolCallEvent"
+                "tool.succeeded": "#/components/schemas/ToolCallEvent"
               },
               "propertyName": "type"
             },
@@ -2647,6 +2650,7 @@
         "type": "object"
       },
       "TaskRunStatistics": {
+        "description": "Observed tool counts and node timings for one actual task execution.",
         "properties": {
           "nodes": {
             "additionalProperties": {
@@ -3694,13 +3698,18 @@
       },
       "ToolCallEvent": {
         "additionalProperties": false,
-        "description": "发起、撤回或成功返回一次工具调用。",
+        "description": "模型发起的有效工具请求，或已成功处理的工具回执。",
         "properties": {
           "call_id": {
             "maxLength": 200,
             "minLength": 1,
             "title": "Call Id",
             "type": "string"
+          },
+          "cycle_count": {
+            "minimum": 1.0,
+            "title": "Cycle Count",
+            "type": "integer"
           },
           "task_run_id": {
             "anyOf": [
@@ -3726,8 +3735,7 @@
           "type": {
             "enum": [
               "tool.started",
-              "tool.succeeded",
-              "tool.withdrawn"
+              "tool.succeeded"
             ],
             "title": "Type",
             "type": "string"
@@ -3737,6 +3745,7 @@
           "test_run_id",
           "task_run_id",
           "type",
+          "cycle_count",
           "tool_name",
           "call_id"
         ],

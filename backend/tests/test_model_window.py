@@ -426,7 +426,7 @@ def test_context_usage_partitions_selected_input():
     messages = [SystemMessage("system"), HumanMessage("task"), *observation_messages(
         "inspect", image_message("image", encoded_size=20).content,
     )]
-    snapshot = window.describe_request(window.select_messages(messages))
+    snapshot = window.build_context_snapshot(window.select_messages(messages))
     assert snapshot.input_budget_tokens == 6656
     assert sum(snapshot.tokens.model_dump().values()) == window.estimate_request_tokens(messages)
     assert snapshot.tokens.tool_return_nontext == 1024
@@ -450,8 +450,8 @@ def test_resource_activation_requires_one_complete_selected_read():
         {"type": "text", "text": "image expired", "extras": {"artifact_id": "saved"}},
     ])
     second = read("second", image_message("image", encoded_size=20).content)
-    assert window.describe_request(first).active_resources == {}
-    active = window.describe_request([*first, *second])
+    assert window.build_context_snapshot(first).active_resources == {}
+    active = window.build_context_snapshot([*first, *second])
     assert active.active_resources == {"local": [uri]}
     assert active.tokens.assistant_messages and active.tokens.tool_calls
-    assert window.describe_request([]).active_resources == {}
+    assert window.build_context_snapshot([]).active_resources == {}

@@ -68,7 +68,7 @@ export function taskCycleCount(taskRun: TaskRun, events: StoredRunEvent[]) {
 const eventLabels: Record<StoredRunEvent["event"]["type"], string> = {
   "message.appended": "消息", "message.validation_failed": "消息校验失败", "run.started": "运行开始",
   "run.finished": "运行结束", "run.cancelled": "运行取消", "task.started": "任务开始", "task.finished": "任务结束",
-  "cycle.started": "决策轮开始", "tool.started": "工具开始", "tool.succeeded": "工具成功", "tool.withdrawn": "工具发起已撤回",
+  "cycle.started": "决策轮开始", "tool.started": "模型发起工具调用", "tool.succeeded": "工具成功",
   "context.updated": "上下文更新", "node.execution": "节点执行", "execution.error": "执行错误", "tasks.skipped": "任务跳过"
 };
 
@@ -138,7 +138,6 @@ export function RunEventContent({ stored, collapseImages = false }: { stored: St
     case "context.updated": return <>输入约 {Object.values(event.context.tokens).reduce((sum, value) => sum + value, 0)} token</>;
     case "node.execution": return <>{event.node_name}</>;
     case "tool.started":
-    case "tool.withdrawn":
     case "tool.succeeded": return <>{event.tool_name} <span className="mono">{event.call_id}</span></>;
     case "execution.error": return <div className="error-text"><MessageText text={`${event.reason_code} · ${event.message}`} /></div>;
     case "message.validation_failed": return <div className="error-text"><MessageText text={`${event.message_id} · 尝试 ${event.attempt} · ${event.reason}`} /></div>;
@@ -265,10 +264,9 @@ export function taskMonitor(events: StoredRunEvent[], lastStartedId?: string) {
   for (const { event } of events) {
     if (event.task_run_id !== taskId) continue;
     if (event.type === "context.updated") context = event.context;
-    if (event.type === "tool.started" || event.type === "tool.succeeded" || event.type === "tool.withdrawn") {
+    if (event.type === "tool.started" || event.type === "tool.succeeded") {
       const count = tools.get(event.tool_name) ?? { calls: 0, successes: 0 };
       if (event.type === "tool.started") count.calls++;
-      else if (event.type === "tool.withdrawn") count.calls--;
       else count.successes++;
       tools.set(event.tool_name, count);
     }
@@ -283,7 +281,7 @@ export function RunResources({ report, monitor }: { report: TestRunReport; monit
     catalog.columns.some((column) => column.id === tool.source_id && column.selected));
   return <div className="resource-grid">
     <section className="resource-card"><h3>工具目录 <span>{availableTools.length} 个可用 / {catalog.tool_catalog.tools.length} 个已发现</span></h3>
-      <div className="resource-tools">{catalog.tool_catalog.tools.map((tool) => <details key={tool.name}><summary>{tool.name}<small>{monitor && <span>调用 {monitor.tools.get(tool.name)?.calls ?? 0} 次 · 成功 {monitor.tools.get(tool.name)?.successes ?? 0} 次 · </span>}{tool.source_id} · {availableTools.includes(tool) ? "可用" : "未启用"}</small></summary>
+      <div className="resource-tools">{catalog.tool_catalog.tools.map((tool) => <details key={tool.name}><summary>{tool.name}<small>{monitor && <span>发起 {monitor.tools.get(tool.name)?.calls ?? 0} 次 · 成功 {monitor.tools.get(tool.name)?.successes ?? 0} 次 · </span>}{tool.source_id} · {availableTools.includes(tool) ? "可用" : "未启用"}</small></summary>
         <p>{tool.description}</p><pre>{JSON.stringify(tool.input_schema, null, 2)}</pre>
       </details>)}</div>
     </section>

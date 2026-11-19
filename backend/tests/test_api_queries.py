@@ -217,7 +217,7 @@ def test_run_report_event_cursor_filters_sql_and_preserves_report_facts(tmp_path
         report = client.get(endpoint).json()
         assert len(report["events"]) > 2
         assert client.get(endpoint, params={"events_after": 0}).json() == report
-        cursor_sequence = report["events"][1]["sequence"]
+        cursor_sequence = next(entry["sequence"] for entry in report["events"] if entry["event"]["type"] == "tool.started")
         container = cast(Container, cast(FastAPI, client.app).state.container)
         event_queries: list[tuple[str, object]] = []
 
@@ -227,15 +227,21 @@ def test_run_report_event_cursor_filters_sql_and_preserves_report_facts(tmp_path
 
         event.listen(container.engine.sync_engine, "before_cursor_execute", observe_sql)
         try:
+            assert client.get(endpoint).json() == report
+            assert len(event_queries) == 1
+            event_queries.clear()
             increment = client.get(endpoint, params={"events_after": cursor_sequence}).json()
         finally:
             event.remove(container.engine.sync_engine, "before_cursor_execute", observe_sql)
-        assert increment == {**report, "events": report["events"][2:]}
-        assert len(event_queries) == 1
+        assert increment == {**report, "events": [entry for entry in report["events"] if entry["sequence"] > cursor_sequence]}
+        assert len(event_queries) == 2
         statement, parameters = event_queries[0]
         assert "run_events.sequence > ?" in statement
         assert "ORDER BY run_events.sequence" in statement
-        assert parameters == (run_id, cursor_sequence, "node.execution", "tool.started", "tool.succeeded", "tool.withdrawn")
+        assert parameters == (run_id, cursor_sequence)
+        history_sql, history_parameters = event_queries[1]
+        assert "run_events.sequence <= ?" in history_sql and "run_events.type IN" in history_sql
+        assert history_parameters == (run_id, cursor_sequence, "node.execution", "tool.started", "tool.succeeded")
         last_sequence = report["events"][-1]["sequence"]
         for cursor_sequence in (last_sequence, last_sequence + 100):
             assert client.get(endpoint, params={"events_after": cursor_sequence}).json() == {
@@ -267,6 +273,19 @@ async def test_response_keeps_one_snapshot_during_committed_run_changes(
         await repository.start_run(run.id)
         initial_report = await api_repository.read_test_run_report(sessions, run.id)
         events_after = initial_report.events[-1].sequence
+        event_queries = []
+
+        def count_event_reads(connection, cursor, statement, parameters, context, executemany):
+            if "FROM run_events" in statement:
+                event_queries.append(statement)
+
+        event.listen(engine.sync_engine, "before_cursor_execute", count_event_reads)
+        try:
+            active = await api_repository.read_test_run_report(sessions, run.id, events_after=events_after)
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", count_event_reads)
+        assert active.events == [] and active.task_statistics == {}
+        assert len(event_queries) == 1
     changed = False
 
     async def commit_changes() -> None:

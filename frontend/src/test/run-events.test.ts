@@ -43,6 +43,7 @@ const validEventBranches = [
     type: "tool.started",
     test_run_id: RUN_ID,
     task_run_id: TASK_RUN_ID,
+    cycle_count: 1,
     tool_name: "inspect", call_id: "tool-call-1"
   },
   {

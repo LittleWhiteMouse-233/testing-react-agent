@@ -21,9 +21,8 @@ from langgraph.graph import END, START, StateGraph
 from langsmith import tracing_context
 
 from app.artifacts import ArtifactStore
-from app.domain.resources import ResourceCatalogSnapshot
 from app.domain.planning import TestTask as PlanTask, TestTaskDefinition as TaskDefinition, TestTaskType as TaskType
-from app.domain.execution import Artifact, ArtifactType, ReasonCode, TaskAgentCompletion, TaskRunResult, TaskRunStatus
+from app.domain.execution import CycleStartedEvent, MessageValidationFailedEvent, ToolCallEvent, Artifact, ArtifactType, ReasonCode, TaskAgentCompletion, TaskRunResult, TaskRunStatus
 from app.domain.errors import ToolCallError, describe_exception
 from app.llm import ModelContextWindow, ModelImageWindow
 from app.execution.task_agent import (
@@ -32,7 +31,6 @@ from app.execution.task_agent import (
 )
 from app.execution.executor import RunExecutor
 from app.persistence.run_repository import SqlAlchemyRunRepository
-from app.execution.task_agent_events import TaskAgentEventRecorder
 from app.execution import task_agent
 from app.event_stream.projector import project_run_message
 from app.llm import ScriptedChatModelClient
@@ -47,6 +45,7 @@ def task_runtime() -> _TaskRuntime:
     prompt = PromptCatalog().prompt_for_task_type(TaskType.ACT)
     model_tools = (finish_task,)
     task_context = TaskAgentContext(
+        test_run_id=str(uuid4()),
         task_run_id=str(uuid4()),
         task=PlanTask(test_task_id=str(uuid4()), definition=TaskDefinition(
             task_no=1,
@@ -66,7 +65,6 @@ def task_runtime() -> _TaskRuntime:
         model_context_window=ModelContextWindow(model_profile=model_client.profile_snapshot, tools=model_tools),
         model_image_window=ModelImageWindow(history_rounds=1),
         prompt_definition=prompt,
-        event_recorder=create_autospec(TaskAgentEventRecorder, instance=True),
     )
 
 
@@ -109,7 +107,7 @@ async def test_message_publication_contract_is_checked_during_build(
                 task_context=task_runtime.runtime_context.task_context, tools=TASK_AGENT_TOOLS,
                 capability_catalog=CapabilityCatalog[CapabilityColumnSnapshot](tool_catalog=ToolCatalogSnapshot(tools=[]), resource_catalog=ResourceCatalogSnapshot(), columns=[]), model_profile=model.profile_snapshot, execution=build_execution_settings(),
             ),
-            run_cancellation_event=asyncio.Event(), checkpointer=None, event_recorder=task_runtime.event_recorder,
+            run_cancellation_event=asyncio.Event(), checkpointer=None,
         )
     assert model.invocations == []
 
@@ -158,7 +156,6 @@ async def test_executor_captures_completion_independently_and_waits_for_stream_e
     executor = RunExecutor(repository=repository, agent_factory=factory, checkpoint_path="unused")
     with tracing_context(enabled=False):
         actual = await executor._execute_task(
-            test_run_id=str(uuid4()),
             build_params=TaskAgentBuildParams(
                 task_context=task_runtime.runtime_context.task_context, tools=TASK_AGENT_TOOLS,
                 capability_catalog=CapabilityCatalog[CapabilityColumnSnapshot](tool_catalog=ToolCatalogSnapshot(tools=[]), resource_catalog=ResourceCatalogSnapshot(), columns=[]), model_profile=task_runtime.model_client.profile_snapshot, execution=build_execution_settings(),
@@ -179,9 +176,10 @@ async def test_finish_tool_rejects_invalid_status_or_empty_summary(task_runtime:
     state["messages"] = [AIMessage(id="finish-request", content="Finish based on observations", tool_calls=[{
         "name": "finish_task", "args": arguments, "id": "finish", "type": "tool_call",
     }])]
-    update = await task_runtime.validate_message(state)
+    events = []
+    update = await task_runtime.validate_message(state, events.append)
     assert update["route"] == "cycle_guard"
-    task_runtime.event_recorder.record_message_validation_failed.assert_awaited_once()  # type: ignore[attr-defined]
+    assert len(events) == 1 and isinstance(events[0], MessageValidationFailedEvent)
 
 
 @pytest.mark.asyncio
@@ -196,18 +194,8 @@ async def test_cancellation_at_model_or_event_boundary_prevents_further_calls(
         calls += 1
         return "observation"
 
-    async def request_cancel(*arguments: object) -> None:
-        task_runtime.run_cancellation_event.set()
-
-    event_recorder = create_autospec(TaskAgentEventRecorder, instance=True)
     if boundary == "before_cycle":
         task_runtime.run_cancellation_event.set()
-    elif boundary == "cycle_start":
-        event_recorder.record_cycle_started.side_effect = request_cancel
-    elif boundary == "invalid_response":
-        event_recorder.record_message_validation_failed.side_effect = request_cancel
-    else:
-        event_recorder.record_tool_call.side_effect = request_cancel
 
     model = ScriptedChatModelClient(build_model_profile(), turns=[
         AIMessage(content="invalid") if boundary == "invalid_response" else tool_turn(1, "observe"),
@@ -225,15 +213,27 @@ async def test_cancellation_at_model_or_event_boundary_prevents_further_calls(
             model_profile=model.profile_snapshot, execution=build_execution_settings(),
         ),
         run_cancellation_event=task_runtime.run_cancellation_event, checkpointer=None,
-        event_recorder=event_recorder,
     )
     with tracing_context(enabled=False):
-        final_state = await graph.ainvoke(initial_state, context=runtime_context)
+        tool_phases = []
+        final_state = None
+        async for part in graph.astream(initial_state, context=runtime_context, stream_mode=["custom", "values"], version="v2"):
+            if part["type"] == "values":
+                final_state = part["data"]
+                continue
+            event = part["data"]
+            if isinstance(event, ToolCallEvent):
+                tool_phases.append(event.type)
+            if ((boundary == "cycle_start" and isinstance(event, CycleStartedEvent))
+                    or (boundary == "invalid_response" and isinstance(event, MessageValidationFailedEvent))
+                    or (boundary == "tool_start" and isinstance(event, ToolCallEvent))):
+                task_runtime.run_cancellation_event.set()
+    assert final_state is not None and final_state["completion"] is not None
     assert final_state["completion"].status.value == "cancelled"
     assert final_state["completion"].result.reason_code.value == "user_cancelled"
     assert calls == 0
     if boundary == "tool_start":
-        assert [call.args[0] for call in event_recorder.record_tool_call.await_args_list] == ["tool.started", "tool.withdrawn"]
+        assert tool_phases == ["tool.started"]
     assert final_state["cycle_count"] == (0 if boundary == "before_cycle" else 1)
     assert final_state["completion"].cycle_count == final_state["cycle_count"]
     assert len(model.invocations) == (0 if boundary in {"before_cycle", "cycle_start"} else 1)
@@ -273,7 +273,6 @@ async def test_native_timeout_returns_to_model_without_waiting_for_late_result(
             model_profile=model.profile_snapshot, execution=build_execution_settings(tool_call_timeout_seconds=0.05, image_history_rounds=1),
         ),
         run_cancellation_event=task_runtime.run_cancellation_event, checkpointer=None,
-        event_recorder=task_runtime.event_recorder,
     )
     try:
         with tracing_context(enabled=False):
@@ -384,5 +383,5 @@ async def test_invalid_structured_result_is_terminal_and_keeps_message_identity(
     if cancelled:
         task_runtime.run_cancellation_event.set()
     with pytest.raises(ToolCallError, match="processing failed"):
-        await task_runtime.after_tools(state)
+        await task_runtime.after_tools(state, [].append)
     assert original.status == "success" and original.artifact is not None

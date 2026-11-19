@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from functools import partial
-
-from app.api.repository import read_test_run_report
 from app.artifacts import ArtifactStore
 from app.config import Settings, SettingsService
 from app.domain.activity import AgentActivity
@@ -62,4 +59,4 @@ class Container:
             prompt_catalog=prompt_catalog,
             capabilities=self.capabilities,
         )
-        self.reports = ReportService(partial(read_test_run_report, self.sessions), self.artifacts)
+        self.reports = ReportService(self.artifacts)

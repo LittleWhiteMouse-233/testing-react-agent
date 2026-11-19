@@ -16,11 +16,12 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphBubbleUp, GraphInterrupt
-from langgraph.types import interrupt
+from langgraph.types import StreamWriter, interrupt
 
 from app.container import Container
 from app.artifacts import ArtifactStore
@@ -643,6 +644,24 @@ def test_model_can_correct_tool_parameters(tmp_path: Path, failure_kind: str) ->
     )
 
 
+def assert_cancelled_tool_statistics(client: TestClient, report: dict, calls: int, successes: int) -> None:
+    task_id = report["detail"]["task_runs"][0]["id"]
+    expected_tools = {"fixture_inspect": {"calls": calls, "successes": successes}} if calls else {}
+    assert report["task_statistics"][task_id]["tools"] == expected_tools
+    run_id = report["detail"]["run"]["id"]
+    for export_format in ("json", "html"):
+        exported = client.post(f"/api/runs/{run_id}/exports", json={"format": export_format})
+        assert exported.status_code == 201
+        downloaded = client.get(f"/api/artifacts/{exported.json()['id']}")
+        assert downloaded.status_code == 200
+        if export_format == "json":
+            assert downloaded.json()["task_statistics"] == report["task_statistics"]
+        elif calls:
+            assert f"fixture_inspect · 发起 {calls} 次 · 成功 {successes} 次" in downloaded.text
+        else:
+            assert "fixture_inspect · 发起 " not in downloaded.text
+
+
 @pytest.mark.parametrize("delay", [0.5, 10])
 def test_cancel_waits_for_call_or_timeout_and_never_executes_next_call(tmp_path: Path, delay: float) -> None:
     with build_client(tmp_path, calls=[replay_call(delay=delay), replay_call()],
@@ -662,6 +681,7 @@ def test_cancel_waits_for_call_or_timeout_and_never_executes_next_call(tmp_path:
         assert detail["task_runs"][0]["cycle_count"] == 1
         report = client.get(f"/api/runs/{run_id}").json()
         assert len(report["artifacts"]) == (1 if delay < 5 else 0)
+        assert_cancelled_tool_statistics(client, report, calls=1, successes=int(delay < 5))
         assert not any(entry["event"]["type"] == "execution.error" for entry in report["events"])
         container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
         model = cast(ScriptedChatModelClient, execution_model_client(container))
@@ -786,11 +806,11 @@ def test_image_retention_reaches_state_and_terminal_checkpoint(
     original_after_tools = _TaskRuntime.after_tools
     observed_states: list[list[Any]] = []
 
-    async def observe_after_tools(runtime: _TaskRuntime, state: TaskAgentGraphState) -> dict[str, object]:
+    async def observe_after_tools(runtime: _TaskRuntime, state: TaskAgentGraphState, writer: StreamWriter) -> dict[str, object]:
         observed_states.append(list(state["messages"]))
         if exit_kind == "cancel" and state["cycle_count"] == 2:
             runtime.run_cancellation_event.set()
-        return await original_after_tools(runtime, state)
+        return await original_after_tools(runtime, state, writer)
 
     monkeypatch.setattr(_TaskRuntime, "after_tools", observe_after_tools)
     with build_client(tmp_path, calls=[replay_call(), replay_call(error=exit_kind == "tool_error")],
@@ -831,8 +851,17 @@ def test_tool_counts_distinguish_calls_reusing_provider_id_across_rounds(tmp_pat
                       turns=[tool_turn(1), tool_turn(1), finish_turn(3)]) as client:
         run_id = start_run(client, create_plan(client))
         task = wait_for_run(client, run_id)["task_runs"][0]
-        counts = client.get(f"/api/runs/{run_id}").json()["task_statistics"][task["id"]]["tools"]
+        report = client.get(f"/api/runs/{run_id}").json()
+        counts = report["task_statistics"][task["id"]]["tools"]
         assert counts["fixture_inspect"] == {"calls": 2, "successes": 1}
+        tool_events = [entry["event"] for entry in report["events"] if entry["event"]["type"].startswith("tool.")]
+        assert [(event["type"], event["call_id"], event["cycle_count"]) for event in tool_events] == [
+            ("tool.started", "call-1", 1),
+            ("tool.succeeded", "call-1", 1),
+            ("tool.started", "call-1", 2),
+            ("tool.started", "finish-3", 3),
+            ("tool.succeeded", "finish-3", 3),
+        ]
 
 
 def test_model_transport_retry_does_not_consume_a_decision_round(tmp_path: Path) -> None:
@@ -933,6 +962,73 @@ def test_task_finish_publication_failure_preserves_the_committed_result(
         assert sum(entry["event"]["type"] == "task.finished" for entry in events) == 1
         errors = [entry["event"] for entry in events if entry["event"]["type"] == "execution.error"]
         assert len(errors) == 1 and "Task completion publication failed" in errors[0]["message"]
+
+
+@pytest.mark.parametrize("before_announcement", [True, False])
+def test_cancel_around_tool_announcement_preserves_request_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before_announcement: bool,
+) -> None:
+    with build_client(tmp_path, turns=[tool_turn(1), finish_turn(2)]) as client:
+        plan = create_plan(client)
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        append_event = container.repository.append_event
+        append_events = container.repository.append_events
+
+        async def cancel_on_announcement(event, **kwargs):
+            if event.type == "tool.started" and not before_announcement:
+                await container.run_service.cancel(event.test_run_id)
+                await asyncio.sleep(0)
+                assert not any(entry["phase"] == "started" for entry in read_records(tmp_path))
+            return await append_event(event, **kwargs)
+
+        async def cancel_on_response(events):
+            for event, _ in events:
+                if before_announcement and event.type == "message.appended" and event.message.role == "ai":
+                    await container.run_service.cancel(event.test_run_id)
+            return await append_events(events)
+
+        monkeypatch.setattr(container.repository, "append_event", cancel_on_announcement)
+        monkeypatch.setattr(container.repository, "append_events", cancel_on_response)
+        run_id = start_run(client, plan)
+        detail = wait_for_run(client, run_id)
+        assert detail["run"]["verdict"] == "CANCELLED"
+        report = client.get(f"/api/runs/{run_id}").json()
+        assert_cancelled_tool_statistics(client, report, calls=int(not before_announcement), successes=0)
+        phases = [entry["event"]["type"] for entry in report["events"] if entry["event"]["type"].startswith("tool.")]
+        assert phases == ([] if before_announcement else ["tool.started"])
+        receipts = [entry["event"]["message"] for entry in report["events"]
+                    if entry["event"]["type"] == "message.appended" and entry["event"]["message"]["role"] == "tool"]
+        assert [(receipt["tool_call_id"], receipt["status"]) for receipt in receipts] == [("call-1", "error")]
+        assert not any(entry["phase"] == "started" for entry in read_records(tmp_path))
+
+
+def test_context_write_can_overlap_model_request_and_failure_prevents_tool_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_requested = asyncio.Event()
+
+    def observe_request(messages: list[BaseMessage]) -> AIMessage:
+        model_requested.set()
+        return tool_turn(1)
+
+    with build_client(tmp_path, turns=[observe_request]) as client:
+        plan = create_plan(client)
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
+        append_event = container.repository.append_event
+
+        async def fail_context(event, **kwargs):
+            if event.type == "context.updated":
+                await asyncio.wait_for(model_requested.wait(), 3)
+                raise OSError("context storage unavailable")
+            return await append_event(event, **kwargs)
+
+        monkeypatch.setattr(container.repository, "append_event", fail_context)
+        run_id = start_run(client, plan)
+        detail = wait_for_run(client, run_id)
+        assert model_requested.is_set()
+        assert detail["run"]["verdict"] == "BLOCKED"
+        assert "context storage unavailable" in detail["task_runs"][0]["result"]["summary"]
+        assert not any(entry["phase"] == "started" for entry in read_records(tmp_path))
 
 
 def test_cancellation_during_cycle_publication_prevents_model_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1085,11 +1181,15 @@ def test_image_failure_preserves_saved_facts_and_blocks(
         save_attempts += 1
         if ((failure_kind == "first_save" and save_attempts == 1)
                 or (failure_kind == "second_save" and save_attempts == 2)):
+            if failure_kind == "second_save":
+                assert container.run_service._work is not None
+                container.run_service._work.cancellation.set()
             raise OSError("image storage unavailable")
         return await original_save(store, **kwargs)
 
     monkeypatch.setattr(ArtifactStore, "save_image", save_image)
     with build_client(tmp_path, calls=[call], turns=[tool_turn(1), finish_turn(2)]) as client:
+        container = cast(Container, client.app.state.container)  # type: ignore[attr-defined]
         run_id = start_run(client, create_plan(client, task_count=2))
         detail = wait_for_run(client, run_id)
         assert detail["run"]["verdict"] == "BLOCKED"

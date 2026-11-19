@@ -71,6 +71,8 @@ class ContextTokens(BaseModel):
 
 
 class ModelContextSnapshot(BaseModel):
+    """Input budget, estimated token use and active resources for one model request."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     input_budget_tokens: int = Field(gt=0)
@@ -79,11 +81,15 @@ class ModelContextSnapshot(BaseModel):
 
 
 class ContextUpdatedEvent(RunEventBase):
+    """Input context selected for the next model invocation."""
+
     type: Literal["context.updated"] = "context.updated"
     context: ModelContextSnapshot
 
 
 class NodeExecutionEvent(RunEventBase):
+    """Wall-clock interval of one direct task graph node attempt."""
+
     type: Literal["node.execution"] = "node.execution"
     node_name: str
     started_at: datetime
@@ -91,9 +97,10 @@ class NodeExecutionEvent(RunEventBase):
 
 
 class ToolCallEvent(RunEventBase):
-    """发起、撤回或成功返回一次工具调用。"""
+    """模型发起的有效工具请求，或已成功处理的工具回执。"""
 
-    type: Literal["tool.started", "tool.succeeded", "tool.withdrawn"]
+    type: Literal["tool.started", "tool.succeeded"]
+    cycle_count: int = Field(ge=1)
     tool_name: str
     call_id: ToolCallId
 

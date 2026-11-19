@@ -31,6 +31,9 @@ from app.domain.execution.messages import (
     RunToolCall,
     RunToolMessage,
 )
+from app.domain.execution.reports import (
+    NodeTiming, TaskRunStatistics, TestRunReport, ToolCallCounts, group_events_by_task_run, task_run_statistics,
+)
 from app.domain.execution.runs import (
     ExecutionSettings,
     ReasonCode,
@@ -78,6 +81,12 @@ __all__ = [
     "TasksSkippedEvent",
     "TestRun",
     "TestRunDetail",
+    "TestRunReport",
+    "TaskRunStatistics",
+    "ToolCallCounts",
+    "NodeTiming",
+    "group_events_by_task_run",
+    "task_run_statistics",
     "TestRunEnvironmentSnapshot",
     "TestRunStatus",
     "TestRunVerdict",

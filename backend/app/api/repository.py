@@ -19,12 +19,13 @@ from app.api.schemas import (
     PageResponse, TestCaseListResponse, TestRunDailyStatistics, TestRunFilterQuery,
     TestRunListResponse, TestRunPageQuery, TestRunStatisticsQuery, TestRunStatisticsResponse,
 )
-from app.domain.execution import StoredRunEvent, ArtifactType, TaskRunStatus, TestRunStatus, TestRunVerdict
+from app.domain.execution import (
+    ArtifactType, StoredRunEvent, TaskRunStatus, TestRunReport, TestRunStatus, TestRunVerdict, task_run_statistics,
+)
 from app.domain.planning import TestCase, TestCaseContent, TestPlan
 from app.persistence.db import read_snapshot
 from app.persistence.run_repository import read_test_run_detail
 from app.persistence.mappers import artifact_from_row, stored_event_from_row, test_case_from_row, test_plan_from_rows, test_run_from_row
-from app.reporting import TestRunReport, task_run_statistics
 from app.persistence.models import ArtifactRow, RunEventRow, TaskRunRow, TestCaseRow, TestPlanRow, TestRunRow, TestTaskRow
 
 
@@ -218,14 +219,11 @@ async def list_test_plans(
 
 
 async def read_run_events(
-    session: AsyncSession, test_run_id: str, *, after: int = 0, include_statistics: bool = False,
+    session: AsyncSession, test_run_id: str, *, after: int = 0,
 ) -> list[StoredRunEvent]:
-    selection = RunEventRow.sequence > after
-    if after and include_statistics:
-        selection = or_(selection, RunEventRow.type.in_(("node.execution", "tool.started", "tool.succeeded", "tool.withdrawn")))
     rows = await session.scalars(
         select(RunEventRow).where(
-            RunEventRow.test_run_id == test_run_id, selection,
+            RunEventRow.test_run_id == test_run_id, RunEventRow.sequence > after,
         ).order_by(RunEventRow.sequence)
     )
     return [stored_event_from_row(row) for row in rows]
@@ -249,10 +247,18 @@ async def read_test_run_report(
             TestCaseRow.id == detail.test_plan.test_case_id,
         ))
         assert archived is not None
-        finished = detail.run.status == TestRunStatus.FINISHED
-        history = await read_run_events(session, test_run_id, after=events_after, include_statistics=finished)
-        statistics = task_run_statistics(detail.task_runs, history) if finished else {}
-        events = [stored for stored in history if stored.sequence > events_after] if finished and events_after else history
+        events = await read_run_events(session, test_run_id, after=events_after)
+        statistics = {}
+        if detail.run.status == TestRunStatus.FINISHED:
+            statistics_events = events
+            if events_after > 0:
+                prior_rows = await session.scalars(select(RunEventRow).where(
+                    RunEventRow.test_run_id == test_run_id,
+                    RunEventRow.sequence <= events_after,
+                    RunEventRow.type.in_(("node.execution", "tool.started", "tool.succeeded")),
+                ).order_by(RunEventRow.sequence))
+                statistics_events = [stored_event_from_row(row) for row in prior_rows] + events
+            statistics = task_run_statistics(detail.task_runs, statistics_events)
         task_ids = select(TaskRunRow.id).where(TaskRunRow.test_run_id == test_run_id)
         artifacts = await session.scalars(
             select(ArtifactRow).where(

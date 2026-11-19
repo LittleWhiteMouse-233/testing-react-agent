@@ -10,16 +10,14 @@ import posixpath
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
 from urllib.parse import unquote, urlsplit
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from pydantic import BaseModel, ConfigDict
 
 from app.artifacts import ArtifactStore
 from app.config import APP_DESCRIPTION, APP_NAME
 from app.domain.execution import (
-    NodeExecutionEvent, ToolCallEvent, Artifact, ArtifactType, ReasonCode, StoredRunEvent, TaskRun, TaskRunStatus, TestRunDetail,
+    Artifact, ArtifactType, ReasonCode, TaskRun, TaskRunStatus, TestRunDetail, TestRunReport, group_events_by_task_run,
 )
 from app.domain.planning import TestTask
 from app.domain.resources import (
@@ -58,13 +56,6 @@ def relative_resource_path(skill_uri: str, resource_uri: str) -> str:
                             posixpath.dirname(unquote(urlsplit(skill_uri).path)))
 
 
-def group_events_by_task_run(events: list[StoredRunEvent]) -> dict[str | None, list[StoredRunEvent]]:
-    events_by_task_run_id: dict[str | None, list[StoredRunEvent]] = defaultdict(list)
-    for stored_event in events:
-        events_by_task_run_id[stored_event.event.task_run_id].append(stored_event)
-    return events_by_task_run_id
-
-
 def number_task_executions(task_runs: list[TaskRun]) -> dict[str, int]:
     execution_counts: dict[str, int] = defaultdict(int)
     execution_numbers: dict[str, int] = {}
@@ -99,78 +90,10 @@ def group_resources_by_skill(
     return resources_by_skill
 
 
-class ToolCallCounts(BaseModel):
-    """Calls and successful results for one named tool within one TaskRun."""
-    model_config = ConfigDict(extra="forbid", json_schema_serialization_defaults_required=True)
-
-    calls: int = 0
-    successes: int = 0
-
-
-class NodeTiming(BaseModel):
-    elapsed_seconds: float
-    task_percent: float | None
-
-
-class TaskRunStatistics(BaseModel):
-    tools: dict[str, ToolCallCounts]
-    nodes: dict[str, NodeTiming]
-
-
-def task_run_statistics(task_runs: list[TaskRun], events: list[StoredRunEvent]) -> dict[str, TaskRunStatistics]:
-    grouped = group_events_by_task_run(events)
-    statistics: dict[str, TaskRunStatistics] = {}
-    for task in task_runs:
-        if task.started_at is None or task.finished_at is None:
-            continue
-        task_seconds = (task.finished_at - task.started_at).total_seconds()
-        tools: dict[str, ToolCallCounts] = {}
-        seconds_by_node: dict[str, float] = defaultdict(float)
-        for stored in grouped.get(task.id, []):
-            event = stored.event
-            if isinstance(event, ToolCallEvent):
-                count = tools.setdefault(event.tool_name, ToolCallCounts())
-                if event.type == "tool.started":
-                    count.calls += 1
-                elif event.type == "tool.withdrawn":
-                    count.calls -= 1
-                else:
-                    count.successes += 1
-            elif isinstance(event, NodeExecutionEvent):
-                seconds_by_node[event.node_name] += (event.finished_at - event.started_at).total_seconds()
-        statistics[task.id] = TaskRunStatistics(tools=tools, nodes={
-            name: NodeTiming(elapsed_seconds=seconds, task_percent=100 * seconds / task_seconds if task_seconds > 0 else None)
-            for name, seconds in seconds_by_node.items()
-        })
-    return statistics
-
-
-class TestRunReport(BaseModel):
-    """报告事实组合；canonical detail 中的事实不会在顶层复制。
-
-    在线读取的 events 为请求游标之后的历史；默认读取及导出包含完整历史。
-    detail 与 artifacts 始终完整，并与返回的 events 来自同一读取快照。
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    detail: TestRunDetail
-    events: list[StoredRunEvent]
-    task_statistics: dict[str, TaskRunStatistics]
-    artifacts: list[Artifact]
-    # Current TestCase state, joined at read time; never part of the run environment snapshot.
-    test_case_archived: bool
-
-
 class ReportService:
-    """组合 repository 查询事实，并从同一 typed report 生成在线与导出结果。"""
+    """Render and store a complete report supplied by the export route."""
 
-    def __init__(
-        self,
-        read_report: Callable[[str], Awaitable[TestRunReport]],
-        artifacts: ArtifactStore,
-    ) -> None:
-        self.read_report = read_report
+    def __init__(self, artifacts: ArtifactStore) -> None:
         self.artifacts = artifacts
         self.templates = Environment(
             loader=FileSystemLoader(Path(__file__).resolve().parent / "templates"),
@@ -191,11 +114,7 @@ class ReportService:
             relative_resource_path=relative_resource_path,
         )
 
-    async def build(self, test_run_id: str) -> TestRunReport:
-        return await self.read_report(test_run_id)
-
-    async def export(self, test_run_id: str, export_format: str) -> Artifact:
-        report = await self.build(test_run_id)
+    async def export(self, report: TestRunReport, export_format: str) -> Artifact:
         if export_format == "json":
             report_dump = report.model_dump(mode="json")
             content = json.dumps(
@@ -225,7 +144,7 @@ class ReportService:
         else:
             raise ValueError("format must be json or html")
         return await self.artifacts.save_export(
-            test_run_id=test_run_id,
+            test_run_id=report.detail.run.id,
             artifact_type=artifact_type,
             content=content,
             mime_type=mime_type,
